@@ -146,10 +146,15 @@ for (const [slug, secret] of Object.entries(envKeyFor)) {
   const row = providerBySlug.get(slug);
   if (!row) continue;
   const enc = encryptSecret(secret);
+  // Env is the source of truth for upstream keys: refresh the stored ciphertext
+  // so a rotated key in .env actually takes effect (pipeline prefers DB creds).
   await db
     .insert(providerCredentials)
     .values({ providerId: row.id, keyName: "default", ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag })
-    .onConflictDoNothing();
+    .onConflictDoUpdate({
+      target: [providerCredentials.providerId, providerCredentials.keyName],
+      set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true },
+    });
 }
 
 // ── Model catalog (§75) — lives in DB, admin-editable ──────────────────

@@ -13,7 +13,7 @@
     "dev:api": "npm run dev -w @uno/api",
     "dev:web": "npm run dev -w @uno/web",
     "build": "npm run build -w @uno/api && npm run build -w @uno/web",
-    "start": "npm run start -w @uno/web",
+    "start": "node scripts/start-prod.mjs",
     "start:api": "npm run start -w @uno/api",
     "start:web": "npm run start -w @uno/web",
     "db:generate": "npx --yes drizzle-kit@0.31.11 generate",
