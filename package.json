@@ -13,6 +13,7 @@
     "dev:api": "npm run dev -w @uno/api",
     "dev:web": "npm run dev -w @uno/web",
     "build": "npm run build -w @uno/api && npm run build -w @uno/web",
+    "start": "npm run start -w @uno/web",
     "start:api": "npm run start -w @uno/api",
     "start:web": "npm run start -w @uno/web",
     "db:generate": "drizzle-kit generate",
