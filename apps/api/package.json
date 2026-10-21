@@ -16,7 +16,9 @@
     "@uno/routing": "*",
     "@uno/shared": "*",
     "fastify": "^5.12.5",
-    "tsx": "^4.20.0",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0"
   }
 }
