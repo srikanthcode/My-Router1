@@ -1,0 +1,34 @@
+{
+  "name": "prorouter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ProRouter — One API. Every Model.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @uno/api\" \"npm run dev -w @uno/web\"",
+    "dev:api": "npm run dev -w @uno/api",
+    "dev:web": "npm run dev -w @uno/web",
+    "build": "npm run build -w @uno/api && npm run build -w @uno/web",
+    "start:api": "npm run start -w @uno/api",
+    "start:web": "npm run start -w @uno/web",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "npm run migrate -w @uno/database",
+    "db:seed": "npm run seed -w @uno/database",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/database && tsc -p packages/providers && tsc -p packages/routing && tsc -p apps/api && tsc -p apps/web",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "stub": "node scripts/stub-provider.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.9.0",
+    "vitest": "^5.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
