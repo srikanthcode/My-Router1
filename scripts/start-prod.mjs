@@ -10,8 +10,8 @@ import { spawn } from "node:child_process";
 
 const apiPort = process.env.API_PORT || "4000";
 const children = [];
-let stopping = false;
 
+let stopping = false;
 function shutdown(code) {
   if (stopping) return;
   stopping = true;
@@ -21,7 +21,7 @@ function shutdown(code) {
 process.on("SIGTERM", () => shutdown(0));
 process.on("SIGINT", () => shutdown(0));
 
-function run(name, args, { cwd, env, fatal } = {}) {
+function run(name, args, { cwd, env } = {}) {
   const child = spawn("npm", args, {
     stdio: "inherit",
     cwd,
@@ -31,24 +31,17 @@ function run(name, args, { cwd, env, fatal } = {}) {
   });
   child.on("exit", (code) => {
     console.error(`[prorouter] ${name} exited with code ${code}`);
-    // A dead API only breaks /v1 and /api; the site itself should stay up so
-    // the failure is visible and fixable. A dead web process is fatal.
-    if (fatal) shutdown(code ?? 1);
+    shutdown(code ?? 1);
   });
   children.push(child);
 }
 
-run("api", ["run", "start", "-w", "@uno/api"], {
-  env: { API_PORT: apiPort },
-  fatal: false,
-});
-
+run("api", ["run", "start", "-w", "@uno/api"], { env: { API_PORT: apiPort } });
 run("web", ["run", "start", "-w", "@uno/web"], {
   env: {
     PORT: process.env.PORT || "3000",
-    // Must match the build-time rewrite destination (see next.config.ts).
-    API_BASE_URL: `http://127.0.0.1:${apiPort}`,
+    // Must match the API port so the rewrite destination resolves.
+    API_BASE_URL: `http://localhost:${apiPort}`,
     PUBLIC_API_BASE_URL: process.env.PUBLIC_API_BASE_URL || "https://prorouter.in",
   },
-  fatal: true,
 });
