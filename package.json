@@ -16,7 +16,7 @@
     "start": "npm run start -w @uno/web",
     "start:api": "npm run start -w @uno/api",
     "start:web": "npm run start -w @uno/web",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "npx --yes drizzle-kit@0.31.11 generate",
     "db:migrate": "npm run migrate -w @uno/database",
     "db:migrate:mongo": "npm run migrate:mongo -w @uno/database",
     "db:seed": "npm run seed -w @uno/database",
@@ -26,7 +26,7 @@
     "stub": "node scripts/stub-provider.mjs"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2",
+    "concurrently": "^9.2.5",
     "typescript": "^5.9.0",
     "vitest": "^5.0.3"
   },
