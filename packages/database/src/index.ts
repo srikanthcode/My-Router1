@@ -10,6 +10,23 @@ import { env } from "@uno/shared";
 
 export * from "./schema/index.js";
 
+// ── MongoDB (primary store when MONGODB_URI is set) ───────────────────
+export {
+  mongoConfigured,
+  getMongoDb,
+  pingMongo,
+  closeMongo,
+  withMongoTx,
+  resetMongoFailure,
+  getLastError as getMongoLastError,
+} from "./mongo/client.js";
+export { ensureIndexes } from "./mongo/indexes.js";
+export { getCollections, type Collections } from "./mongo/collections.js";
+export * from "./mongo/types.js";
+
+// ── DataStore contract (dual-backend: SQL fallback + MongoDB primary) ──
+export type { DataStore } from "./store/types.js";
+
 const moduleDir = fileURLToPath(new URL("./", import.meta.url));
 /** Monorepo root: packages/database/src → ../../../ */
 export const repoRoot = path.resolve(moduleDir, "../../..");

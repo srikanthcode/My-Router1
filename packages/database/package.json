@@ -10,12 +10,14 @@
   },
   "scripts": {
     "migrate": "tsx src/migrate.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "migrate:mongo": "tsx src/mongo/migrate.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@uno/shared": "*",
     "drizzle-orm": "^0.45.4",
+    "mongodb": "^6.21.0",
     "pg": "^8.16.3"
   },
   "devDependencies": {

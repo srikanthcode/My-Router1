@@ -53,6 +53,14 @@ export const env = {
   databaseDir: str("DATABASE_DIR", ".data/db"),
   redisUrl: str("REDIS_URL"),
 
+  /**
+   * MongoDB (primary data store when set). PGlite/Postgres remains the
+   * fallback: with MONGODB_URI empty (or unreachable at boot) the app runs
+   * entirely on the embedded database.
+   */
+  mongoUri: str("MONGODB_URI"),
+  mongoDb: str("MONGODB_DB", "prorouter"),
+
   authSecret: str("AUTH_SECRET", "dev-secret-change-me"),
   sessionTtlHours: num("SESSION_TTL_HOURS", 720),
 

@@ -17,6 +17,7 @@
     "start:web": "npm run start -w @uno/web",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "npm run migrate -w @uno/database",
+    "db:migrate:mongo": "npm run migrate:mongo -w @uno/database",
     "db:seed": "npm run seed -w @uno/database",
     "typecheck": "tsc -p packages/shared && tsc -p packages/database && tsc -p packages/providers && tsc -p packages/routing && tsc -p apps/api && tsc -p apps/web",
     "test": "vitest run",
