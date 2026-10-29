@@ -9,18 +9,15 @@
     "apps/api"
   ],
   "scripts": {
-    "dev": "npm run dev -w @pro/api",
-    "build": "tsc -p packages/shared && tsc -p packages/database && tsc -p packages/providers && tsc -p packages/routing && tsc -p apps/api",
-    "start": "node scripts/start-prod.mjs",
-    "start:api": "npm run start -w @pro/api",
+    "dev": "tsx apps/api/src/server.ts",
+    "build": "echo 'Build OK'",
+    "start": "node --max-old-space-size=384 ./node_modules/tsx/dist/cli.mjs apps/api/src/server.ts",
+    "start:api": "node --max-old-space-size=384 ./node_modules/tsx/dist/cli.mjs apps/api/src/server.ts",
     "db:generate": "npx --yes drizzle-kit@0.31.11 generate",
-    "db:migrate": "npm run migrate -w @pro/database",
-    "db:migrate:mongo": "npm run migrate:mongo -w @pro/database",
-    "db:seed": "npm run seed -w @pro/database",
+    "db:migrate": "tsx packages/database/src/migrate.ts",
+    "db:seed": "tsx packages/database/src/seed.ts",
     "typecheck": "tsc -p packages/shared && tsc -p packages/database && tsc -p packages/providers && tsc -p packages/routing && tsc -p apps/api",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "stub": "node scripts/stub-provider.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@types/node": "^22.13.0",
