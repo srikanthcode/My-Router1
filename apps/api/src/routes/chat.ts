@@ -1,17 +1,18 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { desc, eq, sql } from "drizzle-orm";
-import { apiKeys, getDb, modelProviders, models, plans, providers, requestAttempts, requests, subscriptions } from "@uno/database";
-import { ApiError, requestCost, env, type ChatMessage, type Usage } from "@uno/shared";
-import { estimateTokens } from "@uno/providers";
-import { routeRequest } from "@uno/routing";
-import { getActiveAstra, requireUser, resolveApiKey, resolveSessionUser, type AuthedUser } from "../lib/auth.js";
-import { checkRateLimit } from "../lib/ratelimit.js";
+import { apiKeys, getDb, modelProviders, models, plans, providers, requestAttempts, requests, subscriptions } from "@pro/database";
+import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput } from "@pro/shared";
+import { estimateTokens } from "@pro/providers";
+import { routeRequest } from "@pro/routing";
+import { getActiveAstra } from "../lib/auth.js";
+import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
 import { acquireSlot, probeQueue, releaseSlot, type QueueStatus } from "../lib/queue.js";
 import { assertAffordable, debitWallet } from "../lib/wallet.js";
 import { extractHints, executeChat, hydrateCandidates, loadModelContext, resolveAutoModel, resolveModelInput, streamChat } from "../lib/pipeline.js";
 import { getFlag, getNumber } from "../lib/settings.js";
+import { getUsdToInrRate, resolveEffectivePricing } from "../lib/pricing.js";
 import { randomBytes } from "node:crypto";
 
 const bodySchema = z.looseObject({
@@ -64,7 +65,7 @@ function newRequestId(): string {
 export async function chatRoutes(app: FastifyInstance) {
   // ── OpenAI-compatible model listing ─────────────────────────────────
   app.get("/v1/models", async (request) => {
-    await authenticate(request, { optional: false });
+    await authenticateRequest(request);
     const db = await getDb();
     const rows = await db.select().from(models).where(eq(models.status, "active"));
     return {
@@ -74,7 +75,7 @@ export async function chatRoutes(app: FastifyInstance) {
   });
 
   app.get("/v1/models/:id", async (request, reply) => {
-    await authenticate(request, { optional: false });
+    await authenticateRequest(request);
     const { id } = request.params as { id: string };
     const db = await getDb();
     const slug = id.startsWith("uno/") ? id.slice(4) : id;
@@ -90,7 +91,7 @@ export async function chatRoutes(app: FastifyInstance) {
     reply.header("x-request-id", requestId);
     const startedAt = Date.now();
 
-    const auth = await authenticate(request, { optional: false });
+    const auth = await authenticateRequest(request);
     enforceRateLimits(request, auth);
 
     const body = bodySchema.parse(request.body);
@@ -110,6 +111,7 @@ export async function chatRoutes(app: FastifyInstance) {
     if (!ctx) throw new ApiError("model_not_found", `Model '${body.model}' not found.`);
     if (ctx.model.status === "coming_soon") throw new ApiError("provider_unavailable", `'${ctx.model.name}' is coming soon and not yet available.`);
     if (ctx.model.status !== "active") throw new ApiError("model_not_found", `Model '${slug}' is not available.`);
+    const effectivePricing = resolveEffectivePricing(ctx.model, ctx.pricing, ctx.tier, await getUsdToInrRate());
 
     // GPT Astra requires an active entitlement (§49)
     const requiresAstra = slug === "uno-gpt-astra" || (ctx.model.metadata as { requiresAstra?: boolean })?.requiresAstra === true;
@@ -157,8 +159,8 @@ export async function chatRoutes(app: FastifyInstance) {
       const estimated = requestCost({
         inputTokens,
         outputTokens: maxOut,
-        inputPricePerMillion: ctx.pricing?.inputPerMillion ?? 0,
-        outputPricePerMillion: ctx.pricing?.outputPerMillion ?? 0,
+        inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+        outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
         platformFeePercent: feePercent,
       });
       await assertAffordable(auth.user.id, estimated);
@@ -176,7 +178,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const adapterParams = {
       model: decision.primary.upstreamModelId,
-      messages,
+      messages: applyPersonaToMessages(messages, ctx.model.name, ctx.model.slug),
       stream,
       temperature: body.temperature,
       topP: body.top_p,
@@ -201,22 +203,25 @@ export async function chatRoutes(app: FastifyInstance) {
       route: resolved.auto ? "auto" : resolved.forcedProvider ? "direct" : "direct",
       streaming: stream,
       isFree,
+      usageSource: "none",
       ip: request.ip,
     });
 
-    const finalize = async (params: { usage: Usage; providerId: string; providerSlug: string; ttftMs: number | null; errorCode?: string; errorMessage?: string; httpStatus?: number; status?: "success" | "error" }) => {
+    const finalize = async (params: { usage: Usage; usageSource?: UsageSource; providerId: string; providerSlug: string; ttftMs: number | null; errorCode?: string; errorMessage?: string; httpStatus?: number; status?: "success" | "error" }) => {
       const usage = params.usage;
+      const usageSource = params.usageSource ?? "none";
+      const billEstimated = usageSource === "estimated" ? await getFlag("BILL_ESTIMATED_USAGE", false) : false;
       let cost = 0;
-      if (!isFree && !params.errorCode && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
+      if (!isFree && !params.errorCode && (usage.prompt_tokens > 0 || usage.completion_tokens > 0) && (usageSource === "upstream" || billEstimated)) {
         const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
         cost = requestCost({
           inputTokens: usage.prompt_tokens,
           outputTokens: usage.completion_tokens,
-          inputPricePerMillion: ctx.pricing?.inputPerMillion ?? 0,
-          outputPricePerMillion: ctx.pricing?.outputPerMillion ?? 0,
+          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
           platformFeePercent: feePercent,
         });
-        const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, metadata: { model: slug, provider: params.providerSlug } });
+        const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug, provider: params.providerSlug } });
         cost = debit.deductedPaise;
       }
       await db.update(requests).set({
@@ -229,6 +234,7 @@ export async function chatRoutes(app: FastifyInstance) {
         outputTokens: usage.completion_tokens,
         totalTokens: usage.total_tokens,
         costPaise: cost,
+        usageSource,
         errorCode: params.errorCode ?? null,
         errorMessage: params.errorMessage ?? null,
         providerId: params.providerId,
@@ -254,14 +260,15 @@ export async function chatRoutes(app: FastifyInstance) {
         for (const a of result.attempts) {
           await db.insert(requestAttempts).values({ requestId, providerId: null, attempt: result.attempts.indexOf(a) + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
-        const cost = await finalize({ usage: result.usage, providerId: decision.primary.providerId, providerSlug: result.providerSlug, ttftMs: null });
+        const cost = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: decision.primary.providerId, providerSlug: result.providerSlug, ttftMs: null });
+        reply.header("x-prorouter-usage-source", result.usageSource);
         const created = Math.floor(Date.now() / 1000);
         return reply.send({
           id: requestId,
           object: "chat.completion",
           created,
-          model: slug,
-          choices: [{ index: 0, message: { role: "assistant", content: result.content, tool_calls: result.toolCalls.length ? result.toolCalls : undefined }, finish_reason: result.finishReason }],
+          model: body.model || slug,
+          choices: [{ index: 0, message: { role: "assistant", content: sanitizeModelOutput(result.content, ctx.model.name), tool_calls: result.toolCalls.length ? result.toolCalls : undefined }, finish_reason: result.finishReason }],
           usage: result.usage,
           uno: {
             request_id: requestId,
@@ -270,6 +277,7 @@ export async function chatRoutes(app: FastifyInstance) {
             queue_wait_ms: queueWaitMs,
             cost_paise: cost,
             is_free: isFree,
+            usage_source: result.usageSource,
           },
         });
       }
@@ -289,7 +297,7 @@ export async function chatRoutes(app: FastifyInstance) {
       const chunkId = `chatcmpl-${requestId.slice(4)}`;
       const created = Math.floor(Date.now() / 1000);
       const oaiChunk = (delta: Record<string, unknown>, finish: string | null = null) => ({
-        id: chunkId, object: "chat.completion.chunk", created, model: slug,
+        id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug,
         choices: [{ index: 0, delta, finish_reason: finish }],
       });
 
@@ -310,6 +318,7 @@ export async function chatRoutes(app: FastifyInstance) {
 
       write(oaiChunk({ role: "assistant", content: "" }));
       let usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+      let usageSource: UsageSource = "none";
       let ttftMs: number | null = null;
       let contentSoFar = "";
       let finishReason = "stop";
@@ -326,14 +335,19 @@ export async function chatRoutes(app: FastifyInstance) {
               write({ uno_start: { provider: decision.primary.providerSlug } });
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
-              contentSoFar += ev.text;
-              write(oaiChunk({ content: ev.text }));
+              const sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              contentSoFar += sanitizedText;
+              write(oaiChunk({ content: sanitizedText }));
             } else if (ev.type === "reasoning_delta") {
-              write({ id: chunkId, object: "chat.completion.chunk", created, model: slug, choices: [], uno_reasoning: ev.text });
+              if (ctx.caps?.reasoning) {
+                const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
+                write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug, choices: [], uno_reasoning: sanitizedReasoning });
+              }
             } else if (ev.type === "tool_call_delta") {
               write(oaiChunk({ tool_calls: [{ index: ev.index, id: ev.id, type: "function", function: { name: ev.name, arguments: ev.arguments ?? "" } }] }));
             } else if (ev.type === "usage") {
               usage = ev.usage;
+              usageSource = ev.usageSource;
             } else if (ev.type === "done") {
               finishReason = ev.finishReason;
             }
@@ -341,6 +355,7 @@ export async function chatRoutes(app: FastifyInstance) {
         })();
         providerSlug = outcome.providerSlug;
         usage = outcome.usage;
+        usageSource = outcome.usageSource;
         finishReason = outcome.finishReason;
         for (const a of outcome.attempts) {
           await db.insert(requestAttempts).values({ requestId, attempt: outcome.attempts.indexOf(a) + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
@@ -348,7 +363,7 @@ export async function chatRoutes(app: FastifyInstance) {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Provider error";
         write({ error: { code: "provider_error", message, request_id: requestId } });
-        await finalize({ usage, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: err instanceof ApiError ? err.code : "provider_error", errorMessage: message, httpStatus: 502, status: "error" }).catch(() => undefined);
+        await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: err instanceof ApiError ? err.code : "provider_error", errorMessage: message, httpStatus: 502, status: "error" }).catch(() => undefined);
         res.end();
         return;
       }
@@ -360,9 +375,10 @@ export async function chatRoutes(app: FastifyInstance) {
           completion_tokens: estimateTokens(contentSoFar),
           total_tokens: countMessageTokens(messages) + estimateTokens(contentSoFar),
         };
+        usageSource = "estimated";
       }
-      const cost = await finalize({ usage, providerId: decision.primary.providerId, providerSlug, ttftMs });
-      write({ id: chunkId, object: "chat.completion.chunk", created, model: slug, choices: [], usage, uno: { request_id: requestId, provider: providerSlug, cost_paise: cost, is_free: isFree, queue_wait_ms: queueWaitMs, route: decision.trace } });
+      const cost = await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs });
+      write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug, choices: [], usage, uno: { request_id: requestId, provider: providerSlug, cost_paise: cost, is_free: isFree, queue_wait_ms: queueWaitMs, route: decision.trace, usage_source: usageSource } });
       res.write("data: [DONE]\n\n");
       res.end();
       return;
@@ -387,32 +403,3 @@ export async function chatRoutes(app: FastifyInstance) {
   });
 }
 
-interface AuthContext {
-  user: AuthedUser;
-  apiKey: (typeof apiKeys.$inferSelect) | null;
-}
-
-async function authenticate(request: FastifyRequest, opts: { optional: boolean }): Promise<AuthContext> {
-  const fromKey = await resolveApiKey(request).catch((e) => { throw e; });
-  if (fromKey) return { user: fromKey.user, apiKey: fromKey.apiKey };
-  const session = await resolveSessionUser(request);
-  if (session) return { user: session, apiKey: null };
-  if (opts.optional) throw new ApiError("unauthenticated", "Authentication required.");
-  const hasBearer = !!request.headers.authorization;
-  throw new ApiError(hasBearer ? "invalid_api_key" : "unauthenticated", hasBearer ? "Invalid API key provided." : "Authentication required. Use an API key or sign in.");
-}
-
-function enforceRateLimits(request: FastifyRequest, auth: AuthContext) {
-  const ip = request.ip || "unknown";
-  const checks = [
-    { key: `ip:${ip}`, limit: 120, window: 60 },
-    { key: `user:${auth.user.id}`, limit: 60, window: 60 },
-  ];
-  if (auth.apiKey) checks.push({ key: `key:${auth.apiKey.id}`, limit: 60, window: 60 });
-  for (const c of checks) {
-    const r = checkRateLimit(c.key, c.limit, c.window);
-    if (!r.allowed) {
-      throw new ApiError("rate_limit_exceeded", `Rate limit exceeded. Try again in ${r.retryAfterSec}s.`, { retryAfter: r.retryAfterSec });
-    }
-  }
-}

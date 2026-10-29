@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolCall, Usage } from "@uno/shared";
+import type { ChatMessage, ToolCall, Usage, UsageSource } from "@pro/shared";
 import {
   ProviderError,
   type AdapterChatParams,
@@ -97,11 +97,13 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       const content = choice?.message?.content ?? "";
       const toolCalls = choice?.message?.tool_calls ?? [];
       const usage = json.usage ?? estimateUsage({ messages: params.messages, completion: content });
+      const usageSource: UsageSource = json.usage ? "upstream" : "estimated";
       return {
         content,
         toolCalls,
         finishReason: choice?.finish_reason ?? "stop",
         usage,
+        usageSource,
         upstreamRequestId: json.id,
       };
     } catch (err) {
@@ -160,13 +162,14 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         if (!choice) continue;
         if (choice.finish_reason) finishReason = choice.finish_reason;
         const delta = choice.delta;
-        if (delta?.reasoning) yield { type: "reasoning_delta", text: delta.reasoning };
+        const reasoning = delta?.reasoning ?? (delta as { reasoning_content?: string })?.reasoning_content;
+        if (reasoning) yield { type: "reasoning_delta", text: reasoning };
         if (delta?.content) yield { type: "delta", text: delta.content };
         for (const tc of delta?.tool_calls ?? []) {
           yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments };
         }
       }
-      if (usage) yield { type: "usage", usage };
+      if (usage) yield { type: "usage", usage, usageSource: "upstream" };
       yield { type: "done", finishReason };
     } catch (err) {
       if (err instanceof ProviderError) throw err;

@@ -1,7 +1,7 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { and, eq, gt } from "drizzle-orm";
-import { apiKeys, getDb, sessions, users, astraEntitlements } from "@uno/database";
-import { generateSessionToken, hashToken, ApiError, env } from "@uno/shared";
+import { apiKeys, getDb, sessions, users, astraEntitlements } from "@pro/database";
+import { generateSessionToken, hashToken, ApiError, env } from "@pro/shared";
 
 const SESSION_COOKIE = "uno_session";
 

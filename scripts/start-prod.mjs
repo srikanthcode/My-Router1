@@ -61,12 +61,12 @@ function run(name, args, { cwd, env, fatal } = {}) {
 
 console.log(`[prorouter] API will listen on port ${apiPort}`);
 
-run("api", ["run", "start", "-w", "@uno/api"], {
+run("api", ["run", "start", "-w", "@pro/api"], {
   env: { API_PORT: apiPort },
   fatal: false,
 });
 
-run("web", ["run", "start", "-w", "@uno/web"], {
+run("web", ["run", "start", "-w", "@pro/web"], {
   env: {
     PORT: process.env.PORT || "3000",
     PUBLIC_API_BASE_URL: process.env.PUBLIC_API_BASE_URL || "https://prorouter.in",

@@ -1,6 +1,6 @@
 import { buildApp } from "./app.js";
-import { env } from "@uno/shared";
-import { runMigrations } from "@uno/database";
+import { env } from "@pro/shared";
+import { runMigrations } from "@pro/database";
 
 try {
   await runMigrations();

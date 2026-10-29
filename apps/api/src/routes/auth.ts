@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { getDb, users, wallets, notifications, auditLogs, plans, subscriptions } from "@uno/database";
-import { ApiError, hashPassword, isStrongPassword, verifyPassword } from "@uno/shared";
+import { getDb, users, wallets, notifications, auditLogs, plans, subscriptions } from "@pro/database";
+import { ApiError, hashPassword, isStrongPassword, verifyPassword } from "@pro/shared";
 import { createSession, destroySession, getActiveAstra, requireUser, resolveSessionUser } from "../lib/auth.js";
 import { checkRateLimit } from "../lib/ratelimit.js";
 import { getBalance } from "../lib/wallet.js";

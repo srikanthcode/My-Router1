@@ -1,5 +1,5 @@
 {
-  "name": "@uno/database",
+  "name": "@pro/database",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
-    "@uno/shared": "*",
+    "@pro/shared": "*",
     "drizzle-orm": "^0.45.4",
     "mongodb": "^6.21.0",
     "pg": "^8.16.3"

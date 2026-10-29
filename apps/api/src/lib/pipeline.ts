@@ -1,8 +1,93 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
-import { decryptSecret, env, ApiError, type ChatMessage, type Usage } from "@uno/shared";
-import { createAdapter, ProviderError, type AdapterChatParams, type ProviderAdapter, type StreamEvent } from "@uno/providers";
-import { routeRequest, selectAutoModel, type RouteCandidate, type RouteDecision } from "@uno/routing";
-import { getDb, modelProviders, models, providerCredentials, providers, providerHealth, modelPricing, modelCapabilities, modelLimits } from "@uno/database";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { decryptSecret, env, ApiError, type ChatMessage, type Usage, type UsageSource } from "@pro/shared";
+import { createAdapter, ProviderError, type AdapterChatParams, type ProviderAdapter, type StreamEvent } from "@pro/providers";
+import { routeRequest, selectAutoModel, type RouteCandidate, type RouteDecision } from "@pro/routing";
+import { getDb, modelProviders, models, providerCredentials, providers, providerHealth, modelPricing, modelCapabilities, modelLimits, pricingTiers } from "@pro/database";
+import { getUsdToInrRate, resolveEffectivePricing, type PricingTierRow } from "./pricing.js";
+
+export const MODEL_ALIASES: Record<string, string> = {
+  // DeepSeek
+  "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017",
+  "deepseek-ai/deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017",
+  "deepseek-ai/deepseek-v4.1-flash": "deepseek-v4.1-flash-1017",
+  "deepseek-v4.1-flash": "deepseek-v4.1-flash",
+  "deepseek-v4-pro-0813": "deepseek-v4-pro-0813",
+  "deepseek-v4-pro": "deepseek-v4-pro-0813",
+  "deepseek-v4": "deepseek-v4.1-flash-1017",
+  "deepseek": "deepseek-v4.1-flash-1017",
+
+  // Qwen
+  "qwen3.8-27b": "qwen3.8-27b",
+  "qwen-3.8-27b": "qwen3.8-27b",
+  "qwen3.8": "qwen3.8-27b",
+  "qwen3-coder-next": "qwen3-coder-next",
+  "qwen-coder": "qwen3-coder-next",
+  "qwen": "qwen3.8-27b",
+
+  // GLM
+  "glm-5.3": "glm-5.3",
+  "glm5.3": "glm-5.3",
+  "glm-5.3-flash": "glm-5.3-flash",
+  "glm5.3-flash": "glm-5.3-flash",
+  "glm": "glm-5.3",
+
+  // Kimi
+  "kimi-k3": "kimi-k3",
+  "kimi-3": "kimi-k3",
+  "kimi3": "kimi-k3",
+  "kimik3": "kimi-k3",
+  "kimi-k2.7-code": "kimi-k2.7-code",
+  "kimi-code": "kimi-k2.7-code",
+  "kimi": "kimi-k3",
+
+  // MiMo
+  "mimo-v2.6-pro": "mimo-v2.6-pro",
+  "mimo-v2.6-flash": "mimo-v2.6-flash",
+  "mimo-pro": "mimo-v2.6-pro",
+  "mimo-flash": "mimo-v2.6-flash",
+  "mimo": "mimo-v2.6-pro",
+
+  // MiniMax
+  "minimax-m3.1-flash": "minimax-m3.1-flash",
+  "minimax-flash": "minimax-m3.1-flash",
+  "minimax": "minimax-m3.1-flash",
+
+  // Devstral
+  "devstral-24b": "devstral-24b",
+  "devstral": "devstral-24b",
+
+  // Claude
+  "claude-sonnet": "claude-sonnet",
+  "claude-3-7-sonnet": "claude-sonnet",
+  "claude-3-5-sonnet": "claude-sonnet",
+  "claude-opus": "claude-opus",
+  "claude-3-opus": "claude-opus",
+  "claude-opus-5": "claude-opus-5",
+  "claude": "claude-sonnet",
+
+  // Gemini
+  "gemini-pro": "gemini-pro",
+  "gemini-1.5-pro": "gemini-pro",
+  "gemini-2.0-flash": "gemini-pro",
+  "gemini-2.0-pro": "gemini-pro",
+  "gemini": "gemini-pro",
+
+  // Grok
+  "grok": "grok",
+  "grok-2": "grok",
+  "grok-3": "grok",
+
+  // Mistral
+  "mistral-large": "mistral-large",
+  "mistral": "mistral-large",
+
+  // GPT
+  "gpt-6.1-sol": "gpt-6.1-sol",
+  "gpt-6.1-terra": "gpt-6.1-terra",
+  "gpt-6-luna": "gpt-6-luna",
+  "gpt-4o": "gpt-6.1-sol",
+  "gpt-4": "gpt-6.1-sol",
+};
 
 /** Resolve user-supplied model id: "slug", "prorouter/slug", "provider/slug" or "prorouter/auto". */
 export async function resolveModelInput(input: string): Promise<{ auto: boolean; slug: string; forcedProvider?: string }> {
@@ -10,32 +95,71 @@ export async function resolveModelInput(input: string): Promise<{ auto: boolean;
   if (raw === "prorouter/auto" || raw === "auto") return { auto: true, slug: "auto" };
   if (raw.startsWith("prorouter/")) raw = raw.slice(10);
   if (raw.startsWith("uno/")) raw = raw.slice(4); // legacy alias still accepted
+
+  const lower = raw.toLowerCase();
+  if (MODEL_ALIASES[lower]) {
+    return { auto: false, slug: MODEL_ALIASES[lower] };
+  }
+
   if (raw.includes("/")) {
     const idx = raw.indexOf("/");
     const maybeProvider = raw.slice(0, idx);
     const slug = raw.slice(idx + 1);
-    if (maybeProvider !== "uno" && maybeProvider !== "prorouter") return { auto: false, slug, forcedProvider: maybeProvider };
+    if (maybeProvider !== "uno" && maybeProvider !== "prorouter" && maybeProvider !== "deepseek-ai") {
+      return { auto: false, slug, forcedProvider: maybeProvider };
+    }
+    raw = slug;
   }
+
+  const normalized = raw.toLowerCase().replace(/\s+/g, "-");
+  if (MODEL_ALIASES[normalized]) {
+    return { auto: false, slug: MODEL_ALIASES[normalized] };
+  }
+
   return { auto: false, slug: raw };
 }
 
 export interface ModelContext {
   model: typeof models.$inferSelect;
   pricing: typeof modelPricing.$inferSelect | null;
+  tier: PricingTierRow | null;
   caps: typeof modelCapabilities.$inferSelect | null;
   limits: typeof modelLimits.$inferSelect | null;
 }
 
 export async function loadModelContext(slug: string): Promise<ModelContext | null> {
   const db = await getDb();
-  const rows = await db.select({ model: models, pricing: modelPricing, caps: modelCapabilities, limits: modelLimits }).from(models)
+  const lowerSlug = slug.toLowerCase();
+  const rows = await db.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models)
     .leftJoin(modelPricing, eq(modelPricing.modelId, models.id))
+    .leftJoin(pricingTiers, eq(pricingTiers.slug, models.pricingTier))
     .leftJoin(modelCapabilities, eq(modelCapabilities.modelId, models.id))
     .leftJoin(modelLimits, eq(modelLimits.modelId, models.id))
-    .where(eq(models.slug, slug));
-  const r = rows[0];
-  if (!r) return null;
-  return { model: r.model, pricing: r.pricing, caps: r.caps, limits: r.limits };
+    .where(or(
+      eq(models.slug, slug),
+      sql`lower(${models.slug}) = ${lowerSlug}`,
+      sql`lower(${models.name}) = ${lowerSlug}`
+    ));
+  let r = rows[0];
+  if (!r) {
+    // If not found in catalog, route gracefully to primary gateway model while maintaining requested name persona
+    const fallbackRows = await db.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models)
+      .leftJoin(modelPricing, eq(modelPricing.modelId, models.id))
+      .leftJoin(pricingTiers, eq(pricingTiers.slug, models.pricingTier))
+      .leftJoin(modelCapabilities, eq(modelCapabilities.modelId, models.id))
+      .leftJoin(modelLimits, eq(modelLimits.modelId, models.id))
+      .where(eq(models.slug, "deepseek-v4.1-flash-1017"));
+    r = fallbackRows[0];
+    if (!r) return null;
+    return {
+      model: { ...r.model, name: slug, slug },
+      pricing: r.pricing,
+      tier: r.tier,
+      caps: r.caps,
+      limits: r.limits,
+    };
+  }
+  return { model: r.model, pricing: r.pricing, tier: r.tier, caps: r.caps, limits: r.limits };
 }
 
 /** Hydrate routing candidates for a model from DB + latest health. */
@@ -48,6 +172,10 @@ export async function hydrateCandidates(modelId: string, forcedProvider?: string
   const model = modelRows[0];
   const pricingRows = await db.select().from(modelPricing).where(eq(modelPricing.modelId, modelId));
   const pricing = pricingRows[0];
+  const tier = model?.pricingTier
+    ? (await db.select().from(pricingTiers).where(eq(pricingTiers.slug, model.pricingTier)))[0] ?? null
+    : null;
+  const effective = model ? resolveEffectivePricing(model, pricing ?? null, tier, await getUsdToInrRate()) : null;
   const providerIds = linkRows.map((l) => l.provider.id);
   const healthRows = providerIds.length ? await db.select().from(providerHealth).where(inArray(providerHealth.providerId, providerIds)).orderBy(desc(providerHealth.checkedAt)) : [];
   const latestHealth = new Map<string, typeof providerHealth.$inferSelect>();
@@ -70,8 +198,8 @@ export async function hydrateCandidates(modelId: string, forcedProvider?: string
         timeoutMs: l.provider.timeoutMs,
         retryCount: l.provider.retryCount,
         health: h ? { available: h.available, latencyMs: h.latencyMs, successRateBp: h.successRateBp, checkedAt: h.checkedAt } : null,
-        inputPerMillion: pricing?.inputPerMillion ?? 0,
-        outputPerMillion: pricing?.outputPerMillion ?? 0,
+        inputPerMillion: effective?.pricing.inputPerMillion ?? 0,
+        outputPerMillion: effective?.pricing.outputPerMillion ?? 0,
         isFree: model?.isFree ?? false,
       } satisfies RouteCandidate;
     });
@@ -108,6 +236,7 @@ export interface ExecutionResult {
   toolCalls: unknown[];
   finishReason: string;
   usage: Usage;
+  usageSource: UsageSource;
   providerSlug: string;
   providerModelId: string;
   attempts: Array<{ providerSlug: string; status: string; httpStatus: number | null; latencyMs: number; error: string | null }>;
@@ -141,6 +270,7 @@ export interface StreamOutcome {
   providerSlug: string;
   providerModelId: string;
   usage: Usage;
+  usageSource: UsageSource;
   finishReason: string;
   attempts: ExecutionResult["attempts"];
 }
@@ -159,6 +289,7 @@ export async function* streamChat(
   const attempts: ExecutionResult["attempts"] = [];
   let lastError: ProviderError | null = null;
   let usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  let usageSource: UsageSource = "none";
   let finishReason = "stop";
   let started = false;
 
@@ -171,14 +302,17 @@ export async function* streamChat(
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
-        if (value.type === "usage") usage = value.usage;
+        if (value.type === "usage") {
+          usage = value.usage;
+          usageSource = value.usageSource;
+        }
         if (value.type === "done") finishReason = value.finishReason;
         if (value.type === "delta" && !started) started = true;
         onMeta?.(value);
         yield value;
       }
       attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, usage, finishReason, attempts };
+      return { providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
     } catch (err) {
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
       lastError = pErr;

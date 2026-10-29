@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
-import { getDb, wallets, walletTransactions } from "@uno/database";
-import { ApiError } from "@uno/shared";
+import { getDb, wallets, walletTransactions } from "@pro/database";
+import { ApiError } from "@pro/shared";
 
 export interface CreditParams {
   userId: string;
@@ -58,22 +58,46 @@ export async function creditWallet(
   });
 }
 
-/**
- * Debit usage from the wallet. Never overdraws: the balance is clamped at 0
- * and the ledger records the ACTUAL amount deducted.
- */
-export async function debitWallet(params: {
+export interface DebitParams {
   userId: string;
   amountPaise: number;
   reference?: string;
+  idempotencyKey?: string;
   metadata?: Record<string, unknown>;
-}): Promise<{ balancePaise: number; deductedPaise: number; transactionId: string | null }> {
+}
+
+/**
+ * Debit usage from the wallet. Never overdraws: the balance is clamped at 0
+ * and the ledger records the ACTUAL amount deducted. Idempotency-Key prevents
+ * double-charging when a request is retried (§55).
+ */
+export async function debitWallet(params: DebitParams): Promise<{
+  balancePaise: number;
+  deductedPaise: number;
+  transactionId: string | null;
+  deduped: boolean;
+}> {
   const amount = Math.max(0, Math.round(params.amountPaise));
   const db = await getDb();
   if (amount === 0) {
-    return { balancePaise: await getBalance(params.userId), deductedPaise: 0, transactionId: null };
+    return { balancePaise: await getBalance(params.userId), deductedPaise: 0, transactionId: null, deduped: false };
   }
   return db.transaction(async (tx: any) => {
+    if (params.idempotencyKey) {
+      const existing = await tx
+        .select()
+        .from(walletTransactions)
+        .where(eq(walletTransactions.idempotencyKey, params.idempotencyKey));
+      if (existing.length > 0) {
+        const w = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
+        return {
+          balancePaise: w[0]?.balancePaise ?? 0,
+          deductedPaise: Math.max(0, -existing[0].amountPaise),
+          transactionId: existing[0].id,
+          deduped: true,
+        };
+      }
+    }
     await ensureWallet(tx, params.userId);
     const before = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
     const oldBalance: number = before[0]?.balancePaise ?? 0;
@@ -84,7 +108,7 @@ export async function debitWallet(params: {
       .where(eq(wallets.userId, params.userId))
       .returning();
     const balance = row.balancePaise;
-    if (deducted === 0) return { balancePaise: balance, deductedPaise: 0, transactionId: null };
+    if (deducted === 0) return { balancePaise: balance, deductedPaise: 0, transactionId: null, deduped: false };
     const [txRow] = await tx
       .insert(walletTransactions)
       .values({
@@ -93,10 +117,11 @@ export async function debitWallet(params: {
         amountPaise: -deducted,
         balanceAfterPaise: balance,
         reference: params.reference,
+        idempotencyKey: params.idempotencyKey,
         metadata: { ...(params.metadata ?? {}), requested: amount, shortfall: amount - deducted },
       })
       .returning();
-    return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id };
+    return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id, deduped: false };
   });
 }
 

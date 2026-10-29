@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { getDb, closeDb, modelProviders, providerCredentials, providers } from "@uno/database";
+import { getDb, closeDb, modelProviders, providerCredentials, providers } from "@pro/database";
 
 const db = await getDb();
 const stale = await db.select().from(providers).where(eq(providers.slug, "uno-gateway"));

@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
-import { decryptSecret, env } from "@uno/shared";
-import { getDb, closeDb, providerCredentials, providers } from "@uno/database";
+import { decryptSecret, env } from "@pro/shared";
+import { getDb, closeDb, providerCredentials, providers } from "@pro/database";
 
 const db = await getDb();
 console.log("env.proRouterGatewayApiKey set:", !!env.proRouterGatewayApiKey, "len:", env.proRouterGatewayApiKey.length);

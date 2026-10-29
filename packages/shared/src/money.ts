@@ -39,6 +39,26 @@ export function formatMoney(
   return `${symbol}${formatted}`;
 }
 
+/** Format integer minor units compactly with Cr/L/K (INR) or B/M/K (USD). */
+export function formatCompactMoney(
+  minor: number,
+  currency: Currency = "INR",
+): string {
+  const symbol = currency === "INR" ? "₹" : "$";
+  const major = toMajor(minor, currency);
+  const abs = Math.abs(major);
+  if (currency === "INR") {
+    if (abs >= 10_000_000) return `${symbol}${(major / 10_000_000).toFixed(2)}Cr`;
+    if (abs >= 100_000) return `${symbol}${(major / 100_000).toFixed(2)}L`;
+    if (abs >= 1_000) return `${symbol}${(major / 1_000).toFixed(1)}K`;
+  } else {
+    if (abs >= 1_000_000_000) return `${symbol}${(major / 1_000_000_000).toFixed(2)}B`;
+    if (abs >= 1_000_000) return `${symbol}${(major / 1_000_000).toFixed(2)}M`;
+    if (abs >= 1_000) return `${symbol}${(major / 1_000).toFixed(1)}K`;
+  }
+  return formatMoney(minor, currency);
+}
+
 /**
  * Compute the cost of a token usage against per-1M-token prices.
  * prices are integer minor units per 1,000,000 tokens.
@@ -76,6 +96,16 @@ export function usdMinorToInrMinor(
   // rate is major-units (e.g. 97 = ₹97 per $1). Both sides are minor units,
   // so the multiplier is the same.
   return Math.ceil(usdMinor * usdToInrRate);
+}
+
+/**
+ * Convert a retail USD-cents price (e.g. per 1M tokens) to INR paise.
+ * `usdToInrRate` is major units (97 = ₹97 per $1); both sides are minor
+ * units, so the multiplier is identical. Rounds up to avoid under-charging.
+ */
+export function usdCentsToPaise(usdCents: number, usdToInrRate: number): number {
+  if (usdCents <= 0) return 0;
+  return Math.ceil(usdCents * usdToInrRate);
 }
 
 /** Parse a user-entered decimal string ("499.50") into integer minor units. */

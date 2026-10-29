@@ -44,6 +44,7 @@ export const requests = pgTable(
     costPaise: bigint("cost_paise", { mode: "number" }).notNull().default(0),
     streaming: boolean("streaming").notNull().default(false),
     isFree: boolean("is_free").notNull().default(false),
+    usageSource: text("usage_source").notNull().default("upstream"),
     errorCode: text("error_code"),
     errorMessage: text("error_message"),
     ip: text("ip"),

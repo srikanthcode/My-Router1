@@ -1,4 +1,4 @@
-import { getDb, closeDb, models, providers, modelProviders, providerCredentials } from "@uno/database";
+import { getDb, closeDb, models, providers, modelProviders, providerCredentials } from "@pro/database";
 
 const db = await getDb();
 const provs = await db.select().from(providers);

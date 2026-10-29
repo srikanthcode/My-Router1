@@ -12,7 +12,7 @@ for /f "tokens=5" %%p in ('netstat -aon ^| findstr ":3100" ^| findstr "LISTENING
 
 if not exist "apps\web\.next" (
   echo Production build missing — building now ^(one time^)...
-  call npm run build -w @uno/web >> preview-build.log 2>&1
+  call npm run build -w @pro/web >> preview-build.log 2>&1
 )
 
 cd apps\web

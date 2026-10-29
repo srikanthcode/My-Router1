@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
-import { apiKeys, freeUsage, getDb, models, notifications, providers, requestAttempts, requests } from "@uno/database";
-import { ApiError, formatMoney } from "@uno/shared";
+import { apiKeys, freeUsage, getDb, models, notifications, providers, requestAttempts, requests } from "@pro/database";
+import { ApiError, formatMoney } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
 import { peekFreeQuota } from "../lib/freequota.js";
 import { getBalance } from "../lib/wallet.js";
 import { queueSnapshot } from "../lib/queue.js";
-import { plans, subscriptions, astraEntitlements, incidents, providerHealth } from "@uno/database";
+import { plans, subscriptions, astraEntitlements, incidents, providerHealth } from "@pro/database";
 import { and as and2, eq as eq2, gte as gte2 } from "drizzle-orm";
 
 export async function dashboardRoutes(app: FastifyInstance) {

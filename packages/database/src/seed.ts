@@ -12,13 +12,22 @@ import {
   modelProviders,
   models,
   plans,
+  pricingTiers,
   providerCredentials,
   providers,
   systemSettings,
   users,
   wallets,
 } from "./index.js";
-import { encryptSecret, hashPassword, env } from "@uno/shared";
+import { encryptSecret, hashPassword, env } from "@pro/shared";
+import {
+  PRICING_TIER_SEEDS,
+  PRO_ALIASES,
+  PRO_ALIAS_CONTEXT_WINDOW,
+  PRO_ALIAS_MAX_OUTPUT_TOKENS,
+  PRO_ALIAS_PROVIDER_SLUG,
+  PRO_ALIAS_UPSTREAM_MODEL_ID,
+} from "./catalog-aliases.js";
 import type { Database } from "./index.js";
 
 console.log("[prorouter] Seeding database…");
@@ -51,6 +60,7 @@ const settings: Array<{ key: string; value: unknown; description: string }> = [
   { key: "MAX_RETRIES", value: 2, description: "Default provider retry attempts" },
   { key: "PLATFORM_NAME", value: "ProRouter", description: "Platform display name" },
   { key: "PUBLIC_API_BASE_URL", value: env.publicApiBaseUrl, description: "Public API base URL shown in docs" },
+  { key: "BILL_ESTIMATED_USAGE", value: false, description: "Bill requests whose token counts were estimated locally instead of reported upstream" },
 ];
 for (const s of settings) await upsert(systemSettings, s, systemSettings.key);
 
@@ -95,12 +105,20 @@ const packageSeeds = [
 ];
 for (const p of packageSeeds) await upsert(creditPackages, { ...p, currency: "INR", active: true }, creditPackages.slug);
 
+// ── Pricing tiers (§75) — retail USD prices, converted at request time ──
+for (const tier of PRICING_TIER_SEEDS) {
+  await db
+    .insert(pricingTiers)
+    .values({ ...tier, active: true })
+    .onConflictDoNothing({ target: pricingTiers.slug });
+}
+
 // ── Providers (§10, §42) — admin adds credentials later ────────────────
 const providerSeeds = [
   {
     slug: "prorouter-gateway",
     name: "ProRouter Gateway",
-    endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://gpt-code-p2mf.onrender.com/v1",
+    endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1",
     adapterType: "openai",
     priority: 5,
     region: "global",
@@ -117,6 +135,13 @@ const providerSeeds = [
 ];
 for (const p of providerSeeds) {
   await upsert(providers, { ...p, status: "unknown" }, providers.slug);
+}
+
+if (true) {
+  await db
+    .update(providers)
+    .set({ endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1", status: "active" })
+    .where(eq(providers.slug, "prorouter-gateway"));
 }
 
 // Providers that need no stored credential and are verified reachable are
@@ -168,20 +193,33 @@ type SeedModel = {
 };
 
 const catalog: SeedModel[] = [
-  // ── Gateway-served models (§75) ─────────────────────────────────────
-  // Public slugs are the clean model names; the upstream gateway id (which
-  // carries a "-free" suffix) stays in model_providers and is never shown.
-  // Each model routes to the primary gateway first, with FreeModels as fallback.
-  { slug: "beam", name: "Beam", description: "Fast general-purpose model for everyday chat and drafting.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 20, popularity: 9050, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "beam-free", priority: 10 }, { provider: "freemodels", providerModelId: "beam-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "mimo-v2.6-flash", name: "MiMo V2.6 Flash", description: "Xiaomi MiMo Flash — quick responses with solid reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 21, popularity: 8900, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "mimo-v2.6-flash-free", priority: 10 }, { provider: "freemodels", providerModelId: "mimo-v2.6-flash-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", description: "NVIDIA Nemotron 3.5 Super — high-capacity vision-language reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 128000, maxOutputTokens: 64000, input: 0, output: 0, rank: 22, popularity: 8800, reasoning: true, vision: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "nemotron-3.5-super-vl-free", priority: 10 }, { provider: "freemodels", providerModelId: "nemotron-3.5-super-vl-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", description: "NVIDIA Nemotron 3.5 Lightning — low-latency assistant for high-volume work.", provider: "prorouter-gateway", isFree: true, contextWindow: 128000, maxOutputTokens: 64000, input: 0, output: 0, rank: 23, popularity: 8700, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "nemotron-3.5-lightning-free", priority: 10 }, { provider: "freemodels", providerModelId: "nemotron-3.5-lightning-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "longcat-2.5-preview", name: "LongCat 2.5 Preview", description: "Meituan LongCat 2.5 — long-context preview with strong multilingual reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 24, popularity: 8600, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "longcat-2.5-preview-free", priority: 10 }, { provider: "freemodels", providerModelId: "longcat-2.5-preview-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", description: "DeepSeek V4.1 Flash — efficient reasoning and coding at low latency.", provider: "prorouter-gateway", isFree: true, contextWindow: 1000000, maxOutputTokens: 128000, input: 0, output: 0, rank: 25, popularity: 8500, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-v4.1-flash-free", priority: 10 }, { provider: "freemodels", providerModelId: "deepseek-v4.1-flash-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "glm-5.3-flash", name: "GLM 5.3 Flash", description: "Zhipu GLM 5.3 Flash — fast multilingual reasoning with tool use.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 128000, input: 0, output: 0, rank: 26, popularity: 8400, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "glm-5.3-flash-free", priority: 10 }, { provider: "freemodels", providerModelId: "glm-5.3-flash-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  { slug: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash", description: "MiniMax M3.1 Flash — fast multimodal model with reliable tool calling.", provider: "prorouter-gateway", isFree: true, contextWindow: 1000000, maxOutputTokens: 131072, input: 0, output: 0, rank: 27, popularity: 8300, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "minimax-m3.1-flash-free", priority: 10 }, { provider: "freemodels", providerModelId: "minimax-m3.1-flash-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
-  // Served by the gateway only — it is not listed on FreeModels.
-  { slug: "jev-1.13", name: "Jev 1.13", description: "Jev 1.13 — general-purpose assistant with balanced speed and quality.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 28, popularity: 8200, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "jev-1.13-free", priority: 10 }, { provider: "freemodels", providerModelId: "jev-1.13-free", priority: 100 }], freeLimits: { perMinute: 1, perHour: 30, perDay: 300 } },
+  { slug: "deepseek-v4.1-flash-1017", name: "DeepSeek-V4.1-Flash-1017", description: "DeepSeek V4.1 Flash — state-of-the-art fast reasoning, coding, and multilingual intelligence.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128000, input: 0, output: 0, rank: 1, popularity: 9900, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", description: "DeepSeek V4.1 Flash — high-speed reasoning and code synthesis.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128000, input: 0, output: 0, rank: 2, popularity: 9880, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "qwen3.8-27b", name: "Qwen3.8-27B", description: "Alibaba Qwen3.8 27B — high-performance open-weight model with strong multilingual and reasoning abilities.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 64000, input: 0, output: 0, rank: 3, popularity: 9850, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "glm-5.3", name: "GLM-5.3", description: "Zhipu GLM-5.3 — flagship bilingual reasoning, analytical thinking, and tool execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 128000, input: 0, output: 0, rank: 4, popularity: 9800, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "kimi-k3", name: "Kimi K3", description: "Moonshot Kimi K3 — ultra long-context frontier model with high-speed reasoning and deep comprehension.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 5, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "mimo-v2.6-pro", name: "MiMo-V2.6-Pro", description: "Xiaomi MiMo V2.6 Pro — flagship multimodal reasoning model for advanced synthesis and coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 6, popularity: 9750, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash", description: "MiniMax M3.1 Flash — fast multimodal model with reliable tool calling and low latency.", provider: "prorouter-gateway", isFree: true, contextWindow: 1000000, maxOutputTokens: 131072, input: 0, output: 0, rank: 7, popularity: 9700, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "qwen3-coder-next", name: "Qwen3-Coder-Next", description: "Alibaba Qwen3 Coder Next — specialized coding model for repository synthesis and multi-file debugging.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 64000, input: 0, output: 0, rank: 8, popularity: 9780, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "deepseek-v4-pro-0813", name: "DeepSeek-V4-Pro-0813", description: "DeepSeek V4 Pro — high-throughput frontier reasoning and deep architectural coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128000, input: 0, output: 0, rank: 9, popularity: 9720, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "kimi-k2.7-code", name: "Kimi K2.7 Code", description: "Moonshot Kimi K2.7 Code — specialized code intelligence and agentic workflow automation.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 10, popularity: 9680, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "devstral-24b", name: "Devstral 24B", description: "Mistral Devstral 24B — developer-tuned open weights optimized for software engineering workflows.", provider: "prorouter-gateway", isFree: true, contextWindow: 128000, maxOutputTokens: 64000, input: 0, output: 0, rank: 11, popularity: 9650, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "claude-sonnet", name: "Claude Sonnet", description: "Anthropic Claude Sonnet — balanced intelligence, high coding precision, and nuanced creative writing.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 12, popularity: 9950, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "claude-opus", name: "Claude Opus", description: "Anthropic Claude Opus — deep analysis, nuanced reasoning, and complex task decomposition.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 13, popularity: 9930, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "gemini-pro", name: "Gemini Pro", description: "Google Gemini Pro — powerful multimodal model with vast context window and world knowledge.", provider: "prorouter-gateway", isFree: true, contextWindow: 1000000, maxOutputTokens: 64000, input: 0, output: 0, rank: 14, popularity: 9910, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "grok", name: "Grok", description: "xAI Grok — direct, truthful AI with real-time insight and witty demeanor.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 64000, input: 0, output: 0, rank: 15, popularity: 9890, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "mistral-large", name: "Mistral Large", description: "Mistral Large — flagship model for complex multilingual reasoning and precise instruction following.", provider: "prorouter-gateway", isFree: true, contextWindow: 128000, maxOutputTokens: 64000, input: 0, output: 0, rank: 16, popularity: 9810, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "glm-5.3-flash", name: "GLM-5.3-Flash", description: "Zhipu GLM 5.3 Flash — fast multilingual reasoning with high-speed tool execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 128000, input: 0, output: 0, rank: 17, popularity: 9790, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol", description: "OpenAI GPT-6.1 Sol — frontier cloud model optimized for high-speed reasoning and synthesis.", provider: "prorouter-gateway", isFree: true, contextWindow: 256000, maxOutputTokens: 64000, input: 0, output: 0, rank: 18, popularity: 9970, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "gpt-6.1-terra", name: "GPT-6.1 Terra", description: "OpenAI GPT-6.1 Terra — flagship multimodal intelligence with deep scientific knowledge.", provider: "prorouter-gateway", isFree: true, contextWindow: 256000, maxOutputTokens: 64000, input: 0, output: 0, rank: 19, popularity: 9960, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "claude-opus-5", name: "Claude Opus 5", description: "Anthropic Claude Opus 5 — next-generation frontier intelligence for research and coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 250000, maxOutputTokens: 64000, input: 0, output: 0, rank: 20, popularity: 9990, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "mimo-v2.6-flash", name: "MiMo-V2.6-Flash", description: "Xiaomi MiMo Flash — quick responses with solid reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 21, popularity: 9760, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "gpt-6-luna", name: "GPT-6 Luna", description: "OpenAI GPT-6 Luna — low-latency next-gen assistant for rapid task execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 256000, maxOutputTokens: 64000, input: 0, output: 0, rank: 22, popularity: 9940, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "beam", name: "Beam", description: "Fast general-purpose model for everyday chat and drafting.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 23, popularity: 9050, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", description: "NVIDIA Nemotron 3.5 Super — high-capacity vision-language reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 128000, maxOutputTokens: 64000, input: 0, output: 0, rank: 24, popularity: 8800, reasoning: true, vision: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", description: "NVIDIA Nemotron 3.5 Lightning — low-latency assistant for high-volume work.", provider: "prorouter-gateway", isFree: true, contextWindow: 128000, maxOutputTokens: 64000, input: 0, output: 0, rank: 25, popularity: 8700, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "longcat-2.5-preview", name: "LongCat 2.5 Preview", description: "Meituan LongCat 2.5 — long-context preview with strong multilingual reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 200000, maxOutputTokens: 64000, input: 0, output: 0, rank: 26, popularity: 8600, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
+  { slug: "jev-1.13", name: "Jev 1.13", description: "Jev 1.13 — general-purpose assistant with balanced speed and quality.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 27, popularity: 8200, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 } },
 ];
 
 for (const m of catalog) {
@@ -226,8 +264,64 @@ for (const m of catalog) {
     await db.insert(modelProviders).values({
       modelId: existing.id, providerId: linkProvider.id,
       providerModelId: link.providerModelId, priority: link.priority ?? 100, status: "active",
-    }).onConflictDoNothing();
+    }).onConflictDoUpdate({
+      target: [modelProviders.modelId, modelProviders.providerId],
+      set: { providerModelId: link.providerModelId, priority: link.priority ?? 100, status: "active" },
+    });
   }
+}
+
+// ── Pro alias series (§75) — 300 public aliases on the shared gateway ───
+const aliasProvider = providerBySlug.get(PRO_ALIAS_PROVIDER_SLUG);
+if (!aliasProvider) {
+  console.warn(`[prorouter] Provider '${PRO_ALIAS_PROVIDER_SLUG}' missing — skipping Pro aliases.`);
+} else {
+  for (const alias of PRO_ALIASES) {
+    const [inserted] = await db
+      .insert(models)
+      .values({
+        slug: alias.slug,
+        name: alias.name,
+        description: alias.description,
+        providerId: aliasProvider.id,
+        type: "chat",
+        status: "active",
+        isFree: false,
+        pricingTier: alias.pricingTier,
+        contextWindow: PRO_ALIAS_CONTEXT_WINDOW,
+        maxOutputTokens: PRO_ALIAS_MAX_OUTPUT_TOKENS,
+        rank: alias.rank,
+        popularity: alias.popularity,
+        rating: 85,
+      })
+      .onConflictDoNothing({ target: models.slug })
+      .returning();
+
+    const existing = inserted ?? (await db.select().from(models).where(eq(models.slug, alias.slug)))[0];
+    if (!existing) continue;
+
+    await db.insert(modelCapabilities).values({
+      modelId: existing.id,
+      modalities: ["text", "image"],
+      streaming: true,
+      toolCalls: true,
+      structuredOutputs: true,
+      reasoning: true,
+      vision: true,
+      imageGeneration: false,
+      audio: false,
+      jsonMode: true,
+    }).onConflictDoNothing({ target: modelCapabilities.modelId });
+
+    await db.insert(modelProviders).values({
+      modelId: existing.id,
+      providerId: aliasProvider.id,
+      providerModelId: alias.upstreamModelId || PRO_ALIAS_UPSTREAM_MODEL_ID,
+      priority: 10,
+      status: "active",
+    }).onConflictDoNothing({ target: [modelProviders.modelId, modelProviders.providerId] });
+  }
+  console.log(`[prorouter] Pro alias series ready: ${PRO_ALIASES.length} models.`);
 }
 
 // ── Astra campaign (§25) — configured from env/admin ───────────────────

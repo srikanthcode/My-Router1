@@ -1,12 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
-import { astraCampaigns, astraEntitlements, auditLogs, creditPackages, featureFlags, giftCodeRedemptions, giftCodes, getDb, modelCapabilities, modelLimits, modelPricing, modelProviders, models, notifications, paymentWebhooks, payments, plans, providerCredentials, providers, providerHealth, requests, systemSettings, users, wallets, walletTransactions, requestAttempts } from "@uno/database";
-import { ApiError, encryptSecret, formatMoney, randomCode } from "@uno/shared";
+import { astraCampaigns, astraEntitlements, auditLogs, creditPackages, featureFlags, giftCodeRedemptions, giftCodes, getDb, modelCapabilities, modelLimits, modelPricing, modelProviders, models, notifications, paymentWebhooks, payments, plans, pricingTiers, providerCredentials, providers, providerHealth, requests, systemSettings, users, wallets, walletTransactions, requestAttempts } from "@pro/database";
+import { ApiError, encryptSecret, formatMoney, randomCode } from "@pro/shared";
 import { requireRole } from "../lib/auth.js";
 import { creditWallet } from "../lib/wallet.js";
 import { getAdapter } from "../lib/pipeline.js";
-import { loadSettings } from "../lib/settings.js";
+import { getNumber, loadSettings } from "../lib/settings.js";
 
 /** Run a live health check against a provider and persist the result (§43). */
 export async function runHealthCheck(providerId: string) {
@@ -33,7 +33,7 @@ const providerSchema = z.object({
   name: z.string().min(1).max(64),
   slug: z.string().min(1).max(64).regex(/^[a-z0-9-]+$/),
   endpointUrl: z.string().url(),
-  adapterType: z.enum(["openai", "anthropic", "openrouter", "groq", "mistral", "ollama", "custom_openai"]).default("openai"),
+  adapterType: z.enum(["openai", "anthropic", "openrouter", "groq", "mistral", "ollama", "custom_openai", "freemodels"]).default("openai"),
   region: z.string().max(32).default("global"),
   priority: z.number().int().min(1).max(1000).default(100),
   timeoutMs: z.number().int().min(1000).max(300000).default(60000),
@@ -52,14 +52,43 @@ const modelSchema = z.object({
   contextWindow: z.number().int().min(1000).max(10_000_000).default(128000),
   maxOutputTokens: z.number().int().min(100).max(2_000_000).default(8192),
   rank: z.number().int().min(0).max(10000).default(100),
-  inputPerMillion: z.number().int().min(0),
-  outputPerMillion: z.number().int().min(0),
+  pricingTier: z.string().min(1).max(48).regex(/^[a-z0-9-]+$/).nullable().optional(),
+  inputPerMillion: z.number().int().min(0).default(0),
+  outputPerMillion: z.number().int().min(0).default(0),
   reasoning: z.boolean().default(false),
   toolCalls: z.boolean().default(false),
   vision: z.boolean().default(false),
   structuredOutputs: z.boolean().default(false),
   links: z.array(z.object({ providerSlug: z.string(), providerModelId: z.string().min(1), priority: z.number().int().default(100) })).default([]),
 });
+
+const pricingTierSchema = z.object({
+  slug: z.string().min(1).max(48).regex(/^[a-z0-9-]+$/),
+  name: z.string().min(1).max(64),
+  description: z.string().max(500).default(""),
+  inputUsdCentsPerMillion: z.number().int().min(0).max(10_000_000),
+  outputUsdCentsPerMillion: z.number().int().min(0).max(10_000_000),
+  cachedInputUsdCentsPerMillion: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(10_000).default(100),
+  active: z.boolean().default(true),
+});
+
+const pricingTierPatchSchema = z.object({
+  slug: z.string().min(1).max(48).regex(/^[a-z0-9-]+$/).optional(),
+  name: z.string().min(1).max(64).optional(),
+  description: z.string().max(500).optional(),
+  inputUsdCentsPerMillion: z.number().int().min(0).max(10_000_000).optional(),
+  outputUsdCentsPerMillion: z.number().int().min(0).max(10_000_000).optional(),
+  cachedInputUsdCentsPerMillion: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  sortOrder: z.number().int().min(0).max(10_000).optional(),
+  active: z.boolean().optional(),
+});
+
+async function assertPricingTier(slug: string) {
+  const db = await getDb();
+  const rows = await db.select({ id: pricingTiers.id }).from(pricingTiers).where(eq(pricingTiers.slug, slug));
+  if (!rows[0]) throw new ApiError("invalid_request", `Unknown pricing tier '${slug}'.`);
+}
 
 export async function adminRoutes(app: FastifyInstance) {
   // ── Overview / analytics (§56) ─────────────────────────────────────
@@ -154,8 +183,13 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/admin/models", async (request) => {
     await requireRole(request, ["admin", "support"]);
     const db = await getDb();
-    const rows = await db.select({ m: models, p: modelPricing }).from(models).leftJoin(modelPricing, eq(modelPricing.modelId, models.id)).orderBy(models.rank);
-    return { items: rows.map((r) => ({ ...r.m, pricing: r.p })) };
+    const rows = await db
+      .select({ m: models, p: modelPricing, t: pricingTiers })
+      .from(models)
+      .leftJoin(modelPricing, eq(modelPricing.modelId, models.id))
+      .leftJoin(pricingTiers, eq(pricingTiers.slug, models.pricingTier))
+      .orderBy(models.rank);
+    return { items: rows.map((r) => ({ ...r.m, pricing: r.p, tier: r.t })) };
   });
 
   app.post("/admin/models", async (request, reply) => {
@@ -164,8 +198,12 @@ export async function adminRoutes(app: FastifyInstance) {
     const db = await getDb();
     const exists = await db.select({ id: models.id }).from(models).where(eq(models.slug, body.slug));
     if (exists[0]) throw new ApiError("invalid_request", "A model with this slug already exists.");
-    const [model] = await db.insert(models).values({ slug: body.slug, name: body.name, description: body.description, status: body.status, isFree: body.isFree, contextWindow: body.contextWindow, maxOutputTokens: body.maxOutputTokens, rank: body.rank, type: "chat" }).returning();
-    await db.insert(modelPricing).values({ modelId: model!.id, inputPerMillion: body.inputPerMillion, outputPerMillion: body.outputPerMillion, currency: "INR" });
+    const pricingTier = body.pricingTier ?? null;
+    if (pricingTier) await assertPricingTier(pricingTier);
+    const [model] = await db.insert(models).values({ slug: body.slug, name: body.name, description: body.description, status: body.status, isFree: body.isFree, contextWindow: body.contextWindow, maxOutputTokens: body.maxOutputTokens, rank: body.rank, pricingTier, type: "chat" }).returning();
+    if (!pricingTier) {
+      await db.insert(modelPricing).values({ modelId: model!.id, inputPerMillion: body.inputPerMillion, outputPerMillion: body.outputPerMillion, currency: "INR" });
+    }
     await db.insert(modelCapabilities).values({ modelId: model!.id, reasoning: body.reasoning, toolCalls: body.toolCalls, vision: body.vision, structuredOutputs: body.structuredOutputs, streaming: true, jsonMode: true });
     if (body.isFree) await db.insert(modelLimits).values({ modelId: model!.id, perMinute: 1, perHour: 30, perDay: 200, concurrency: 1, queuePriority: 5 });
     for (const link of body.links) {
@@ -183,17 +221,50 @@ export async function adminRoutes(app: FastifyInstance) {
     const body = z.object({
       name: z.string().optional(), description: z.string().optional(), status: z.enum(["active", "coming_soon", "disabled", "archived"]).optional(),
       isFree: z.boolean().optional(), rank: z.number().int().optional(), contextWindow: z.number().int().optional(),
+      pricingTier: z.string().min(1).max(48).regex(/^[a-z0-9-]+$/).nullable().optional(),
       inputPerMillion: z.number().int().min(0).optional(), outputPerMillion: z.number().int().min(0).optional(),
     }).parse(request.body);
     const db = await getDb();
-    const { inputPerMillion, outputPerMillion, ...modelFields } = body;
-    const updated = await db.update(models).set({ ...modelFields, updatedAt: new Date() }).where(eq(models.id, id)).returning();
+    const { inputPerMillion, outputPerMillion, pricingTier, ...modelFields } = body;
+    if (pricingTier) await assertPricingTier(pricingTier);
+    const updated = await db.update(models).set({ ...modelFields, ...(pricingTier !== undefined && { pricingTier }), updatedAt: new Date() }).where(eq(models.id, id)).returning();
     if (!updated[0]) throw new ApiError("not_found", "Model not found.");
     if (inputPerMillion !== undefined || outputPerMillion !== undefined) {
       await db.update(modelPricing).set({ ...(inputPerMillion !== undefined && { inputPerMillion }), ...(outputPerMillion !== undefined && { outputPerMillion }) }).where(eq(modelPricing.modelId, id));
     }
     await db.insert(auditLogs).values({ actorUserId: admin.id, action: "model.update", targetType: "model", targetId: id, metadata: body as Record<string, unknown> });
     return { model: updated[0] };
+  });
+
+  // ── Pricing tiers ──────────────────────────────────────────────────
+  app.get("/admin/pricing-tiers", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    const db = await getDb();
+    const items = await db.select().from(pricingTiers).orderBy(pricingTiers.sortOrder);
+    const usdToInrRate = await getNumber("USD_TO_INR_RATE", 97);
+    return { items, usdToInrRate };
+  });
+
+  app.post("/admin/pricing-tiers", async (request, reply) => {
+    const admin = await requireRole(request, ["admin"]);
+    const body = pricingTierSchema.parse(request.body);
+    const db = await getDb();
+    const exists = await db.select({ id: pricingTiers.id }).from(pricingTiers).where(eq(pricingTiers.slug, body.slug));
+    if (exists[0]) throw new ApiError("invalid_request", "A pricing tier with this slug already exists.");
+    const [tier] = await db.insert(pricingTiers).values(body).returning();
+    await db.insert(auditLogs).values({ actorUserId: admin.id, action: "pricing_tier.create", targetType: "pricing_tier", targetId: tier!.id, metadata: { slug: body.slug } });
+    return reply.status(201).send({ tier });
+  });
+
+  app.patch("/admin/pricing-tiers/:id", async (request) => {
+    const admin = await requireRole(request, ["admin"]);
+    const { id } = request.params as { id: string };
+    const body = pricingTierPatchSchema.parse(request.body);
+    const db = await getDb();
+    const rows = await db.update(pricingTiers).set({ ...body, updatedAt: new Date() }).where(eq(pricingTiers.id, id)).returning();
+    if (!rows[0]) throw new ApiError("not_found", "Pricing tier not found.");
+    await db.insert(auditLogs).values({ actorUserId: admin.id, action: "pricing_tier.update", targetType: "pricing_tier", targetId: id, metadata: body as Record<string, unknown> });
+    return { tier: rows[0] };
   });
 
   // ── Users (§3) ─────────────────────────────────────────────────────

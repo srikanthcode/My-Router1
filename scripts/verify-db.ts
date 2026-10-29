@@ -1,4 +1,4 @@
-import { getDb, closeDb, models, providers, plans, creditPackages, astraCampaigns, modelProviders, modelPricing } from "@uno/database";
+import { getDb, closeDb, models, providers, plans, creditPackages, astraCampaigns, modelProviders, modelPricing } from "@pro/database";
 
 const db = await getDb();
 const m = await db.select().from(models);

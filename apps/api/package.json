@@ -1,5 +1,5 @@
 {
-  "name": "@uno/api",
+  "name": "@pro/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,10 @@
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
-    "@uno/database": "*",
-    "@uno/providers": "*",
-    "@uno/routing": "*",
-    "@uno/shared": "*",
+    "@pro/database": "*",
+    "@pro/providers": "*",
+    "@pro/routing": "*",
+    "@pro/shared": "*",
     "fastify": "^5.12.5",
     "tsx": "^4.20.0",
     "zod": "^4.6.5"

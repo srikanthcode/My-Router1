@@ -77,6 +77,29 @@ export const providerHealth = pgTable(
   (t) => [index("provider_health_idx").on(t.providerId, t.checkedAt)],
 );
 
+/**
+ * Retail pricing tiers (§75). Stored in USD cents per 1M tokens so the
+ * catalogue is independent of the INR conversion rate; API responses convert
+ * to paise using the admin-configurable USD_TO_INR_RATE setting.
+ */
+export const pricingTiers = pgTable(
+  "pricing_tiers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    slug: text("slug").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    inputUsdCentsPerMillion: integer("input_usd_cents_per_million").notNull(),
+    outputUsdCentsPerMillion: integer("output_usd_cents_per_million").notNull(),
+    cachedInputUsdCentsPerMillion: integer("cached_input_usd_cents_per_million"),
+    sortOrder: integer("sort_order").notNull().default(100),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("pricing_tiers_slug_uq").on(t.slug)],
+);
+
 export const models = pgTable(
   "models",
   {
@@ -88,6 +111,7 @@ export const models = pgTable(
     type: modelTypeEnum("type").notNull().default("chat"),
     status: modelStatusEnum("status").notNull().default("active"),
     isFree: boolean("is_free").notNull().default(false),
+    pricingTier: text("pricing_tier"),
     contextWindow: integer("context_window").notNull().default(128000),
     maxOutputTokens: integer("max_output_tokens").notNull().default(8192),
     rank: integer("rank").notNull().default(100),
@@ -102,6 +126,7 @@ export const models = pgTable(
     uniqueIndex("models_slug_uq").on(t.slug),
     index("models_status_idx").on(t.status),
     index("models_rank_idx").on(t.rank),
+    index("models_pricing_tier_idx").on(t.pricingTier),
   ],
 );
 

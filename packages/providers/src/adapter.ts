@@ -1,4 +1,4 @@
-import type { ChatCompletionRequest, ChatMessage, ToolCall, Usage } from "@uno/shared";
+import type { ChatCompletionRequest, ChatMessage, ToolCall, Usage, UsageSource } from "@pro/shared";
 
 /** Normalized upstream failure — adapters never leak provider-specific errors. */
 export class ProviderError extends Error {
@@ -31,6 +31,7 @@ export interface ChatResult {
   toolCalls: ToolCall[];
   finishReason: string;
   usage: Usage;
+  usageSource: UsageSource;
   upstreamRequestId?: string;
 }
 
@@ -39,7 +40,7 @@ export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "tool_call_delta"; index: number; id?: string; name?: string; arguments?: string }
   | { type: "reasoning_delta"; text: string }
-  | { type: "usage"; usage: Usage }
+  | { type: "usage"; usage: Usage; usageSource: UsageSource }
   | { type: "done"; finishReason: string };
 
 export interface AdapterChatParams {

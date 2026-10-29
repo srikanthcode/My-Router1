@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import cookie from "@fastify/cookie";
 import { ZodError } from "zod";
-import { ApiError, env, isApiError } from "@uno/shared";
+import { ApiError, env, isApiError } from "@pro/shared";
 import { authRoutes } from "./routes/auth.js";
 import { keyRoutes } from "./routes/keys.js";
 import { catalogRoutes } from "./routes/catalog.js";
@@ -12,7 +12,27 @@ import { promotionRoutes } from "./routes/promotions.js";
 import { adminRoutes } from "./routes/admin.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { planRoutes } from "./routes/plans.js";
+import { usageRoutes } from "./routes/usage.js";
 import { randomBytes } from "node:crypto";
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  const allowed = [
+    env.webBaseUrl,
+    env.apiBaseUrl,
+    env.publicApiBaseUrl,
+    "https://prorouter.in",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3100",
+    "http://127.0.0.1:3100",
+    "http://localhost:4000",
+    "http://127.0.0.1:4000",
+    "http://localhost:4100",
+    "http://127.0.0.1:4100",
+  ];
+  return allowed.includes(origin);
+}
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -25,13 +45,11 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(cors, {
     origin: (origin, cb) => {
-      if (!origin) return cb(null, true);
-      const allowed = [env.webBaseUrl, env.apiBaseUrl, "http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4000"];
-      if (allowed.includes(origin)) return cb(null, true);
+      if (isAllowedOrigin(origin)) return cb(null, true);
       cb(null, false);
     },
     credentials: true,
-    exposedHeaders: ["x-request-id", "retry-after"],
+    exposedHeaders: ["x-request-id", "retry-after", "x-prorouter-usage-source"],
   });
 
   await app.register(cookie, { secret: env.authSecret });
@@ -60,8 +78,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     if (request.headers.authorization) return; // API-key requests are not cookie CSRF targets
     const origin = request.headers.origin;
     if (!origin) return; // non-browser clients
-    const allowed = [env.webBaseUrl, env.apiBaseUrl, "http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4000"];
-    if (!allowed.includes(origin)) {
+    if (!isAllowedOrigin(origin)) {
       throw new ApiError("forbidden", "Cross-origin request blocked.");
     }
   });
@@ -103,6 +120,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(catalogRoutes);
   await app.register(planRoutes);
   await app.register(chatRoutes);
+  await app.register(usageRoutes);
   await app.register(walletRoutes);
   await app.register(promotionRoutes);
   await app.register(adminRoutes);

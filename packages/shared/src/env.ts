@@ -43,7 +43,7 @@ function str(name: string, fallback = ""): string {
 export const env = {
   nodeEnv: str("NODE_ENV", "development"),
   isProd: str("NODE_ENV", "development") === "production",
-  apiPort: num("API_PORT", 4000),
+  apiPort: num("PORT", num("API_PORT", 4000)),
   webPort: num("WEB_PORT", 3000),
   apiBaseUrl: str("API_BASE_URL", "http://localhost:4000"),
   webBaseUrl: str("WEB_BASE_URL", "http://localhost:3000"),
@@ -78,6 +78,7 @@ export const env = {
   groqApiKey: str("GROQ_API_KEY"),
   mistralApiKey: str("MISTRAL_API_KEY"),
   /** Server-only credential for the ProRouter gateway upstream. Never exposed to the web app. */
+  proRouterGatewayBaseUrl: str("PROVIDER_PROROUTER_GATEWAY_BASE_URL", "https://api.tokenjuice.ai/v1"),
   proRouterGatewayApiKey: str("PROVIDER_PROROUTER_GATEWAY_API_KEY"),
 
   emailApiKey: str("EMAIL_API_KEY"),

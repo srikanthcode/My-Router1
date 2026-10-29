@@ -1,6 +1,7 @@
 import { desc, eq, gte, or, sql } from "drizzle-orm";
-import { getDb, modelCapabilities, modelLimits, modelPricing, modelProviders, models, providers, providerHealth } from "@uno/database";
-import type { ModelCapabilities, ModelDto, ModelPricing, ProviderDto } from "@uno/shared";
+import { getDb, modelCapabilities, modelLimits, modelPricing, modelProviders, models, providers, providerHealth } from "@pro/database";
+import type { ModelCapabilities, ModelDto, ModelPricing, ProviderDto } from "@pro/shared";
+import { getUsdToInrRate, loadActivePricingTiers, resolveEffectivePricing, type EffectivePricing } from "./pricing.js";
 
 export interface ModelFilters {
   q?: string;
@@ -66,8 +67,12 @@ export async function listModels(filters: ModelFilters = {}): Promise<{ items: M
     linksByModel.set(l.modelId, arr);
   }
   const providerById = new Map(providerRows.map((p) => [p.id, p]));
+  const [tiers, usdToInrRate] = await Promise.all([loadActivePricingTiers(), getUsdToInrRate()]);
 
-  let items = rows.map((r) => toModelDto(r.model, r.pricing, r.caps, r.providerSlug ?? "", r.providerName ?? "", linksByModel.get(r.model.id) ?? [], providerById));
+  let items = rows.map((r) => {
+    const effective = resolveEffectivePricing(r.model, r.pricing, r.model.pricingTier ? tiers.get(r.model.pricingTier) ?? null : null, usdToInrRate);
+    return toModelDto(r.model, r.pricing, r.caps, r.providerSlug ?? "", r.providerName ?? "", linksByModel.get(r.model.id) ?? [], providerById, effective);
+  });
 
   if (filters.category) {
     items = items.filter((m) => matchCategory(m, filters.category!));
@@ -116,7 +121,9 @@ export async function getModelDetail(slug: string): Promise<{
   const linkRows = links.map((l) => l.link);
   const providerById = new Map(links.map((l) => [l.provider.id, l.provider]));
 
-  const dto = toModelDto(row.model, row.pricing, row.caps, row.providerSlug ?? "", row.providerName ?? "", linkRows, providerById);
+  const [tiers, usdToInrRate] = await Promise.all([loadActivePricingTiers(), getUsdToInrRate()]);
+  const effective = resolveEffectivePricing(row.model, row.pricing, row.model.pricingTier ? tiers.get(row.model.pricingTier) ?? null : null, usdToInrRate);
+  const dto = toModelDto(row.model, row.pricing, row.caps, row.providerSlug ?? "", row.providerName ?? "", linkRows, providerById, effective);
   const limitsRow = (await db.select().from(modelLimits).where(eq(modelLimits.modelId, row.model.id)))[0] ?? null;
 
   return {
@@ -141,13 +148,14 @@ export function toModelDto(
   providerName: string,
   links: Array<typeof modelProviders.$inferSelect>,
   providerById: Map<string, typeof providers.$inferSelect>,
+  effective?: EffectivePricing,
 ): ModelDto {
   const servingLinks = links.filter((l) => l.status !== "disabled");
   const available = servingLinks.some((l) => {
     const p = providerById.get(l.providerId);
     return p && p.status === "active" && l.status === "active";
   });
-  const price: ModelPricing = {
+  const price: ModelPricing = effective?.pricing ?? {
     inputPerMillion: pricing?.inputPerMillion ?? 0,
     outputPerMillion: pricing?.outputPerMillion ?? 0,
     cachedInputPerMillion: pricing?.cachedInputPerMillion ?? undefined,
@@ -175,6 +183,8 @@ export function toModelDto(
     status: m.status,
     isFree: m.isFree,
     pricing: price,
+    pricingTier: effective?.tierSlug ?? null,
+    pricingTierName: effective?.tierName ?? null,
     capabilities,
     contextWindow: m.contextWindow,
     maxOutputTokens: m.maxOutputTokens,

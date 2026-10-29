@@ -5,6 +5,8 @@ export type ModelStatus = "active" | "coming_soon" | "disabled" | "archived";
 export type ModelType = "chat" | "completion" | "embedding" | "image" | "audio";
 export type ProviderStatus = "active" | "degraded" | "disabled" | "unknown";
 export type Modality = "text" | "image" | "audio" | "video";
+/** Whether token counts came from the upstream provider, our estimator, or nothing. */
+export type UsageSource = "upstream" | "estimated" | "none";
 
 export interface ModelPricing {
   /** Integer minor units (paise) per 1M input tokens. */
@@ -39,6 +41,10 @@ export interface ModelDto {
   status: ModelStatus;
   isFree: boolean;
   pricing: ModelPricing;
+  /** Retail pricing tier slug, when the model uses tier-based pricing. */
+  pricingTier?: string | null;
+  /** Human-readable pricing tier name. */
+  pricingTierName?: string | null;
   capabilities: ModelCapabilities;
   contextWindow: number;
   maxOutputTokens: number;

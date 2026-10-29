@@ -1,5 +1,5 @@
 {
-  "name": "@uno/providers",
+  "name": "@pro/providers",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@uno/shared": "*"
+    "@pro/shared": "*"
   }
 }

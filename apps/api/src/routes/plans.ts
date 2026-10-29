@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
-import { getDb, plans } from "@uno/database";
-import { formatMoney } from "@uno/shared";
+import { getDb, plans } from "@pro/database";
+import { formatMoney } from "@pro/shared";
 
 /**
  * Public plan catalogue (§23) — powers the marketing pricing page and the

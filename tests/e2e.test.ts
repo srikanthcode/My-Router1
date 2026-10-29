@@ -22,7 +22,7 @@ process.env.STUB_PORT = String(STUB_PORT);
 type App = Awaited<ReturnType<typeof import("../apps/api/src/app.js")["buildApp"]>>;
 let app: App;
 let stub: ChildProcess;
-let db: Awaited<ReturnType<typeof import("@uno/database")["getDb"]>>;
+let db: Awaited<ReturnType<typeof import("@pro/database")["getDb"]>>;
 let adminSession: Session;
 
 interface Session {
@@ -64,15 +64,15 @@ beforeAll(async () => {
   await new Promise((r) => setTimeout(r, 800));
   log("stub provider started");
 
-  const dbModule = await import("@uno/database");
-  log("@uno/database imported");
+  const dbModule = await import("@pro/database");
+  log("@pro/database imported");
   await dbModule.runMigrations();
   log("migrations done");
   db = await dbModule.getDb();
   log("db connected");
 
   // Minimal seed data used by the flows under test
-  const { plans, astraCampaigns } = await import("@uno/database");
+  const { plans, astraCampaigns } = await import("@pro/database");
   await db.insert(plans).values({ slug: "free", name: "Free", tagline: "", pricePaise: 0, freeRpm: 1, freeRph: 30, freeRpd: 300, concurrency: 1, queuePriority: 5, features: [], active: true, sortOrder: 10 });
   await db.insert(astraCampaigns).values({ slug: "astra-test", name: "Astra 7-Day Access", originalPricePaise: 400000, discountPercent: 80, promoPricePaise: 80000, trialDays: 7, allowMultiRedeem: true, active: true });
   log("seed rows inserted");
@@ -86,7 +86,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await app?.close();
   stub?.kill();
-  const { closeDb } = await import("@uno/database");
+  const { closeDb } = await import("@pro/database");
   await closeDb();
 });
 
@@ -114,7 +114,7 @@ describe("admin provisions a provider and models", () => {
   it("allows role elevation and provider creation", async () => {
     admin = await register("admin@uno.test");
     adminSession = admin;
-    const { users, getDb } = await import("@uno/database");
+    const { users, getDb } = await import("@pro/database");
     const d = await getDb();
     await d.update(users).set({ role: "admin" }).where(eq(users.id, admin.userId));
 
@@ -164,6 +164,130 @@ describe("admin provisions a provider and models", () => {
     expect(free).toBeTruthy();
     expect(free!.available).toBe(true);
     expect(free!.isFree).toBe(true);
+  });
+});
+
+describe("pricing tiers and tier-priced aliases (§24, §48)", () => {
+  const tierSlug = "e2e-tier";
+  const aliasSlug = "pr-e2e-tier-pro";
+  let tierId: string;
+  let user: Session;
+  let apiKey: string;
+
+  it("creates a pricing tier through the admin API", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/pricing-tiers",
+      headers: auth(adminSession.cookie),
+      payload: {
+        slug: tierSlug,
+        name: "E2E Tier",
+        description: "Tier used by the pricing e2e test",
+        inputUsdCentsPerMillion: 20,
+        outputUsdCentsPerMillion: 80,
+        cachedInputUsdCentsPerMillion: 10,
+        sortOrder: 15,
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    tierId = (res.json() as { tier: { id: string } }).tier.id;
+
+    const list = await app.inject({ method: "GET", url: "/admin/pricing-tiers", headers: auth(adminSession.cookie) });
+    expect(list.statusCode).toBe(200);
+    const body = list.json() as { items: Array<{ slug: string }>; usdToInrRate: number };
+    expect(body.items.some((t) => t.slug === tierSlug)).toBe(true);
+    expect(body.usdToInrRate).toBeGreaterThan(0);
+  });
+
+  it("rejects unknown tiers and accepts a valid tier on model creation", async () => {
+    const bad = await app.inject({
+      method: "POST",
+      url: "/admin/models",
+      headers: auth(adminSession.cookie),
+      payload: { slug: "pr-e2e-bad-tier-pro", name: "Bad Tier", pricingTier: "nope", links: [] },
+    });
+    expect(bad.statusCode).toBe(400);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/models",
+      headers: auth(adminSession.cookie),
+      payload: {
+        slug: aliasSlug,
+        name: "E2E Tier Pro",
+        description: "Tier-priced alias",
+        isFree: false,
+        pricingTier: tierSlug,
+        links: [{ providerSlug: "local-stub", providerModelId: "local/uno-test-mini" }],
+      },
+    });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it("exposes tier pricing in the public catalog", async () => {
+    const res = await app.inject({ method: "GET", url: "/models" });
+    const body = res.json() as {
+      items: Array<{ slug: string; pricingTier: string | null; pricingTierName: string | null; pricing: { inputPerMillion: number; outputPerMillion: number } }>;
+    };
+    const model = body.items.find((m) => m.slug === aliasSlug);
+    expect(model?.pricingTier).toBe(tierSlug);
+    expect(model?.pricingTierName).toBe("E2E Tier");
+    expect(model?.pricing.inputPerMillion).toBe(20 * 97);
+    expect(model?.pricing.outputPerMillion).toBe(80 * 97);
+  });
+
+  it("bills at the effective tier price and records the usage source", async () => {
+    user = await register("tiered@uno.test");
+    const keyRes = await app.inject({ method: "POST", url: "/keys", headers: auth(user.cookie), payload: { name: "tier" } });
+    apiKey = (keyRes.json() as { secret: string }).secret;
+
+    const topup = await app.inject({ method: "POST", url: `/admin/users/${user.userId}/wallet`, headers: auth(adminSession.cookie), payload: { amountPaise: 50000, reason: "tier test" } });
+    expect(topup.statusCode).toBe(200);
+
+    const before = (await app.inject({ method: "GET", url: "/v1/account/balance", headers: { authorization: `Bearer ${apiKey}` } })).json() as { balance_paise: number };
+    expect(before.balance_paise).toBe(50000);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: { authorization: `Bearer ${apiKey}`, "x-request-id": "e2e-tier-request" },
+      payload: { model: aliasSlug, messages: [{ role: "user", content: "Tier pricing please" }] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-prorouter-usage-source"]).toBe("upstream");
+    const body = res.json() as { usage: { prompt_tokens: number; completion_tokens: number }; uno: { cost_paise: number; usage_source: string } };
+    const expected = Math.ceil((body.usage.prompt_tokens * 20 * 97) / 1_000_000) + Math.ceil((body.usage.completion_tokens * 80 * 97) / 1_000_000);
+    expect(body.uno.cost_paise).toBe(expected);
+    expect(body.uno.cost_paise).toBeGreaterThan(0);
+    expect(body.uno.usage_source).toBe("upstream");
+
+    const after = (await app.inject({ method: "GET", url: "/v1/account/balance", headers: { authorization: `Bearer ${apiKey}` } })).json() as { balance_paise: number };
+    expect(after.balance_paise).toBe(before.balance_paise - expected);
+
+    const usage = await app.inject({ method: "GET", url: `/v1/usage?model=${aliasSlug}`, headers: { authorization: `Bearer ${apiKey}` } });
+    expect(usage.statusCode).toBe(200);
+    const usageBody = usage.json() as { total: number; data: Array<{ id: string; cost_paise: number; usage_source: string; model: string }> };
+    expect(usageBody.total).toBe(1);
+    expect(usageBody.data[0].id).toBe("e2e-tier-request");
+    expect(usageBody.data[0].model).toBe(aliasSlug);
+    expect(usageBody.data[0].cost_paise).toBe(expected);
+    expect(usageBody.data[0].usage_source).toBe("upstream");
+
+    const detail = await app.inject({ method: "GET", url: "/v1/usage/e2e-tier-request", headers: { authorization: `Bearer ${apiKey}` } });
+    expect(detail.statusCode).toBe(200);
+    expect((detail.json() as { cost_paise: number }).cost_paise).toBe(expected);
+  });
+
+  it("updates the tier and deactivates it without breaking explicit pricing", async () => {
+    const patch = await app.inject({
+      method: "PATCH",
+      url: `/admin/pricing-tiers/${tierId}`,
+      headers: auth(adminSession.cookie),
+      payload: { outputUsdCentsPerMillion: 90, active: false },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect((patch.json() as { tier: { outputUsdCentsPerMillion: number; active: boolean } }).tier.outputUsdCentsPerMillion).toBe(90);
+    expect((patch.json() as { tier: { active: boolean } }).tier.active).toBe(false);
   });
 });
 
@@ -257,7 +381,7 @@ describe("chat completions pipeline (§13, §14, §54)", () => {
     expect(res.statusCode).toBe(402);
     expect((res.json() as { error: { code: string } }).error.code).toBe("insufficient_balance");
     // No request record should exist for a blocked paid call
-    const { requests } = await import("@uno/database");
+    const { requests } = await import("@pro/database");
     const rows = await db.select().from(requests).where(eq(requests.userId, broke.userId));
     expect(rows).toHaveLength(0);
   });
@@ -358,7 +482,7 @@ describe("Astra referral redemption rules (§26, §49, §50)", () => {
 describe("payment webhook idempotency (§55)", () => {
   it("credits the wallet exactly once for repeated webhook deliveries", async () => {
     const payee = await register("payee@uno.test");
-    const { payments } = await import("@uno/database");
+    const { payments } = await import("@pro/database");
     await db.insert(payments).values({
       userId: payee.userId,
       gateway: "razorpay",

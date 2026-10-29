@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
-import { astraCampaigns, astraEntitlements, auditLogs, getDb, giftCodeRedemptions, giftCodes, notifications, users } from "@uno/database";
-import { ApiError, formatMoney, randomCode } from "@uno/shared";
+import { astraCampaigns, astraEntitlements, auditLogs, getDb, giftCodeRedemptions, giftCodes, notifications, users } from "@pro/database";
+import { ApiError, formatMoney, randomCode } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
 import { getFlag } from "../lib/settings.js";
 

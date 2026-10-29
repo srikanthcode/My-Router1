@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as schema from "./schema/index.js";
-import { env } from "@uno/shared";
+import { env } from "@pro/shared";
 
 export * from "./schema/index.js";
 

@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { freeUsage, getDb } from "@uno/database";
+import { freeUsage, getDb } from "@pro/database";
 
 export interface QuotaLimits {
   perMinute: number;

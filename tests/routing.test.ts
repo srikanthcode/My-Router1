@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeRequest, selectAutoModel, type RouteCandidate } from "@uno/routing";
+import { routeRequest, selectAutoModel, type RouteCandidate } from "@pro/routing";
 
 function cand(over: Partial<RouteCandidate>): RouteCandidate {
   return {

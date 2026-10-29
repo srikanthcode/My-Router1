@@ -1,4 +1,4 @@
-import { closeDb, getDb, models } from "@uno/database";
+import { closeDb, getDb, models } from "@pro/database";
 
 const db = await getDb();
 

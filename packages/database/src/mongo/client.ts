@@ -10,7 +10,7 @@
  */
 
 import { MongoClient, type Db, type ClientSession } from "mongodb";
-import { env } from "@uno/shared";
+import { env } from "@pro/shared";
 
 let client: MongoClient | null = null;
 let db: Db | null = null;

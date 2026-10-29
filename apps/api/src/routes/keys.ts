@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { desc, eq } from "drizzle-orm";
-import { apiKeys, auditLogs, getDb } from "@uno/database";
-import { ApiError, generateApiKey } from "@uno/shared";
+import { apiKeys, auditLogs, getDb } from "@pro/database";
+import { ApiError, generateApiKey } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
 import { getNumber } from "../lib/settings.js";
 

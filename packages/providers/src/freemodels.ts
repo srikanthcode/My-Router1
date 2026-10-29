@@ -1,4 +1,4 @@
-import type { ToolCall, Usage } from "@uno/shared";
+import type { ToolCall, Usage, UsageSource } from "@pro/shared";
 import {
   ProviderError,
   estimateUsage,
@@ -54,11 +54,13 @@ export class FreemodelsAdapter extends OpenAICompatibleAdapter {
       const content = choice?.message?.content ?? json.content ?? "";
       const toolCalls = choice?.message?.tool_calls ?? [];
       const usage = json.usage ?? estimateUsage({ messages: params.messages, completion: content });
+      const usageSource: UsageSource = json.usage ? "upstream" : "estimated";
       return {
         content,
         toolCalls,
         finishReason: choice?.finish_reason ?? "stop",
         usage,
+        usageSource,
         upstreamRequestId: json.id,
       };
     } catch (err) {

@@ -1,5 +1,5 @@
 import { desc, eq } from "drizzle-orm";
-import { getDb, closeDb, requestAttempts, requests, providers, models } from "@uno/database";
+import { getDb, closeDb, requestAttempts, requests, providers, models } from "@pro/database";
 
 const db = await getDb();
 const rows = await db

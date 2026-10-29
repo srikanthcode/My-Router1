@@ -1,2 +1,0 @@
-data: {"id":"chatcmpl-local-muzjxd2f","object":"chat.completion.chunk","created":1791464865,"model":"local/uno-test-8b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
-

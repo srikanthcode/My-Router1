@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMoney, parseAmountToMinor, requestCost, toMinor, tokenCost, usdMinorToInrMinor } from "@uno/shared";
+import { formatCompactMoney, formatMoney, parseAmountToMinor, requestCost, toMinor, tokenCost, usdCentsToPaise, usdMinorToInrMinor } from "@pro/shared";
 
 describe("money (integer paise, §48)", () => {
   it("converts major units to minor units without float drift", () => {
@@ -30,6 +30,17 @@ describe("money (integer paise, §48)", () => {
     expect(formatMoney(49900)).toBe("₹499.00");
   });
 
+  it("formats compact INR with proper rupee thresholds", () => {
+    // ₹10 = 1,000 paise -> formatted as regular INR
+    expect(formatCompactMoney(1000)).toBe("₹10.00");
+    // ₹1,000 = 100,000 paise -> ₹1.0K
+    expect(formatCompactMoney(100000)).toBe("₹1.0K");
+    // ₹1.5L = 15,000,000 paise -> ₹1.50L
+    expect(formatCompactMoney(15000000)).toBe("₹1.50L");
+    // ₹2.5Cr = 2,500,000,000 paise -> ₹2.50Cr
+    expect(formatCompactMoney(2500000000)).toBe("₹2.50Cr");
+  });
+
   it("parses user input to paise", () => {
     expect(parseAmountToMinor("499")).toBe(49900);
     expect(parseAmountToMinor("1,050.50")).toBe(105050);
@@ -39,5 +50,11 @@ describe("money (integer paise, §48)", () => {
   it("converts USD to INR using configurable rate", () => {
     expect(usdMinorToInrMinor(100, 97)).toBe(9700); // $1.00 → ₹97.00
     expect(usdMinorToInrMinor(100, 90)).toBe(9000);
+  });
+
+  it("converts retail USD cents per 1M tokens to paise", () => {
+    expect(usdCentsToPaise(20, 97)).toBe(1940); // $0.20 → ₹19.40
+    expect(usdCentsToPaise(300, 90)).toBe(27000); // $3.00 → ₹270.00
+    expect(usdCentsToPaise(0, 97)).toBe(0);
   });
 });

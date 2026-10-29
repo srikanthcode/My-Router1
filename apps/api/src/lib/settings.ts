@@ -1,4 +1,4 @@
-import { getDb, systemSettings, featureFlags } from "@uno/database";
+import { getDb, systemSettings, featureFlags } from "@pro/database";
 
 type SettingsMap = Map<string, unknown>;
 type FlagsMap = Map<string, boolean>;

@@ -14,7 +14,7 @@ import { sql } from "drizzle-orm";
 import { getDb, closeDb } from "../index.js";
 import { getMongoDb, closeMongo, pingMongo } from "../mongo/client.js";
 import { ensureIndexes } from "../mongo/indexes.js";
-import { env } from "@uno/shared";
+import { env } from "@pro/shared";
 
 type Row = Record<string, unknown>;
 

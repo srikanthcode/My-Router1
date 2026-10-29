@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ApiError } from "@uno/shared";
+import { ApiError } from "@pro/shared";
 import { getProviderDetail, getModelDetail, listModels, listProviders } from "../lib/catalog.js";
 
 const listQuery = z.object({

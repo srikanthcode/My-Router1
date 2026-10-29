@@ -1,4 +1,4 @@
-import type { ChatMessage, ToolCall, Usage } from "@uno/shared";
+import type { ChatMessage, ToolCall, Usage, UsageSource } from "@pro/shared";
 import {
   ProviderError,
   type AdapterChatParams,
@@ -125,7 +125,8 @@ export class AnthropicAdapter implements ProviderAdapter {
         total_tokens: (json.usage?.input_tokens ?? 0) + (json.usage?.output_tokens ?? 0),
       };
       usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
-      return { content: text, toolCalls, finishReason: json.stop_reason ?? "stop", usage };
+      const usageSource: UsageSource = json.usage ? "upstream" : "estimated";
+      return { content: text, toolCalls, finishReason: json.stop_reason ?? "stop", usage, usageSource };
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       const aborted = err instanceof Error && err.name === "AbortError";
@@ -160,6 +161,7 @@ export class AnthropicAdapter implements ProviderAdapter {
       let inputTokens = 0;
       let outputTokens = 0;
       let finishReason = "stop";
+      let sawUsage = false;
       for await (const data of parseSse(res.body)) {
         let event: Record<string, unknown>;
         try {
@@ -171,6 +173,7 @@ export class AnthropicAdapter implements ProviderAdapter {
         if (type === "message_start") {
           const msg = event.message as { usage?: { input_tokens?: number } } | undefined;
           inputTokens = msg?.usage?.input_tokens ?? 0;
+          if (typeof msg?.usage?.input_tokens === "number") sawUsage = true;
         } else if (type === "content_block_delta") {
           const delta = event.delta as { type?: string; text?: string; thinking?: string } | undefined;
           if (delta?.type === "text_delta" && delta.text) yield { type: "delta", text: delta.text };
@@ -179,7 +182,10 @@ export class AnthropicAdapter implements ProviderAdapter {
           const delta = event.delta as { stop_reason?: string } | undefined;
           if (delta?.stop_reason) finishReason = delta.stop_reason === "tool_use" ? "tool_calls" : "stop";
           const usage = event.usage as { output_tokens?: number } | undefined;
-          if (usage?.output_tokens) outputTokens = usage.output_tokens;
+          if (typeof usage?.output_tokens === "number") {
+            outputTokens = usage.output_tokens;
+            sawUsage = true;
+          }
         } else if (type === "error") {
           const err = event.error as { message?: string } | undefined;
           throw new ProviderError(this.providerSlug, "stream_error", err?.message ?? "Anthropic stream error", 502, true);
@@ -187,7 +193,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           break;
         }
       }
-      yield { type: "usage", usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens } };
+      if (sawUsage) yield { type: "usage", usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens }, usageSource: "upstream" };
       yield { type: "done", finishReason };
     } catch (err) {
       if (err instanceof ProviderError) throw err;
