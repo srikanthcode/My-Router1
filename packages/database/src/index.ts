@@ -29,7 +29,16 @@ export type { DataStore } from "./store/types.js";
 
 const moduleDir = fileURLToPath(new URL("./", import.meta.url));
 /** Monorepo root: packages/database/src → ../../../ */
-export const repoRoot = path.resolve(moduleDir, "../../..");
+export const repoRoot = (() => {
+  if (fs.existsSync(path.join(process.cwd(), "packages", "database"))) {
+    return process.cwd();
+  }
+  const candidate = path.resolve(moduleDir, "../../..");
+  if (fs.existsSync(path.join(candidate, "packages", "database"))) {
+    return candidate;
+  }
+  return process.cwd();
+})();
 
 export type Database = PgliteDatabase<typeof schema> | NodePgDatabase<typeof schema>;
 
@@ -78,3 +87,4 @@ export async function runMigrations(): Promise<void> {
 }
 
 export { schema };
+export { seedDatabase } from "./seed.js";

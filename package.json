@@ -10,9 +10,9 @@
   ],
   "scripts": {
     "dev": "tsx apps/api/src/server.ts",
-    "build": "echo 'Build OK'",
-    "start": "node --max-old-space-size=384 ./node_modules/tsx/dist/cli.mjs apps/api/src/server.ts",
-    "start:api": "node --max-old-space-size=384 ./node_modules/tsx/dist/cli.mjs apps/api/src/server.ts",
+    "build": "node scripts/build.mjs",
+    "start": "node --max-old-space-size=384 scripts/start-prod.mjs",
+    "start:api": "node --max-old-space-size=384 scripts/start-prod.mjs",
     "db:generate": "npx --yes drizzle-kit@0.31.11 generate",
     "db:migrate": "tsx packages/database/src/migrate.ts",
     "db:seed": "tsx packages/database/src/seed.ts",
@@ -20,9 +20,18 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.1.0",
     "@types/node": "^22.13.0",
+    "drizzle-orm": "^0.45.4",
+    "esbuild": "^0.28.2",
+    "fastify": "^5.12.5",
+    "mongodb": "^6.21.0",
+    "pg": "^8.16.3",
     "tsx": "^4.20.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

@@ -31,6 +31,7 @@ function isAllowedOrigin(origin: string | undefined): boolean {
     "http://localhost:4100",
     "http://127.0.0.1:4100",
   ];
+  if (origin.includes("vercel.app") || origin.includes("onrender.com")) return true;
   return allowed.includes(origin);
 }
 
@@ -113,6 +114,8 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // ── Health / status ───────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", time: new Date().toISOString() }));
+  app.get("/", async () => ({ status: "ok", service: "prorouter-backend", time: new Date().toISOString() }));
+  app.get("/api/health", async () => ({ status: "ok", time: new Date().toISOString() }));
 
   // ── API routes ────────────────────────────────────────────────────
   await app.register(authRoutes);

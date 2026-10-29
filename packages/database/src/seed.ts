@@ -30,6 +30,7 @@ import {
 } from "./catalog-aliases.js";
 import type { Database } from "./index.js";
 
+export async function seedDatabase(closeAtEnd = false): Promise<void> {
 console.log("[prorouter] Seeding database…");
 await runMigrations();
 const db = (await getDb()) as Database;
@@ -355,4 +356,9 @@ if (env.adminEmail && env.adminPassword) {
 }
 
 console.log("[prorouter] Seed complete.");
-await closeDb();
+  if (closeAtEnd) await closeDb();
+}
+
+if (process.argv[1] && process.argv[1].endsWith("seed.ts")) {
+  await seedDatabase(true);
+}
