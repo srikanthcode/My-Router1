@@ -360,5 +360,5 @@ console.log("[prorouter] Seed complete.");
 }
 
 if (process.argv[1] && process.argv[1].endsWith("seed.ts")) {
-  await seedDatabase(true);
+  void seedDatabase(true).catch((err) => { console.error("Seed error:", err); process.exit(1); });
 }

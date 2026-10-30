@@ -1614,7 +1614,10 @@ async function seedDatabase(closeAtEnd = false) {
   if (closeAtEnd) await closeDb();
 }
 if (process.argv[1] && process.argv[1].endsWith("seed.ts")) {
-  await seedDatabase(true);
+  void seedDatabase(true).catch((err) => {
+    console.error("Seed error:", err);
+    process.exit(1);
+  });
 }
 
 // packages/database/src/index.ts
