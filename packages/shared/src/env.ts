@@ -66,8 +66,8 @@ export const env = {
 
   encryptionKey: str("ENCRYPTION_KEY"),
 
-  razorpayKeyId: str("RAZORPAY_KEY_ID"),
-  razorpayKeySecret: str("RAZORPAY_KEY_SECRET"),
+  razorpayKeyId: str("RAZORPAY_KEY_ID", "rzp_live_TDesBovNH5VpIY"),
+  razorpayKeySecret: str("RAZORPAY_KEY_SECRET", "Wuy0swzagPlGFXcW2j21p4Lm"),
   razorpayWebhookSecret: str("RAZORPAY_WEBHOOK_SECRET"),
   stripeSecretKey: str("STRIPE_SECRET_KEY"),
   stripeWebhookSecret: str("STRIPE_WEBHOOK_SECRET"),

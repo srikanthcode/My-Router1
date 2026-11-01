@@ -6,6 +6,18 @@ import { getDb, modelProviders, models, providerCredentials, providers, provider
 import { getUsdToInrRate, resolveEffectivePricing, type PricingTierRow } from "./pricing.js";
 
 export const MODEL_ALIASES: Record<string, string> = {
+  // Pro Router Official Tiered Models
+  "pr-zenith": "claude-opus-5",
+  "zenith": "claude-opus-5",
+  "pr-aura": "deepseek-v4.1-flash-1017",
+  "aura": "deepseek-v4.1-flash-1017",
+  "pr-nova": "deepseek-v4.1-flash",
+  "nova": "deepseek-v4.1-flash",
+  "pr-swift": "deepseek-v4.1-flash",
+  "swift": "deepseek-v4.1-flash",
+  "pr-echo": "deepseek-v4.1-flash",
+  "echo": "deepseek-v4.1-flash",
+
   // DeepSeek
   "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017",
   "deepseek-ai/deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017",
