@@ -217,6 +217,26 @@ export async function hydrateCandidates(modelId: string, forcedProvider?: string
     });
 }
 
+export const BACKEND_TOKENJUICE_KEYS: string[] = [
+  "tj_llvqgvMUMVg5SKOynVBtBqDJp2J566mapFE9KNPAVqE",
+  "tj_mbQStnVQZo7aV70jSdb5T3L1rSs4vmtKvVuPdYMsxCs",
+  "tj_XvoBmNCcszDFBbOtvS-D62oDXEEO7OEIqd9rzhfxZX8",
+  "tj_82Vn1a2E8vEx4GYI9-SFYpPzfdHRxueNdgo-tLwaLzU",
+  "tj_AuPOZPmvg2huDYZCB7DtY4wvWdPj8_LfWh0ktfaCaIQ",
+  "tj_eqMEPp8AaPurBNL2uH1woNwxMYpVNtZ1_ohcFmxMGGg",
+  "tj_NmZmLWnTyUM7UhdFCQ7ZFwros2U5lJWSWbyHpR03Q-8",
+  "tj_YFTNGYInY6JLHh51uQXE2wOgNfSZOdCTRKCQG0_5YYc",
+  "tj_2wYDoVGvY6TWI9u2zMZpbY80ijRR9hB9SYJVIppXCOg",
+  "tj_gM_Y7cHTk7dld2naygnUcBpFWnFo1d_cmWc0YUbXox4",
+  "tj_m0sow5S81J10HmZLkIC-lPXWmIl8ojnREQ9Mo_Xd3ts",
+];
+let backendKeyIndex = 0;
+export function getBackendTokenJuiceKey(): string {
+  const key = BACKEND_TOKENJUICE_KEYS[backendKeyIndex % BACKEND_TOKENJUICE_KEYS.length];
+  backendKeyIndex = (backendKeyIndex + 1) % BACKEND_TOKENJUICE_KEYS.length;
+  return key;
+}
+
 const ENV_KEY_MAP: Record<string, string | undefined> = {
   "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
   openai: env.openaiApiKey,
@@ -234,7 +254,13 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
   let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : undefined;
-  if (!apiKey) apiKey = ENV_KEY_MAP[candidate.providerSlug];
+  if (!apiKey) {
+    if (candidate.providerSlug === "prorouter-gateway") {
+      apiKey = getBackendTokenJuiceKey();
+    } else {
+      apiKey = ENV_KEY_MAP[candidate.providerSlug];
+    }
+  }
   return createAdapter(provider.adapterType, {
     providerSlug: candidate.providerSlug,
     endpointUrl: provider.endpointUrl,
