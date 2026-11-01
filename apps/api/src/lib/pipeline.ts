@@ -217,23 +217,22 @@ export async function hydrateCandidates(modelId: string, forcedProvider?: string
     });
 }
 
-export const BACKEND_TOKENJUICE_KEYS: string[] = [
-  "tj_llvqgvMUMVg5SKOynVBtBqDJp2J566mapFE9KNPAVqE",
-  "tj_mbQStnVQZo7aV70jSdb5T3L1rSs4vmtKvVuPdYMsxCs",
-  "tj_XvoBmNCcszDFBbOtvS-D62oDXEEO7OEIqd9rzhfxZX8",
-  "tj_82Vn1a2E8vEx4GYI9-SFYpPzfdHRxueNdgo-tLwaLzU",
-  "tj_AuPOZPmvg2huDYZCB7DtY4wvWdPj8_LfWh0ktfaCaIQ",
-  "tj_eqMEPp8AaPurBNL2uH1woNwxMYpVNtZ1_ohcFmxMGGg",
-  "tj_NmZmLWnTyUM7UhdFCQ7ZFwros2U5lJWSWbyHpR03Q-8",
-  "tj_YFTNGYInY6JLHh51uQXE2wOgNfSZOdCTRKCQG0_5YYc",
-  "tj_2wYDoVGvY6TWI9u2zMZpbY80ijRR9hB9SYJVIppXCOg",
-  "tj_gM_Y7cHTk7dld2naygnUcBpFWnFo1d_cmWc0YUbXox4",
-  "tj_m0sow5S81J10HmZLkIC-lPXWmIl8ojnREQ9Mo_Xd3ts",
-];
-let backendKeyIndex = 0;
-export function getBackendTokenJuiceKey(): string {
-  const key = BACKEND_TOKENJUICE_KEYS[backendKeyIndex % BACKEND_TOKENJUICE_KEYS.length];
-  backendKeyIndex = (backendKeyIndex + 1) % BACKEND_TOKENJUICE_KEYS.length;
+// ── ProRouter Gateway Key Pool (Loaded securely from process.env) ──
+function getBackendGatewayPool(): string[] {
+  const envVal = process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY || process.env.PROROUTER_GATEWAY_KEYS || "";
+  if (!envVal.trim()) return [];
+  return envVal
+    .split(/[\s,;\n]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+let backendPoolIndex = 0;
+export function getBackendGatewayKey(): string | undefined {
+  const pool = getBackendGatewayPool();
+  if (pool.length === 0) return process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY;
+  const key = pool[backendPoolIndex % pool.length];
+  backendPoolIndex = (backendPoolIndex + 1) % pool.length;
   return key;
 }
 
@@ -256,7 +255,7 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
   let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : undefined;
   if (!apiKey) {
     if (candidate.providerSlug === "prorouter-gateway") {
-      apiKey = getBackendTokenJuiceKey();
+      apiKey = getBackendGatewayKey();
     } else {
       apiKey = ENV_KEY_MAP[candidate.providerSlug];
     }
