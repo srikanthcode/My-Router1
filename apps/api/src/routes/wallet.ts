@@ -57,10 +57,31 @@ export async function walletRoutes(app: FastifyInstance) {
     const user = await requireUser(request);
     const rl = checkRateLimit(`user:${user.id}:checkout`, 10, 60);
     if (!rl.allowed) throw new ApiError("rate_limit_exceeded", "Too many checkout attempts.");
-    const body = z.object({ packageSlug: z.string(), idempotencyKey: z.string().min(8).max(128).optional() }).parse(request.body);
+    const body = z.object({
+      packageSlug: z.string(),
+      currency: z.enum(["INR", "USD"]).optional(),
+      idempotencyKey: z.string().min(8).max(128).optional(),
+    }).parse(request.body);
     const db = await getDb();
-    const pkg = (await db.select().from(creditPackages).where(eq(creditPackages.slug, body.packageSlug)))[0];
-    if (!pkg || !pkg.active) throw new ApiError("not_found", "Credit package not found.");
+    const dbPkg = (await db.select().from(creditPackages).where(eq(creditPackages.slug, body.packageSlug)))[0];
+
+    const STATIC_USD_PACKAGES: Record<string, { priceMinor: number; bonusPaise: number; name: string; currency: "USD" }> = {
+      "starter-usd-5": { priceMinor: 500, bonusPaise: 0, name: "Starter Pack", currency: "USD" },
+      "pro-usd-10": { priceMinor: 1000, bonusPaise: 150, name: "Pro Pack", currency: "USD" },
+      "scale-usd-25": { priceMinor: 2500, bonusPaise: 500, name: "Scale Pack", currency: "USD" },
+      "power-usd-50": { priceMinor: 5000, bonusPaise: 1500, name: "Power Pack", currency: "USD" },
+      "builder-usd": { priceMinor: 1200, bonusPaise: 100, name: "Builder Plan", currency: "USD" },
+      "pro-usd": { priceMinor: 2900, bonusPaise: 300, name: "Pro Plan", currency: "USD" },
+    };
+
+    const isUSD = body.currency === "USD" || body.packageSlug.includes("usd");
+    const fallbackPkg = STATIC_USD_PACKAGES[body.packageSlug];
+
+    if (!dbPkg && !fallbackPkg) throw new ApiError("not_found", "Credit package not found.");
+
+    const priceMinor = dbPkg ? dbPkg.pricePaise : fallbackPkg!.priceMinor;
+    const bonusPaise = dbPkg ? dbPkg.bonusPaise : fallbackPkg!.bonusPaise;
+    const selectedCurrency = isUSD ? "USD" : (dbPkg?.currency || "INR");
 
     if (body.idempotencyKey) {
       const existing = await db.select().from(payments).where(eq(payments.idempotencyKey, body.idempotencyKey));
@@ -77,13 +98,13 @@ export async function walletRoutes(app: FastifyInstance) {
     const invoice = `PRO-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 4).toUpperCase()}`;
     const paymentRows = await db.insert(payments).values({
       userId: user.id,
-      packageId: pkg.id,
+      packageId: dbPkg ? dbPkg.id : null,
       gateway: "razorpay",
-      amountPaise: pkg.pricePaise,
+      amountPaise: priceMinor,
       status: "created",
       idempotencyKey: body.idempotencyKey ?? null,
       invoiceNumber: invoice,
-      metadata: { bonusPaise: pkg.bonusPaise, packageSlug: pkg.slug },
+      metadata: { bonusPaise, packageSlug: body.packageSlug, currency: selectedCurrency },
     }).returning();
     const payment = paymentRows[0]!;
 
@@ -92,7 +113,7 @@ export async function walletRoutes(app: FastifyInstance) {
     const res = await fetch("https://api.razorpay.com/v1/orders", {
       method: "POST",
       headers: { authorization: `Basic ${auth}`, "content-type": "application/json" },
-      body: JSON.stringify({ amount: pkg.pricePaise, currency: "INR", receipt: invoice, notes: { uno_payment_id: payment.id } }),
+      body: JSON.stringify({ amount: priceMinor, currency: selectedCurrency, receipt: invoice, notes: { uno_payment_id: payment.id, currency: selectedCurrency } }),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -100,7 +121,7 @@ export async function walletRoutes(app: FastifyInstance) {
     }
     const order = (await res.json()) as { id: string };
     await db.update(payments).set({ gatewayOrderId: order.id, updatedAt: new Date() }).where(eq(payments.id, payment.id));
-    return reply.send({ paymentId: payment.id, invoice, amountPaise: pkg.pricePaise, currency: "INR", gateway: "razorpay", gatewayOrderId: order.id, keyId: env.razorpayKeyId });
+    return reply.send({ paymentId: payment.id, invoice, amountPaise: priceMinor, currency: selectedCurrency, gateway: "razorpay", gatewayOrderId: order.id, keyId: env.razorpayKeyId });
   });
 
   /**
@@ -141,8 +162,13 @@ export async function walletRoutes(app: FastifyInstance) {
       return reply.send({ success: true, status: "already_credited" });
     }
 
-    const bonus = Number((payment.metadata as { bonusPaise?: number })?.bonusPaise ?? 0);
-    const totalCredit = payment.amountPaise + bonus;
+    const paymentMeta = (payment.metadata as { bonusPaise?: number; currency?: string } | undefined);
+    const bonus = Number(paymentMeta?.bonusPaise ?? 0);
+    const isUSD = paymentMeta?.currency === "USD";
+    // 1 USD cent = 97 INR paise (based on live exchange rate 97 INR/USD)
+    const totalCredit = isUSD
+      ? Math.round((payment.amountPaise + bonus) * 97)
+      : payment.amountPaise + bonus;
 
     await creditWallet({
       userId: user.id,
