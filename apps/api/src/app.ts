@@ -13,6 +13,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { planRoutes } from "./routes/plans.js";
 import { usageRoutes } from "./routes/usage.js";
+import { eventRoutes } from "./routes/events.js";
 import { randomBytes } from "node:crypto";
 
 function isAllowedOrigin(origin: string | undefined): boolean {
@@ -128,6 +129,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(promotionRoutes);
   await app.register(adminRoutes);
   await app.register(dashboardRoutes);
+  await app.register(eventRoutes);
 
   return app;
 }

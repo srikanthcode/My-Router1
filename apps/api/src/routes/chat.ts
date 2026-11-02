@@ -9,7 +9,8 @@ import { getActiveAstra } from "../lib/auth.js";
 import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
 import { acquireSlot, probeQueue, releaseSlot, type QueueStatus } from "../lib/queue.js";
-import { assertAffordable, debitWallet } from "../lib/wallet.js";
+import { assertAffordable, debitWallet, reserveBalance, settleReservation, releaseReservation } from "../lib/wallet.js";
+import { eventHub } from "../lib/events.js";
 import { extractHints, executeChat, hydrateCandidates, loadModelContext, resolveAutoModel, resolveModelInput, streamChat } from "../lib/pipeline.js";
 import { getFlag, getNumber } from "../lib/settings.js";
 import { getUsdToInrRate, resolveEffectivePricing } from "../lib/pricing.js";
@@ -191,6 +192,7 @@ export async function chatRoutes(app: FastifyInstance) {
     let slotServiceStart = 0;
     let sseStarted = false;
 
+    let hasReservation = false;
     // Free model: quota + queue (§21, §22)
     if (isFree) {
       const modelLimitsRow = ctx.limits;
@@ -203,7 +205,7 @@ export async function chatRoutes(app: FastifyInstance) {
         throw new ApiError("free_quota_exceeded", `Free ${quota.window} quota reached (${quota.limit}). Upgrade your plan or try again later.`, { retryAfter: quota.retryAfterSec });
       }
     } else {
-      // Paid: affordability pre-check BEFORE any provider call (§54)
+      // Paid: affordability pre-check and atomic reservation (§54)
       const inputTokens = countMessageTokens(messages);
       const maxOut = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 4096, ctx.model.maxOutputTokens);
       const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
@@ -214,8 +216,15 @@ export async function chatRoutes(app: FastifyInstance) {
         outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
         platformFeePercent: feePercent,
       });
-      await assertAffordable(auth.user.id, estimated);
+      await reserveBalance({ userId: auth.user.id, requestId, amountPaise: estimated });
+      hasReservation = true;
     }
+
+    eventHub.publish(auth.user.id, "usage.request.started", {
+      requestId,
+      model: slug,
+      stream,
+    });
 
     // Routing (§11)
     const decision = routeRequest(candidates, {
@@ -272,8 +281,23 @@ export async function chatRoutes(app: FastifyInstance) {
           outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
           platformFeePercent: feePercent,
         });
-        const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug, provider: params.providerSlug } });
-        cost = debit.deductedPaise;
+        if (hasReservation) {
+          const settlement = await settleReservation({
+            userId: auth.user.id,
+            requestId,
+            actualAmountPaise: cost,
+            reference: requestId,
+            metadata: { model: slug, provider: params.providerSlug },
+          });
+          cost = settlement.deductedPaise;
+          hasReservation = false;
+        } else {
+          const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug, provider: params.providerSlug } });
+          cost = debit.deductedPaise;
+        }
+      } else if (hasReservation) {
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+        hasReservation = false;
       }
       await db.update(requests).set({
         status: params.status ?? (params.errorCode ? "error" : "success"),
@@ -293,6 +317,26 @@ export async function chatRoutes(app: FastifyInstance) {
       if (auth.apiKey) {
         await db.update(apiKeys).set({ requestCount: sql`${apiKeys.requestCount} + 1`, spendPaise: sql`${apiKeys.spendPaise} + ${cost}`, lastUsedAt: new Date() }).where(eq(apiKeys.id, auth.apiKey.id));
       }
+
+      if (params.errorCode) {
+        eventHub.publish(auth.user.id, "usage.request.failed", {
+          requestId,
+          model: slug,
+          error: params.errorMessage || params.errorCode,
+        });
+      } else {
+        eventHub.publish(auth.user.id, "usage.request.completed", {
+          requestId,
+          model: slug,
+          totalTokens: usage.total_tokens,
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens,
+          costPaise: cost,
+          latencyMs: Date.now() - startedAt,
+          ttftMs: params.ttftMs,
+        });
+      }
+
       return cost;
     };
 
@@ -449,6 +493,9 @@ export async function chatRoutes(app: FastifyInstance) {
       await finalize({ usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, providerId: decision.primary.providerId, providerSlug: decision.primary.providerSlug, ttftMs: null, errorCode: apiErr.code, errorMessage: apiErr.message, httpStatus: apiErr.status, status: "error" }).catch(() => undefined);
       throw apiErr;
     } finally {
+      if (hasReservation) {
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+      }
       if (acquired) releaseSlot(acquiredKey, slotServiceStart ? Date.now() - slotServiceStart : 0);
     }
   });

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
 import { creditPackages, getDb, payments, paymentWebhooks, walletTransactions } from "@pro/database";
 import { ApiError, env, formatMoney } from "@pro/shared";
@@ -8,6 +8,7 @@ import { requireUser } from "../lib/auth.js";
 import { creditWallet, getBalance } from "../lib/wallet.js";
 import { getFlag } from "../lib/settings.js";
 import { checkRateLimit } from "../lib/ratelimit.js";
+import { eventHub } from "../lib/events.js";
 
 export async function walletRoutes(app: FastifyInstance) {
   app.get("/wallet", async (request) => {
@@ -138,12 +139,17 @@ export async function walletRoutes(app: FastifyInstance) {
       razorpaySignature: z.string(),
     }).parse(request.body);
 
-    const secret = env.razorpayKeySecret || "Wuy0swzagPlGFXcW2j21p4Lm";
+    const secret = env.razorpayKeySecret;
+    if (!secret) {
+      throw new ApiError("provider_unavailable", "Payment verification is not configured.");
+    }
     const expected = createHmac("sha256", secret)
       .update(`${body.razorpayOrderId}|${body.razorpayPaymentId}`)
       .digest("hex");
 
-    if (expected !== body.razorpaySignature) {
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const receivedBuf = Buffer.from(body.razorpaySignature, "utf8");
+    if (expectedBuf.length !== receivedBuf.length || !timingSafeEqual(expectedBuf, receivedBuf)) {
       throw new ApiError("forbidden", "Payment verification failed: invalid signature.");
     }
 
@@ -186,6 +192,14 @@ export async function walletRoutes(app: FastifyInstance) {
       updatedAt: new Date(),
     }).where(eq(payments.id, payment.id));
 
+    eventHub.publish(user.id, "payment.completed", {
+      paymentId: payment.id,
+      invoice: payment.invoiceNumber,
+      amountPaise: totalCredit,
+      amountFormatted: formatMoney(totalCredit),
+      gateway: "razorpay",
+    });
+
     return reply.send({
       success: true,
       status: "captured",
@@ -197,43 +211,106 @@ export async function walletRoutes(app: FastifyInstance) {
   /**
    * Razorpay webhook: signature-verified, event-id idempotent, wallet credited
    * exactly once (§46, §55).
+   * Mounted on both /payments/razorpay/webhook and /wallet/webhook.
    */
-  app.post("/payments/razorpay/webhook", async (request, reply) => {
+  const webhookHandler = async (request: any, reply: any) => {
     const signature = request.headers["x-razorpay-signature"];
     if (typeof signature !== "string" || !env.razorpayWebhookSecret) {
       throw new ApiError("forbidden", "Webhook not configured or signature missing.");
     }
     const raw = (request as unknown as { rawBody?: string }).rawBody ?? JSON.stringify(request.body);
     const expected = createHmac("sha256", env.razorpayWebhookSecret).update(raw).digest("hex");
-    if (expected !== signature) throw new ApiError("forbidden", "Invalid webhook signature.");
 
-    const event = request.body as { event?: string; payload?: { payment?: { entity?: { id?: string; order_id?: string; status?: string } } } };
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const signatureBuf = Buffer.from(signature, "utf8");
+    if (expectedBuf.length !== signatureBuf.length || !timingSafeEqual(expectedBuf, signatureBuf)) {
+      throw new ApiError("forbidden", "Invalid webhook signature.");
+    }
+
+    const event = request.body as {
+      event?: string;
+      payload?: {
+        payment?: { entity?: { id?: string; order_id?: string; status?: string } };
+        order?: { entity?: { id?: string; status?: string } };
+      };
+    };
     const paymentEntity = event.payload?.payment?.entity;
-    const eventId = `${event.event}:${paymentEntity?.id ?? "unknown"}:${paymentEntity?.order_id ?? ""}`;
+    const orderId = paymentEntity?.order_id || event.payload?.order?.entity?.id;
+    const eventId = `${event.event}:${paymentEntity?.id ?? "unknown"}:${orderId ?? ""}`;
     const db = await getDb();
     const existingEvents = await db.select().from(paymentWebhooks).where(eq(paymentWebhooks.eventId, eventId));
     if (existingEvents.length > 0) return reply.send({ status: "duplicate_ignored" });
 
-    await db.insert(paymentWebhooks).values({ eventId, gateway: "razorpay", payload: (event as unknown as Record<string, unknown>), signatureValid: true });
+    await db.insert(paymentWebhooks).values({
+      eventId,
+      gateway: "razorpay",
+      payload: (event as unknown as Record<string, unknown>),
+      signatureValid: true,
+    });
 
-    if (event.event !== "payment.captured") return reply.send({ status: "ignored" });
-    const paymentRows = paymentEntity?.order_id ? await db.select().from(payments).where(eq(payments.gatewayOrderId, paymentEntity.order_id)) : [];
+    if (event.event !== "payment.captured" && event.event !== "order.paid") {
+      return reply.send({ status: "ignored" });
+    }
+    const paymentRows = orderId ? await db.select().from(payments).where(eq(payments.gatewayOrderId, orderId)) : [];
     const payment = paymentRows[0];
     if (!payment) throw new ApiError("not_found", "Payment not found for order.");
-    if (payment.creditedAt) return reply.send({ status: "already_credited" });
-    if (payment.status === "captured") return reply.send({ status: "already_credited" });
+    if (payment.creditedAt || payment.status === "captured") {
+      return reply.send({ status: "already_credited" });
+    }
 
-    const bonus = Number((payment.metadata as { bonusPaise?: number })?.bonusPaise ?? 0);
+    const paymentMeta = (payment.metadata as { bonusPaise?: number; currency?: string } | undefined);
+    const bonus = Number(paymentMeta?.bonusPaise ?? 0);
+    const isUSD = paymentMeta?.currency === "USD";
+    const totalCredit = isUSD
+      ? Math.round((payment.amountPaise + bonus) * 97)
+      : payment.amountPaise + bonus;
+
     await creditWallet({
       userId: payment.userId,
-      amountPaise: payment.amountPaise + bonus,
+      amountPaise: totalCredit,
       type: "topup",
       reference: payment.invoiceNumber,
       idempotencyKey: `pay:${payment.id}`,
       metadata: { paymentId: payment.id, gatewayPaymentId: paymentEntity?.id, bonus },
     });
-    await db.update(payments).set({ status: "captured", gatewayPaymentId: paymentEntity?.id ?? null, creditedAt: new Date(), updatedAt: new Date() }).where(eq(payments.id, payment.id));
+    await db.update(payments).set({
+      status: "captured",
+      gatewayPaymentId: paymentEntity?.id ?? null,
+      creditedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(payments.id, payment.id));
+
+    eventHub.publish(payment.userId, "payment.completed", {
+      paymentId: payment.id,
+      invoice: payment.invoiceNumber,
+      amountPaise: totalCredit,
+      amountFormatted: formatMoney(totalCredit),
+      gateway: "razorpay",
+    });
+
     return reply.send({ status: "credited" });
+  };
+
+  app.post("/payments/razorpay/webhook", webhookHandler);
+  app.post("/wallet/webhook", webhookHandler);
+
+  app.get("/wallet/payments/:id", async (request) => {
+    const user = await requireUser(request);
+    const { id } = request.params as { id: string };
+    const db = await getDb();
+    const rows = await db.select().from(payments).where(eq(payments.id, id));
+    const p = rows[0];
+    if (!p || p.userId !== user.id) throw new ApiError("not_found", "Payment not found.");
+    return {
+      id: p.id,
+      invoice: p.invoiceNumber,
+      amountPaise: p.amountPaise,
+      amountFormatted: formatMoney(p.amountPaise),
+      gateway: p.gateway,
+      status: p.status,
+      creditedAt: p.creditedAt ? p.creditedAt.toISOString() : null,
+      createdAt: p.createdAt.toISOString(),
+    };
   });
 
   app.get("/payments", async (request) => {

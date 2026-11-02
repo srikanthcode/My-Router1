@@ -51,6 +51,7 @@ function auth(cookie: string) {
   return { cookie };
 }
 
+describe("ProRouter E2E Acceptance Suite", () => {
 beforeAll(async () => {
   const t0 = Date.now();
   const log = (m: string) => console.log(`[e2e +${Date.now() - t0}ms] ${m}`);
@@ -523,4 +524,5 @@ describe("payment webhook idempotency (§55)", () => {
     });
     expect(res.statusCode).toBe(403);
   });
+});
 });

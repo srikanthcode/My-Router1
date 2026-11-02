@@ -169,3 +169,29 @@ export const paymentWebhooks = pgTable(
   },
   (t) => [uniqueIndex("payment_webhooks_event_uq").on(t.eventId)],
 );
+
+
+/**
+ * Active wallet reservations for in-flight LLM inference (§54).
+ * Prevents concurrent requests from overspending the same balance.
+ */
+export const walletReservations = pgTable(
+  "wallet_reservations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    requestId: text("request_id").notNull(),
+    amountPaise: bigint("amount_paise", { mode: "number" }).notNull(),
+    status: text("status").notNull().default("active"),
+    settledPaise: bigint("settled_paise", { mode: "number" }).notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("wallet_res_user_idx").on(t.userId, t.status),
+    uniqueIndex("wallet_res_req_uq").on(t.requestId),
+  ],
+);
