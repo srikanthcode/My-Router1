@@ -80,6 +80,8 @@ export const env = {
   /** Server-only credential for the ProRouter gateway upstream. Never exposed to the web app. */
   proRouterGatewayBaseUrl: str("PROVIDER_PROROUTER_GATEWAY_BASE_URL", "https://api.tokenjuice.ai/v1"),
   proRouterGatewayApiKey: str("PROVIDER_PROROUTER_GATEWAY_API_KEY"),
+  requestyBaseUrl: str("PROVIDER_REQUESTY_BASE_URL", "https://router.requesty.ai/v1"),
+  requestyApiKey: str("PROVIDER_REQUESTY_API_KEY"),
 
   emailApiKey: str("EMAIL_API_KEY"),
   emailFrom: str("EMAIL_FROM", "noreply@prorouter.com"),

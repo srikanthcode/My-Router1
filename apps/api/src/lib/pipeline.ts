@@ -99,6 +99,33 @@ export const MODEL_ALIASES: Record<string, string> = {
   "gpt-6-luna": "gpt-6-luna",
   "gpt-4o": "gpt-6.1-sol",
   "gpt-4": "gpt-6.1-sol",
+  // Requesty 13 models aliases
+  "mistral/leanstral-1-5": "leanstral-1-5",
+  "leanstral-1-5": "leanstral-1-5",
+  "poolside/laguna-xs.2": "laguna-xs.2",
+  "laguna-xs.2": "laguna-xs.2",
+  "poolside/laguna-m.1": "laguna-m.1",
+  "laguna-m.1": "laguna-m.1",
+  "novita/inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
+  "inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
+  "novita/ling-3.1-flash": "ling-3.1-flash",
+  "ling-3.1-flash": "ling-3.1-flash",
+  "nvidia/nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
+  "nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
+  "nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
+  "nvidia/nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
+  "nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
+  "nvidia/nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
+  "nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
+  "nvidia/nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
+  "nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
+  "nvidia/nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
+  "nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
+  "nvidia/muse-glimmer-30b": "muse-glimmer-30b",
+  "muse-glimmer-30b": "muse-glimmer-30b",
+  "google/gemma-4-31b-it": "gemma-4-31b-it",
+  "gemma-4-31b-it": "gemma-4-31b-it",
 };
 
 /** Resolve user-supplied model id: "slug", "prorouter/slug", "provider/slug" or "prorouter/auto". */
@@ -243,6 +270,7 @@ const ENV_KEY_MAP: Record<string, string | undefined> = {
   mistral: env.mistralApiKey,
   anthropic: env.anthropicApiKey,
   openrouter: process.env.PROVIDER_OPENROUTER_API_KEY,
+  requesty: process.env.PROVIDER_REQUESTY_API_KEY,
 };
 
 /** Build an adapter with decrypted credentials (secrets never leave the server). */

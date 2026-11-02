@@ -156,6 +156,8 @@ var env = {
   /** Server-only credential for the ProRouter gateway upstream. Never exposed to the web app. */
   proRouterGatewayBaseUrl: str("PROVIDER_PROROUTER_GATEWAY_BASE_URL", "https://api.tokenjuice.ai/v1"),
   proRouterGatewayApiKey: str("PROVIDER_PROROUTER_GATEWAY_API_KEY"),
+  requestyBaseUrl: str("PROVIDER_REQUESTY_BASE_URL", "https://router.requesty.ai/v1"),
+  requestyApiKey: str("PROVIDER_REQUESTY_API_KEY"),
   emailApiKey: str("EMAIL_API_KEY"),
   emailFrom: str("EMAIL_FROM", "noreply@prorouter.com"),
   sentryDsn: str("SENTRY_DSN"),
@@ -1440,7 +1442,17 @@ async function seedDatabase(closeAtEnd = false) {
     { slug: "mistral", name: "Mistral AI", endpointUrl: "https://api.mistral.ai/v1", adapterType: "openai", priority: 40, region: "eu", capabilities: ["chat", "tool_calls", "vision"], description: "Mistral models, OpenAI-compatible API." },
     { slug: "anthropic", name: "Anthropic", endpointUrl: "https://api.anthropic.com/v1", adapterType: "anthropic", priority: 25, region: "us", capabilities: ["chat", "tool_calls", "vision"], description: "Claude models." },
     { slug: "ollama", name: "Ollama (local)", endpointUrl: "http://localhost:11434/v1", adapterType: "openai", priority: 90, region: "local", capabilities: ["chat"], description: "Local Ollama server (OpenAI-compatible)." },
-    { slug: "freemodels", name: "FreeModels", endpointUrl: "https://freemodels-chat.freemodels.workers.dev/v1", adapterType: "freemodels", priority: 15, region: "global", capabilities: ["chat", "reasoning", "vision", "tool_calls"], description: "FreeModels gateway \u2014 free access to frontier chat models." }
+    { slug: "freemodels", name: "FreeModels", endpointUrl: "https://freemodels-chat.freemodels.workers.dev/v1", adapterType: "freemodels", priority: 15, region: "global", capabilities: ["chat", "reasoning", "vision", "tool_calls"], description: "FreeModels gateway \u2014 free access to frontier chat models." },
+    {
+      slug: "requesty",
+      name: "Requesty AI",
+      endpointUrl: process.env.PROVIDER_REQUESTY_BASE_URL || "https://router.requesty.ai/v1",
+      adapterType: "openai",
+      priority: 8,
+      region: "global",
+      capabilities: ["chat", "tool_calls", "vision", "reasoning"],
+      description: "Requesty AI multi-model router gateway."
+    }
   ];
   for (const p of providerSeeds) {
     await upsert(providers, { ...p, status: "unknown" }, providers.slug);
@@ -1448,11 +1460,12 @@ async function seedDatabase(closeAtEnd = false) {
   if (true) {
     await db2.update(providers).set({ endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1", status: "active" }).where(eq(providers.slug, "prorouter-gateway"));
   }
-  for (const slug2 of ["prorouter-gateway", "freemodels"]) {
+  for (const slug2 of ["prorouter-gateway", "freemodels", "requesty"]) {
     await db2.update(providers).set({ status: "active" }).where(and(eq(providers.slug, slug2), eq(providers.status, "unknown")));
   }
   const envKeyFor = {
     "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
+    requesty: process.env.PROVIDER_REQUESTY_API_KEY,
     openrouter: process.env.PROVIDER_OPENROUTER_API_KEY,
     openai: env.openaiApiKey,
     groq: env.groqApiKey,
@@ -1499,7 +1512,20 @@ async function seedDatabase(closeAtEnd = false) {
     { slug: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", description: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 24, popularity: 8800, reasoning: true, vision: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", description: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work.", provider: "prorouter-gateway", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 25, popularity: 8700, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "longcat-2.5-preview", name: "LongCat 2.5 Preview", description: "Meituan LongCat 2.5 \u2014 long-context preview with strong multilingual reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 26, popularity: 8600, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "jev-1.13", name: "Jev 1.13", description: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 27, popularity: 8200, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } }
+    { slug: "jev-1.13", name: "Jev 1.13", description: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 27, popularity: 8200, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "leanstral-1-5", name: "Leanstral 1.5", description: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context for lean execution and structured synthesis.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 28, popularity: 9600, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "mistral/leanstral-1-5", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "laguna-xs.2", name: "Laguna XS.2", description: "Poolside Laguna XS.2 \u2014 specialized ultra-fast coding and execution model designed for rapid software iteration.", provider: "requesty", isFree: true, contextWindow: 32768, maxOutputTokens: 16384, input: 0, output: 0, rank: 29, popularity: 9550, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "poolside/laguna-xs.2", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "laguna-m.1", name: "Laguna M.1", description: "Poolside Laguna M.1 \u2014 medium-tier frontier code synthesis and multi-file refactoring engine.", provider: "requesty", isFree: true, contextWindow: 32768, maxOutputTokens: 16384, input: 0, output: 0, rank: 30, popularity: 9560, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "poolside/laguna-m.1", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "inclusionai/ling-3.0-tiny", name: "Ling 3.0 Tiny", description: "Novita InclusionAI Ling 3.0 Tiny \u2014 lightweight multilingual model with 262K context for edge inference and compact reasoning.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 31, popularity: 9480, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "novita/inclusionai/ling-3.0-tiny", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "ling-3.1-flash", name: "Ling 3.1 Flash", description: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed, summarization, and task routing.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 32, popularity: 9580, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "novita/ling-3.1-flash", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3-nano-30b-a3b", name: "Nemotron 3 Nano 30B A3B", description: "NVIDIA Nemotron 3 Nano 30B A3B \u2014 efficient MoE architecture delivering enterprise reasoning and 262K context.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 33, popularity: 9650, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-30b-a3b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3-nano-omni-30b-a3b-reasoning", name: "Nemotron 3 Nano Omni 30B Reasoning", description: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving with 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 20480, input: 0, output: 0, rank: 34, popularity: 9700, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3-super-120b-a12b", name: "Nemotron 3 Super 120B A12B", description: "NVIDIA Nemotron 3 Super 120B A12B \u2014 massive 1M context MoE flagship for whole-codebase understanding and deep synthesis.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 35, popularity: 9750, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-super-120b-a12b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3.5-content-safety", name: "Nemotron 3.5 Content Safety", description: "NVIDIA Nemotron 3.5 Content Safety \u2014 specialized guardrail model for real-time moderation, compliance, and safety filtering across 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 8192, input: 0, output: 0, rank: 36, popularity: 9350, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3.5-content-safety", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3.5-lightning-30b-a3b", name: "Nemotron 3.5 Lightning 30B A3B", description: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window for high-throughput workflows.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 37, popularity: 9800, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra 550B A55B", description: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context for frontier science, law, and complex systems architecture.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 38, popularity: 9880, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "muse-glimmer-30b", name: "Muse Glimmer 30B", description: "NVIDIA Muse Glimmer 30B \u2014 creative reasoning and expressive generation model tuned for narrative design, code styling, and 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 20480, input: 0, output: 0, rank: 39, popularity: 9400, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/muse-glimmer-30b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "gemma-4-31b-it", name: "Gemma 4 31B IT", description: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context, sharp instruction following, and multilingual mastery.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 8192, input: 0, output: 0, rank: 40, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "google/gemma-4-31b-it", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } }
   ];
   for (const m of catalog) {
     const providerRow = providerBySlug.get(m.provider);
@@ -3436,7 +3462,34 @@ var MODEL_ALIASES = {
   "gpt-6.1-terra": "gpt-6.1-terra",
   "gpt-6-luna": "gpt-6-luna",
   "gpt-4o": "gpt-6.1-sol",
-  "gpt-4": "gpt-6.1-sol"
+  "gpt-4": "gpt-6.1-sol",
+  // Requesty 13 models aliases
+  "mistral/leanstral-1-5": "leanstral-1-5",
+  "leanstral-1-5": "leanstral-1-5",
+  "poolside/laguna-xs.2": "laguna-xs.2",
+  "laguna-xs.2": "laguna-xs.2",
+  "poolside/laguna-m.1": "laguna-m.1",
+  "laguna-m.1": "laguna-m.1",
+  "novita/inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
+  "inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
+  "novita/ling-3.1-flash": "ling-3.1-flash",
+  "ling-3.1-flash": "ling-3.1-flash",
+  "nvidia/nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
+  "nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
+  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
+  "nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
+  "nvidia/nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
+  "nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
+  "nvidia/nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
+  "nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
+  "nvidia/nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
+  "nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
+  "nvidia/nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
+  "nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
+  "nvidia/muse-glimmer-30b": "muse-glimmer-30b",
+  "muse-glimmer-30b": "muse-glimmer-30b",
+  "google/gemma-4-31b-it": "gemma-4-31b-it",
+  "gemma-4-31b-it": "gemma-4-31b-it"
 };
 async function resolveModelInput(input) {
   let raw = input.trim();
@@ -3538,7 +3591,8 @@ var ENV_KEY_MAP = {
   groq: env.groqApiKey,
   mistral: env.mistralApiKey,
   anthropic: env.anthropicApiKey,
-  openrouter: process.env.PROVIDER_OPENROUTER_API_KEY
+  openrouter: process.env.PROVIDER_OPENROUTER_API_KEY,
+  requesty: process.env.PROVIDER_REQUESTY_API_KEY
 };
 async function getAdapter(candidate) {
   const db2 = await getDb();
