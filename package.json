@@ -17,7 +17,8 @@
     "db:migrate": "tsx packages/database/src/migrate.ts",
     "db:seed": "tsx packages/database/src/seed.ts",
     "typecheck": "tsc -p packages/shared && tsc -p packages/database && tsc -p packages/providers && tsc -p packages/routing && tsc -p apps/api",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:razorpay": "tsx scripts/test-razorpay.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
