@@ -37,7 +37,7 @@ function num(name: string, fallback: number): number {
 
 function str(name: string, fallback = ""): string {
   const raw = process.env[name];
-  return raw === undefined || raw === "" ? fallback : raw;
+  return raw === undefined || raw === "" ? fallback : raw.trim();
 }
 
 export const env = {

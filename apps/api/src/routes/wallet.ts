@@ -66,7 +66,15 @@ export async function walletRoutes(app: FastifyInstance) {
     const db = await getDb();
     const dbPkg = (await db.select().from(creditPackages).where(eq(creditPackages.slug, body.packageSlug)))[0];
 
-    const STATIC_USD_PACKAGES: Record<string, { priceMinor: number; bonusPaise: number; name: string; currency: "USD" }> = {
+    const STATIC_PACKAGES: Record<string, { priceMinor: number; bonusPaise: number; name: string; currency: "USD" | "INR" }> = {
+      "starter-100": { priceMinor: 10000, bonusPaise: 0, name: "Starter Pack", currency: "INR" },
+      "pro-500": { priceMinor: 50000, bonusPaise: 5000, name: "Pro Pack", currency: "INR" },
+      "scale-1000": { priceMinor: 100000, bonusPaise: 20000, name: "Scale Pack", currency: "INR" },
+      "power-2500": { priceMinor: 250000, bonusPaise: 65000, name: "Power Pack", currency: "INR" },
+      "starter": { priceMinor: 49900, bonusPaise: 0, name: "Starter", currency: "INR" },
+      "builder": { priceMinor: 99900, bonusPaise: 5100, name: "Builder", currency: "INR" },
+      "pro": { priceMinor: 249900, bonusPaise: 25100, name: "Pro", currency: "INR" },
+      "power": { priceMinor: 499900, bonusPaise: 60100, name: "Power", currency: "INR" },
       "starter-usd-5": { priceMinor: 500, bonusPaise: 0, name: "Starter Pack", currency: "USD" },
       "pro-usd-10": { priceMinor: 1000, bonusPaise: 150, name: "Pro Pack", currency: "USD" },
       "scale-usd-25": { priceMinor: 2500, bonusPaise: 500, name: "Scale Pack", currency: "USD" },
@@ -76,13 +84,13 @@ export async function walletRoutes(app: FastifyInstance) {
     };
 
     const isUSD = body.currency === "USD" || body.packageSlug.includes("usd");
-    const fallbackPkg = STATIC_USD_PACKAGES[body.packageSlug];
+    const fallbackPkg = STATIC_PACKAGES[body.packageSlug];
 
     if (!dbPkg && !fallbackPkg) throw new ApiError("not_found", "Credit package not found.");
 
     const priceMinor = dbPkg ? dbPkg.pricePaise : fallbackPkg!.priceMinor;
     const bonusPaise = dbPkg ? dbPkg.bonusPaise : fallbackPkg!.bonusPaise;
-    const selectedCurrency = isUSD ? "USD" : (dbPkg?.currency || "INR");
+    const selectedCurrency = isUSD ? "USD" : (dbPkg?.currency || fallbackPkg?.currency || "INR");
 
     if (body.idempotencyKey) {
       const existing = await db.select().from(payments).where(eq(payments.idempotencyKey, body.idempotencyKey));

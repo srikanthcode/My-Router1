@@ -99,6 +99,10 @@ for (const p of planSeeds) await upsert(plans, { ...p, currency: "INR", period: 
 
 // ── Credit packages (§20) ──────────────────────────────────────────────
 const packageSeeds = [
+  { slug: "starter-100", name: "Starter Pack", pricePaise: 10000, bonusPaise: 0, sortOrder: 5 },
+  { slug: "pro-500", name: "Pro Pack", pricePaise: 50000, bonusPaise: 5000, sortOrder: 6 },
+  { slug: "scale-1000", name: "Scale Pack", pricePaise: 100000, bonusPaise: 20000, sortOrder: 7 },
+  { slug: "power-2500", name: "Power Pack", pricePaise: 250000, bonusPaise: 65000, sortOrder: 8 },
   { slug: "starter", name: "Starter", pricePaise: 49900, bonusPaise: 0, sortOrder: 10 },
   { slug: "builder", name: "Builder", pricePaise: 99900, bonusPaise: 5100, sortOrder: 20 },
   { slug: "pro", name: "Pro", pricePaise: 249900, bonusPaise: 25100, sortOrder: 30 },

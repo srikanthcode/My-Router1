@@ -120,7 +120,7 @@ function num(name, fallback) {
 }
 function str(name, fallback = "") {
   const raw = process.env[name];
-  return raw === void 0 || raw === "" ? fallback : raw;
+  return raw === void 0 || raw === "" ? fallback : raw.trim();
 }
 var env = {
   nodeEnv: str("NODE_ENV", "development"),
@@ -467,6 +467,7 @@ __export(schema_exports, {
   userRoleEnum: () => userRoleEnum,
   userStatusEnum: () => userStatusEnum,
   users: () => users,
+  walletReservations: () => walletReservations,
   walletTransactions: () => walletTransactions,
   walletTxTypeEnum: () => walletTxTypeEnum,
   wallets: () => wallets
@@ -868,6 +869,24 @@ var paymentWebhooks = pgTable3(
     createdAt: timestamp3("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
   (t) => [uniqueIndex3("payment_webhooks_event_uq").on(t.eventId)]
+);
+var walletReservations = pgTable3(
+  "wallet_reservations",
+  {
+    id: uuid3("id").primaryKey().defaultRandom(),
+    userId: uuid3("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    requestId: text3("request_id").notNull(),
+    amountPaise: bigint3("amount_paise", { mode: "number" }).notNull(),
+    status: text3("status").notNull().default("active"),
+    settledPaise: bigint3("settled_paise", { mode: "number" }).notNull().default(0),
+    expiresAt: timestamp3("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    createdAt: timestamp3("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp3("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [
+    index3("wallet_res_user_idx").on(t.userId, t.status),
+    uniqueIndex3("wallet_res_req_uq").on(t.requestId)
+  ]
 );
 
 // packages/database/src/schema/requests.ts
@@ -1390,6 +1409,10 @@ async function seedDatabase(closeAtEnd = false) {
   ];
   for (const p of planSeeds) await upsert(plans, { ...p, currency: "INR", period: "month", active: true }, plans.slug);
   const packageSeeds = [
+    { slug: "starter-100", name: "Starter Pack", pricePaise: 1e4, bonusPaise: 0, sortOrder: 5 },
+    { slug: "pro-500", name: "Pro Pack", pricePaise: 5e4, bonusPaise: 5e3, sortOrder: 6 },
+    { slug: "scale-1000", name: "Scale Pack", pricePaise: 1e5, bonusPaise: 2e4, sortOrder: 7 },
+    { slug: "power-2500", name: "Power Pack", pricePaise: 25e4, bonusPaise: 65e3, sortOrder: 8 },
     { slug: "starter", name: "Starter", pricePaise: 49900, bonusPaise: 0, sortOrder: 10 },
     { slug: "builder", name: "Builder", pricePaise: 99900, bonusPaise: 5100, sortOrder: 20 },
     { slug: "pro", name: "Pro", pricePaise: 249900, bonusPaise: 25100, sortOrder: 30 },
@@ -1786,14 +1809,127 @@ function checkRateLimit(key, limit, windowSeconds) {
 }
 
 // apps/api/src/lib/wallet.ts
-import { eq as eq3, sql } from "drizzle-orm";
+import { and as and3, eq as eq3, gt as gt2, sql } from "drizzle-orm";
+
+// apps/api/src/lib/events.ts
+var EventHub = class {
+  clients = /* @__PURE__ */ new Map();
+  eventHistory = /* @__PURE__ */ new Map();
+  sequence = 0;
+  MAX_HISTORY_PER_USER = 100;
+  heartbeatInterval = null;
+  constructor() {
+    this.heartbeatInterval = setInterval(() => {
+      this.broadcastHeartbeat();
+    }, 15e3);
+    if (this.heartbeatInterval.unref) {
+      this.heartbeatInterval.unref();
+    }
+  }
+  nextEventId() {
+    this.sequence += 1;
+    return `evt_${Date.now()}_${this.sequence}`;
+  }
+  subscribe(userId, reply, lastEventId) {
+    const connId = `conn_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const conn = {
+      id: connId,
+      reply,
+      connectedAt: /* @__PURE__ */ new Date()
+    };
+    if (!this.clients.has(userId)) {
+      this.clients.set(userId, /* @__PURE__ */ new Set());
+    }
+    this.clients.get(userId).add(conn);
+    if (lastEventId) {
+      const history = this.eventHistory.get(userId) || [];
+      const idx = history.findIndex((e) => e.id === lastEventId);
+      if (idx !== -1 && idx < history.length - 1) {
+        for (let i = idx + 1; i < history.length; i++) {
+          this.writeSSE(conn, history[i]);
+        }
+      }
+    }
+    this.writeSSE(conn, {
+      id: this.nextEventId(),
+      type: "system.connected",
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      userId,
+      data: { connected: true, serverTime: (/* @__PURE__ */ new Date()).toISOString() }
+    });
+    const cleanup = () => {
+      const userConns = this.clients.get(userId);
+      if (userConns) {
+        userConns.delete(conn);
+        if (userConns.size === 0) {
+          this.clients.delete(userId);
+        }
+      }
+    };
+    reply.raw.on("close", cleanup);
+    reply.raw.on("error", cleanup);
+    return cleanup;
+  }
+  publish(userId, type, data) {
+    const event = {
+      id: this.nextEventId(),
+      type,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+      userId,
+      data
+    };
+    if (!this.eventHistory.has(userId)) {
+      this.eventHistory.set(userId, []);
+    }
+    const history = this.eventHistory.get(userId);
+    history.push(event);
+    if (history.length > this.MAX_HISTORY_PER_USER) {
+      history.shift();
+    }
+    const userConns = this.clients.get(userId);
+    if (userConns && userConns.size > 0) {
+      for (const conn of userConns) {
+        try {
+          this.writeSSE(conn, event);
+        } catch {
+        }
+      }
+    }
+    return event;
+  }
+  writeSSE(conn, event) {
+    if (conn.reply.raw.writableEnded || conn.reply.raw.destroyed) return;
+    conn.reply.raw.write(
+      `id: ${event.id}
+event: ${event.type}
+data: ${JSON.stringify(event.data)}
+
+`
+    );
+  }
+  broadcastHeartbeat() {
+    for (const [, conns] of this.clients.entries()) {
+      for (const conn of conns) {
+        if (!conn.reply.raw.writableEnded && !conn.reply.raw.destroyed) {
+          try {
+            conn.reply.raw.write(": keepalive\n\n");
+          } catch {
+          }
+        }
+      }
+    }
+  }
+};
+var eventHub = new EventHub();
+
+// apps/api/src/lib/wallet.ts
 async function ensureWallet(tx, userId) {
   await tx.insert(wallets).values({ userId, balancePaise: 0 }).onConflictDoNothing({ target: wallets.userId });
 }
 async function creditWallet(params) {
   if (params.amountPaise <= 0) throw new ApiError("invalid_request", "Credit amount must be positive");
   const db2 = await getDb();
-  return db2.transaction(async (tx) => {
+  const res = await db2.transaction(async (tx) => {
     if (params.idempotencyKey) {
       const existing = await tx.select().from(walletTransactions).where(eq3(walletTransactions.idempotencyKey, params.idempotencyKey));
       if (existing.length > 0) {
@@ -1815,6 +1951,20 @@ async function creditWallet(params) {
     }).returning();
     return { balancePaise: balance, transactionId: txRow.id, deduped: false };
   });
+  if (!res.deduped) {
+    eventHub.publish(params.userId, "wallet.balance.updated", {
+      balancePaise: res.balancePaise,
+      balanceFormatted: formatMoney(res.balancePaise),
+      currency: "INR"
+    });
+    eventHub.publish(params.userId, "ledger.entry.created", {
+      type: params.type,
+      amountPaise: params.amountPaise,
+      balanceAfterPaise: res.balancePaise,
+      reference: params.reference
+    });
+  }
+  return res;
 }
 async function debitWallet(params) {
   const amount = Math.max(0, Math.round(params.amountPaise));
@@ -1822,7 +1972,7 @@ async function debitWallet(params) {
   if (amount === 0) {
     return { balancePaise: await getBalance(params.userId), deductedPaise: 0, transactionId: null, deduped: false };
   }
-  return db2.transaction(async (tx) => {
+  const res = await db2.transaction(async (tx) => {
     if (params.idempotencyKey) {
       const existing = await tx.select().from(walletTransactions).where(eq3(walletTransactions.idempotencyKey, params.idempotencyKey));
       if (existing.length > 0) {
@@ -1853,18 +2003,128 @@ async function debitWallet(params) {
     }).returning();
     return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id, deduped: false };
   });
+  if (!res.deduped && res.deductedPaise > 0) {
+    eventHub.publish(params.userId, "wallet.balance.updated", {
+      balancePaise: res.balancePaise,
+      balanceFormatted: formatMoney(res.balancePaise),
+      currency: "INR"
+    });
+  }
+  return res;
 }
 async function getBalance(userId) {
   const db2 = await getDb();
   const rows = await db2.select().from(wallets).where(eq3(wallets.userId, userId));
   return rows[0]?.balancePaise ?? 0;
 }
-async function assertAffordable(userId, estimatedPaise) {
-  const balance = await getBalance(userId);
-  if (balance < estimatedPaise) {
-    throw new ApiError("insufficient_balance", "Your ProRouter wallet balance is insufficient.");
-  }
-  return balance;
+async function getActiveReservedPaise(userId) {
+  const db2 = await getDb();
+  const now = /* @__PURE__ */ new Date();
+  const rows = await db2.select({ amount: walletReservations.amountPaise }).from(walletReservations).where(
+    and3(
+      eq3(walletReservations.userId, userId),
+      eq3(walletReservations.status, "active"),
+      gt2(walletReservations.expiresAt, now)
+    )
+  );
+  return rows.reduce((sum, r) => sum + r.amount, 0);
+}
+async function getAvailableBalance(userId) {
+  const [totalBalance, reserved] = await Promise.all([
+    getBalance(userId),
+    getActiveReservedPaise(userId)
+  ]);
+  return Math.max(0, totalBalance - reserved);
+}
+async function reserveBalance(params) {
+  const db2 = await getDb();
+  const amount = Math.max(0, Math.round(params.amountPaise));
+  const timeoutMs = params.timeoutMs ?? 5 * 60 * 1e3;
+  const expiresAt = new Date(Date.now() + timeoutMs);
+  return db2.transaction(async (tx) => {
+    await ensureWallet(tx, params.userId);
+    const w = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
+    const balance = w[0]?.balancePaise ?? 0;
+    const activeRows = await tx.select({ amount: walletReservations.amountPaise }).from(walletReservations).where(
+      and3(
+        eq3(walletReservations.userId, params.userId),
+        eq3(walletReservations.status, "active"),
+        gt2(walletReservations.expiresAt, /* @__PURE__ */ new Date())
+      )
+    );
+    const currentReserved = activeRows.reduce((sum, r) => sum + r.amount, 0);
+    const available = balance - currentReserved;
+    if (available < amount) {
+      throw new ApiError(
+        "insufficient_balance",
+        `Insufficient available balance. Available: ${formatMoney(available)}, Required: ${formatMoney(amount)}`
+      );
+    }
+    const [res] = await tx.insert(walletReservations).values({
+      userId: params.userId,
+      requestId: params.requestId,
+      amountPaise: amount,
+      status: "active",
+      expiresAt
+    }).onConflictDoUpdate({
+      target: walletReservations.requestId,
+      set: { amountPaise: amount, status: "active", expiresAt, updatedAt: /* @__PURE__ */ new Date() }
+    }).returning();
+    eventHub.publish(params.userId, "wallet.reservation.created", {
+      requestId: params.requestId,
+      reservedPaise: amount,
+      availablePaise: available - amount
+    });
+    return { reservationId: res.id, availablePaise: available - amount };
+  });
+}
+async function settleReservation(params) {
+  const db2 = await getDb();
+  const actual = Math.max(0, Math.round(params.actualAmountPaise));
+  const result = await db2.transaction(async (tx) => {
+    await tx.update(walletReservations).set({
+      status: "settled",
+      settledPaise: actual,
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq3(walletReservations.requestId, params.requestId));
+    const before = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
+    const oldBalance = before[0]?.balancePaise ?? 0;
+    const deducted = Math.min(actual, Math.max(0, oldBalance));
+    const [row] = await tx.update(wallets).set({ balancePaise: sql`GREATEST(${wallets.balancePaise} - ${actual}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(wallets.userId, params.userId)).returning();
+    const balance = row.balancePaise;
+    let txId = null;
+    if (deducted > 0) {
+      const [txRow] = await tx.insert(walletTransactions).values({
+        userId: params.userId,
+        type: "usage",
+        amountPaise: -deducted,
+        balanceAfterPaise: balance,
+        reference: params.reference ?? params.requestId,
+        idempotencyKey: `usage:${params.requestId}`,
+        metadata: { ...params.metadata ?? {}, requested: actual, shortfall: actual - deducted }
+      }).onConflictDoNothing().returning();
+      txId = txRow?.id ?? null;
+    }
+    return { balancePaise: balance, deductedPaise: deducted, transactionId: txId };
+  });
+  eventHub.publish(params.userId, "wallet.balance.updated", {
+    balancePaise: result.balancePaise,
+    balanceFormatted: formatMoney(result.balancePaise),
+    currency: "INR"
+  });
+  return result;
+}
+async function releaseReservation(params) {
+  const db2 = await getDb();
+  await db2.update(walletReservations).set({
+    status: "released",
+    updatedAt: /* @__PURE__ */ new Date()
+  }).where(eq3(walletReservations.requestId, params.requestId));
+  const available = await getAvailableBalance(params.userId);
+  eventHub.publish(params.userId, "wallet.reservation.released", {
+    requestId: params.requestId,
+    availablePaise: available
+  });
 }
 
 // apps/api/src/routes/auth.ts
@@ -1967,7 +2227,7 @@ async function authRoutes(app) {
 
 // apps/api/src/routes/keys.ts
 import { z as z2 } from "zod";
-import { desc, eq as eq5 } from "drizzle-orm";
+import { desc as desc2, eq as eq5 } from "drizzle-orm";
 
 // apps/api/src/lib/settings.ts
 var settings = null;
@@ -2024,7 +2284,7 @@ async function keyRoutes(app) {
   app.get("/keys", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(apiKeys).where(eq5(apiKeys.userId, user.id)).orderBy(desc(apiKeys.createdAt));
+    const rows = await db2.select().from(apiKeys).where(eq5(apiKeys.userId, user.id)).orderBy(desc2(apiKeys.createdAt));
     return { items: rows.map(keyDto) };
   });
   app.post("/keys", async (request, reply) => {
@@ -2069,10 +2329,10 @@ async function keyRoutes(app) {
 import { z as z3 } from "zod";
 
 // apps/api/src/lib/catalog.ts
-import { desc as desc2, eq as eq7, gte, or, sql as sql2 } from "drizzle-orm";
+import { desc as desc3, eq as eq7, gte, or, sql as sql2 } from "drizzle-orm";
 
 // apps/api/src/lib/pricing.ts
-import { and as and3, eq as eq6 } from "drizzle-orm";
+import { and as and4, eq as eq6 } from "drizzle-orm";
 function tierToPricing(tier, usdToInrRate) {
   return {
     inputPerMillion: usdCentsToPaise(tier.inputUsdCentsPerMillion, usdToInrRate),
@@ -2125,28 +2385,28 @@ async function listModels(filters = {}) {
   const where = conditions.length ? sql2.join(conditions, sql2` AND `) : void 0;
   const totalRows = await db2.select({ n: sql2`count(*)::int` }).from(models).where(where);
   const total = totalRows[0]?.n ?? 0;
-  let orderBy = desc2(models.popularity);
+  let orderBy = desc3(models.popularity);
   switch (filters.sort) {
     case "rank":
       orderBy = models.rank;
       break;
     case "rating":
-      orderBy = desc2(models.rating);
+      orderBy = desc3(models.rating);
       break;
     case "newest":
-      orderBy = desc2(models.createdAt);
+      orderBy = desc3(models.createdAt);
       break;
     case "price_asc":
       orderBy = models.rank;
       break;
     case "price_desc":
-      orderBy = desc2(models.rank);
+      orderBy = desc3(models.rank);
       break;
     case "latency":
       orderBy = models.rank;
       break;
     default:
-      orderBy = desc2(models.popularity);
+      orderBy = desc3(models.popularity);
   }
   const rows = await db2.select({ model: models, pricing: modelPricing, caps: modelCapabilities, providerSlug: providers.slug, providerName: providers.name }).from(models).leftJoin(modelPricing, eq7(modelPricing.modelId, models.id)).leftJoin(modelCapabilities, eq7(modelCapabilities.modelId, models.id)).leftJoin(providers, eq7(providers.id, models.providerId)).where(where).orderBy(orderBy).limit(Math.min(filters.limit ?? 60, 200)).offset(filters.offset ?? 0);
   const linkRows = await db2.select().from(modelProviders);
@@ -2294,7 +2554,7 @@ async function getProviderDetail(slug2) {
   const p = (await db2.select().from(providers).where(eq7(providers.slug, slug2)))[0];
   if (!p) return null;
   const links = await db2.select({ link: modelProviders, model: models }).from(modelProviders).innerJoin(models, eq7(models.id, modelProviders.modelId)).where(eq7(modelProviders.providerId, p.id));
-  const healthRows = await db2.select().from(providerHealth).where(eq7(providerHealth.providerId, p.id)).orderBy(desc2(providerHealth.checkedAt)).limit(1);
+  const healthRows = await db2.select().from(providerHealth).where(eq7(providerHealth.providerId, p.id)).orderBy(desc3(providerHealth.checkedAt)).limit(1);
   return {
     provider: {
       id: p.id,
@@ -3094,8 +3354,19 @@ function queueSnapshot() {
 }
 
 // apps/api/src/lib/pipeline.ts
-import { and as and5, desc as desc3, eq as eq9, inArray, or as or2, sql as sql4 } from "drizzle-orm";
+import { and as and6, desc as desc4, eq as eq9, inArray, or as or2, sql as sql4 } from "drizzle-orm";
 var MODEL_ALIASES = {
+  // Pro Router Official Tiered Models
+  "pr-zenith": "claude-opus-5",
+  "zenith": "claude-opus-5",
+  "pr-aura": "deepseek-v4.1-flash-1017",
+  "aura": "deepseek-v4.1-flash-1017",
+  "pr-nova": "deepseek-v4.1-flash",
+  "nova": "deepseek-v4.1-flash",
+  "pr-swift": "deepseek-v4.1-flash",
+  "swift": "deepseek-v4.1-flash",
+  "pr-echo": "deepseek-v4.1-flash",
+  "echo": "deepseek-v4.1-flash",
   // DeepSeek
   "deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017",
   "deepseek-ai/deepseek-v4.1-flash-1017": "deepseek-v4.1-flash-1017",
@@ -3224,7 +3495,7 @@ async function hydrateCandidates(modelId, forcedProvider) {
   const tier = model?.pricingTier ? (await db2.select().from(pricingTiers).where(eq9(pricingTiers.slug, model.pricingTier)))[0] ?? null : null;
   const effective = model ? resolveEffectivePricing(model, pricing ?? null, tier, await getUsdToInrRate()) : null;
   const providerIds = linkRows.map((l) => l.provider.id);
-  const healthRows = providerIds.length ? await db2.select().from(providerHealth).where(inArray(providerHealth.providerId, providerIds)).orderBy(desc3(providerHealth.checkedAt)) : [];
+  const healthRows = providerIds.length ? await db2.select().from(providerHealth).where(inArray(providerHealth.providerId, providerIds)).orderBy(desc4(providerHealth.checkedAt)) : [];
   const latestHealth = /* @__PURE__ */ new Map();
   for (const h of healthRows) if (!latestHealth.has(h.providerId)) latestHealth.set(h.providerId, h);
   return linkRows.filter((l) => !forcedProvider || l.provider.slug === forcedProvider).map((l) => {
@@ -3248,6 +3519,19 @@ async function hydrateCandidates(modelId, forcedProvider) {
     };
   });
 }
+function getBackendGatewayPool() {
+  const envVal = process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY || process.env.PROROUTER_GATEWAY_KEYS || "";
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+}
+var backendPoolIndex = 0;
+function getBackendGatewayKey() {
+  const pool2 = getBackendGatewayPool();
+  if (pool2.length === 0) return process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY;
+  const key = pool2[backendPoolIndex % pool2.length];
+  backendPoolIndex = (backendPoolIndex + 1) % pool2.length;
+  return key;
+}
 var ENV_KEY_MAP = {
   "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
   openai: env.openaiApiKey,
@@ -3258,12 +3542,18 @@ var ENV_KEY_MAP = {
 };
 async function getAdapter(candidate) {
   const db2 = await getDb();
-  const creds = await db2.select().from(providerCredentials).where(and5(eq9(providerCredentials.providerId, candidate.providerId), eq9(providerCredentials.active, true)));
+  const creds = await db2.select().from(providerCredentials).where(and6(eq9(providerCredentials.providerId, candidate.providerId), eq9(providerCredentials.active, true)));
   const providerRows = await db2.select().from(providers).where(eq9(providers.id, candidate.providerId));
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
   let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : void 0;
-  if (!apiKey) apiKey = ENV_KEY_MAP[candidate.providerSlug];
+  if (!apiKey) {
+    if (candidate.providerSlug === "prorouter-gateway") {
+      apiKey = getBackendGatewayKey();
+    } else {
+      apiKey = ENV_KEY_MAP[candidate.providerSlug];
+    }
+  }
   return createAdapter(provider.adapterType, {
     providerSlug: candidate.providerSlug,
     endpointUrl: provider.endpointUrl,
@@ -3515,6 +3805,7 @@ async function chatRoutes(app) {
     let acquiredKey = "";
     let slotServiceStart = 0;
     let sseStarted = false;
+    let hasReservation = false;
     if (isFree) {
       const modelLimitsRow = ctx.limits;
       const quota = await consumeFreeQuota(auth.user.id, {
@@ -3536,8 +3827,14 @@ async function chatRoutes(app) {
         outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
         platformFeePercent: feePercent
       });
-      await assertAffordable(auth.user.id, estimated);
+      await reserveBalance({ userId: auth.user.id, requestId, amountPaise: estimated });
+      hasReservation = true;
     }
+    eventHub.publish(auth.user.id, "usage.request.started", {
+      requestId,
+      model: slug2,
+      stream
+    });
     const decision = routeRequest(candidates, {
       planSlug: plan.slug,
       fallbackEnabled,
@@ -3588,8 +3885,24 @@ async function chatRoutes(app) {
           outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
           platformFeePercent: feePercent
         });
-        const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug2, provider: params.providerSlug } });
-        cost = debit.deductedPaise;
+        if (hasReservation) {
+          const settlement = await settleReservation({
+            userId: auth.user.id,
+            requestId,
+            actualAmountPaise: cost,
+            reference: requestId,
+            metadata: { model: slug2, provider: params.providerSlug }
+          });
+          cost = settlement.deductedPaise;
+          hasReservation = false;
+        } else {
+          const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug2, provider: params.providerSlug } });
+          cost = debit.deductedPaise;
+        }
+      } else if (hasReservation) {
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+        });
+        hasReservation = false;
       }
       await db2.update(requests).set({
         status: params.status ?? (params.errorCode ? "error" : "success"),
@@ -3608,6 +3921,24 @@ async function chatRoutes(app) {
       }).where(eq10(requests.id, requestId));
       if (auth.apiKey) {
         await db2.update(apiKeys).set({ requestCount: sql5`${apiKeys.requestCount} + 1`, spendPaise: sql5`${apiKeys.spendPaise} + ${cost}`, lastUsedAt: /* @__PURE__ */ new Date() }).where(eq10(apiKeys.id, auth.apiKey.id));
+      }
+      if (params.errorCode) {
+        eventHub.publish(auth.user.id, "usage.request.failed", {
+          requestId,
+          model: slug2,
+          error: params.errorMessage || params.errorCode
+        });
+      } else {
+        eventHub.publish(auth.user.id, "usage.request.completed", {
+          requestId,
+          model: slug2,
+          totalTokens: usage.total_tokens,
+          inputTokens: usage.prompt_tokens,
+          outputTokens: usage.completion_tokens,
+          costPaise: cost,
+          latencyMs: Date.now() - startedAt,
+          ttftMs: params.ttftMs
+        });
       }
       return cost;
     };
@@ -3762,6 +4093,10 @@ async function chatRoutes(app) {
       await finalize({ usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, providerId: decision.primary.providerId, providerSlug: decision.primary.providerSlug, ttftMs: null, errorCode: apiErr.code, errorMessage: apiErr.message, httpStatus: apiErr.status, status: "error" }).catch(() => void 0);
       throw apiErr;
     } finally {
+      if (hasReservation) {
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+        });
+      }
       if (acquired) releaseSlot(acquiredKey, slotServiceStart ? Date.now() - slotServiceStart : 0);
     }
   });
@@ -3769,13 +4104,13 @@ async function chatRoutes(app) {
 
 // apps/api/src/routes/wallet.ts
 import { z as z5 } from "zod";
-import { createHmac, randomUUID } from "node:crypto";
-import { desc as desc5, eq as eq11 } from "drizzle-orm";
+import { createHmac, randomUUID, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
+import { desc as desc6, eq as eq11 } from "drizzle-orm";
 async function walletRoutes(app) {
   app.get("/wallet", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(walletTransactions).where(eq11(walletTransactions.userId, user.id)).orderBy(desc5(walletTransactions.createdAt)).limit(50);
+    const rows = await db2.select().from(walletTransactions).where(eq11(walletTransactions.userId, user.id)).orderBy(desc6(walletTransactions.createdAt)).limit(50);
     const balance = await getBalance(user.id);
     return {
       balancePaise: balance,
@@ -3813,10 +4148,35 @@ async function walletRoutes(app) {
     const user = await requireUser(request);
     const rl = checkRateLimit(`user:${user.id}:checkout`, 10, 60);
     if (!rl.allowed) throw new ApiError("rate_limit_exceeded", "Too many checkout attempts.");
-    const body = z5.object({ packageSlug: z5.string(), idempotencyKey: z5.string().min(8).max(128).optional() }).parse(request.body);
+    const body = z5.object({
+      packageSlug: z5.string(),
+      currency: z5.enum(["INR", "USD"]).optional(),
+      idempotencyKey: z5.string().min(8).max(128).optional()
+    }).parse(request.body);
     const db2 = await getDb();
-    const pkg = (await db2.select().from(creditPackages).where(eq11(creditPackages.slug, body.packageSlug)))[0];
-    if (!pkg || !pkg.active) throw new ApiError("not_found", "Credit package not found.");
+    const dbPkg = (await db2.select().from(creditPackages).where(eq11(creditPackages.slug, body.packageSlug)))[0];
+    const STATIC_PACKAGES = {
+      "starter-100": { priceMinor: 1e4, bonusPaise: 0, name: "Starter Pack", currency: "INR" },
+      "pro-500": { priceMinor: 5e4, bonusPaise: 5e3, name: "Pro Pack", currency: "INR" },
+      "scale-1000": { priceMinor: 1e5, bonusPaise: 2e4, name: "Scale Pack", currency: "INR" },
+      "power-2500": { priceMinor: 25e4, bonusPaise: 65e3, name: "Power Pack", currency: "INR" },
+      "starter": { priceMinor: 49900, bonusPaise: 0, name: "Starter", currency: "INR" },
+      "builder": { priceMinor: 99900, bonusPaise: 5100, name: "Builder", currency: "INR" },
+      "pro": { priceMinor: 249900, bonusPaise: 25100, name: "Pro", currency: "INR" },
+      "power": { priceMinor: 499900, bonusPaise: 60100, name: "Power", currency: "INR" },
+      "starter-usd-5": { priceMinor: 500, bonusPaise: 0, name: "Starter Pack", currency: "USD" },
+      "pro-usd-10": { priceMinor: 1e3, bonusPaise: 150, name: "Pro Pack", currency: "USD" },
+      "scale-usd-25": { priceMinor: 2500, bonusPaise: 500, name: "Scale Pack", currency: "USD" },
+      "power-usd-50": { priceMinor: 5e3, bonusPaise: 1500, name: "Power Pack", currency: "USD" },
+      "builder-usd": { priceMinor: 1200, bonusPaise: 100, name: "Builder Plan", currency: "USD" },
+      "pro-usd": { priceMinor: 2900, bonusPaise: 300, name: "Pro Plan", currency: "USD" }
+    };
+    const isUSD = body.currency === "USD" || body.packageSlug.includes("usd");
+    const fallbackPkg = STATIC_PACKAGES[body.packageSlug];
+    if (!dbPkg && !fallbackPkg) throw new ApiError("not_found", "Credit package not found.");
+    const priceMinor = dbPkg ? dbPkg.pricePaise : fallbackPkg.priceMinor;
+    const bonusPaise = dbPkg ? dbPkg.bonusPaise : fallbackPkg.bonusPaise;
+    const selectedCurrency = isUSD ? "USD" : dbPkg?.currency || fallbackPkg?.currency || "INR";
     if (body.idempotencyKey) {
       const existing = await db2.select().from(payments).where(eq11(payments.idempotencyKey, body.idempotencyKey));
       if (existing.length > 0) {
@@ -3830,20 +4190,20 @@ async function walletRoutes(app) {
     const invoice = `PRO-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 4).toUpperCase()}`;
     const paymentRows = await db2.insert(payments).values({
       userId: user.id,
-      packageId: pkg.id,
+      packageId: dbPkg ? dbPkg.id : null,
       gateway: "razorpay",
-      amountPaise: pkg.pricePaise,
+      amountPaise: priceMinor,
       status: "created",
       idempotencyKey: body.idempotencyKey ?? null,
       invoiceNumber: invoice,
-      metadata: { bonusPaise: pkg.bonusPaise, packageSlug: pkg.slug }
+      metadata: { bonusPaise, packageSlug: body.packageSlug, currency: selectedCurrency }
     }).returning();
     const payment = paymentRows[0];
     const auth = Buffer.from(`${env.razorpayKeyId}:${env.razorpayKeySecret}`).toString("base64");
     const res = await fetch("https://api.razorpay.com/v1/orders", {
       method: "POST",
       headers: { authorization: `Basic ${auth}`, "content-type": "application/json" },
-      body: JSON.stringify({ amount: pkg.pricePaise, currency: "INR", receipt: invoice, notes: { uno_payment_id: payment.id } })
+      body: JSON.stringify({ amount: priceMinor, currency: selectedCurrency, receipt: invoice, notes: { uno_payment_id: payment.id, currency: selectedCurrency } })
     });
     if (!res.ok) {
       const text7 = await res.text();
@@ -3851,45 +4211,155 @@ async function walletRoutes(app) {
     }
     const order = await res.json();
     await db2.update(payments).set({ gatewayOrderId: order.id, updatedAt: /* @__PURE__ */ new Date() }).where(eq11(payments.id, payment.id));
-    return reply.send({ paymentId: payment.id, invoice, amountPaise: pkg.pricePaise, currency: "INR", gateway: "razorpay", gatewayOrderId: order.id, keyId: env.razorpayKeyId });
+    return reply.send({ paymentId: payment.id, invoice, amountPaise: priceMinor, currency: selectedCurrency, gateway: "razorpay", gatewayOrderId: order.id, keyId: env.razorpayKeyId });
   });
-  app.post("/payments/razorpay/webhook", async (request, reply) => {
+  app.post("/wallet/verify", async (request, reply) => {
+    const user = await requireUser(request);
+    const body = z5.object({
+      paymentId: z5.string(),
+      razorpayPaymentId: z5.string(),
+      razorpayOrderId: z5.string(),
+      razorpaySignature: z5.string()
+    }).parse(request.body);
+    const secret = env.razorpayKeySecret;
+    if (!secret) {
+      throw new ApiError("provider_unavailable", "Payment verification is not configured.");
+    }
+    const expected = createHmac("sha256", secret).update(`${body.razorpayOrderId}|${body.razorpayPaymentId}`).digest("hex");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const receivedBuf = Buffer.from(body.razorpaySignature, "utf8");
+    if (expectedBuf.length !== receivedBuf.length || !timingSafeEqual3(expectedBuf, receivedBuf)) {
+      throw new ApiError("forbidden", "Payment verification failed: invalid signature.");
+    }
+    const db2 = await getDb();
+    const paymentRows = await db2.select().from(payments).where(eq11(payments.id, body.paymentId));
+    const payment = paymentRows[0];
+    if (!payment) {
+      throw new ApiError("not_found", "Payment record not found.");
+    }
+    if (payment.userId !== user.id) {
+      throw new ApiError("forbidden", "Payment belongs to another user.");
+    }
+    if (payment.status === "captured" || payment.creditedAt) {
+      return reply.send({ success: true, status: "already_credited" });
+    }
+    const paymentMeta = payment.metadata;
+    const bonus = Number(paymentMeta?.bonusPaise ?? 0);
+    const isUSD = paymentMeta?.currency === "USD";
+    const totalCredit = isUSD ? Math.round((payment.amountPaise + bonus) * 97) : payment.amountPaise + bonus;
+    await creditWallet({
+      userId: user.id,
+      amountPaise: totalCredit,
+      type: "topup",
+      reference: payment.invoiceNumber,
+      idempotencyKey: `pay:${payment.id}`,
+      metadata: { paymentId: payment.id, gatewayPaymentId: body.razorpayPaymentId, bonus }
+    });
+    await db2.update(payments).set({
+      status: "captured",
+      gatewayPaymentId: body.razorpayPaymentId,
+      creditedAt: /* @__PURE__ */ new Date(),
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq11(payments.id, payment.id));
+    eventHub.publish(user.id, "payment.completed", {
+      paymentId: payment.id,
+      invoice: payment.invoiceNumber,
+      amountPaise: totalCredit,
+      amountFormatted: formatMoney(totalCredit),
+      gateway: "razorpay"
+    });
+    return reply.send({
+      success: true,
+      status: "captured",
+      amountPaise: totalCredit,
+      paymentId: payment.id
+    });
+  });
+  const webhookHandler = async (request, reply) => {
     const signature = request.headers["x-razorpay-signature"];
     if (typeof signature !== "string" || !env.razorpayWebhookSecret) {
       throw new ApiError("forbidden", "Webhook not configured or signature missing.");
     }
     const raw = request.rawBody ?? JSON.stringify(request.body);
     const expected = createHmac("sha256", env.razorpayWebhookSecret).update(raw).digest("hex");
-    if (expected !== signature) throw new ApiError("forbidden", "Invalid webhook signature.");
+    const expectedBuf = Buffer.from(expected, "utf8");
+    const signatureBuf = Buffer.from(signature, "utf8");
+    if (expectedBuf.length !== signatureBuf.length || !timingSafeEqual3(expectedBuf, signatureBuf)) {
+      throw new ApiError("forbidden", "Invalid webhook signature.");
+    }
     const event = request.body;
     const paymentEntity = event.payload?.payment?.entity;
-    const eventId = `${event.event}:${paymentEntity?.id ?? "unknown"}:${paymentEntity?.order_id ?? ""}`;
+    const orderId = paymentEntity?.order_id || event.payload?.order?.entity?.id;
+    const eventId = `${event.event}:${paymentEntity?.id ?? "unknown"}:${orderId ?? ""}`;
     const db2 = await getDb();
     const existingEvents = await db2.select().from(paymentWebhooks).where(eq11(paymentWebhooks.eventId, eventId));
     if (existingEvents.length > 0) return reply.send({ status: "duplicate_ignored" });
-    await db2.insert(paymentWebhooks).values({ eventId, gateway: "razorpay", payload: event, signatureValid: true });
-    if (event.event !== "payment.captured") return reply.send({ status: "ignored" });
-    const paymentRows = paymentEntity?.order_id ? await db2.select().from(payments).where(eq11(payments.gatewayOrderId, paymentEntity.order_id)) : [];
+    await db2.insert(paymentWebhooks).values({
+      eventId,
+      gateway: "razorpay",
+      payload: event,
+      signatureValid: true
+    });
+    if (event.event !== "payment.captured" && event.event !== "order.paid") {
+      return reply.send({ status: "ignored" });
+    }
+    const paymentRows = orderId ? await db2.select().from(payments).where(eq11(payments.gatewayOrderId, orderId)) : [];
     const payment = paymentRows[0];
     if (!payment) throw new ApiError("not_found", "Payment not found for order.");
-    if (payment.creditedAt) return reply.send({ status: "already_credited" });
-    if (payment.status === "captured") return reply.send({ status: "already_credited" });
-    const bonus = Number(payment.metadata?.bonusPaise ?? 0);
+    if (payment.creditedAt || payment.status === "captured") {
+      return reply.send({ status: "already_credited" });
+    }
+    const paymentMeta = payment.metadata;
+    const bonus = Number(paymentMeta?.bonusPaise ?? 0);
+    const isUSD = paymentMeta?.currency === "USD";
+    const totalCredit = isUSD ? Math.round((payment.amountPaise + bonus) * 97) : payment.amountPaise + bonus;
     await creditWallet({
       userId: payment.userId,
-      amountPaise: payment.amountPaise + bonus,
+      amountPaise: totalCredit,
       type: "topup",
       reference: payment.invoiceNumber,
       idempotencyKey: `pay:${payment.id}`,
       metadata: { paymentId: payment.id, gatewayPaymentId: paymentEntity?.id, bonus }
     });
-    await db2.update(payments).set({ status: "captured", gatewayPaymentId: paymentEntity?.id ?? null, creditedAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date() }).where(eq11(payments.id, payment.id));
+    await db2.update(payments).set({
+      status: "captured",
+      gatewayPaymentId: paymentEntity?.id ?? null,
+      creditedAt: /* @__PURE__ */ new Date(),
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq11(payments.id, payment.id));
+    eventHub.publish(payment.userId, "payment.completed", {
+      paymentId: payment.id,
+      invoice: payment.invoiceNumber,
+      amountPaise: totalCredit,
+      amountFormatted: formatMoney(totalCredit),
+      gateway: "razorpay"
+    });
     return reply.send({ status: "credited" });
+  };
+  app.post("/payments/razorpay/webhook", webhookHandler);
+  app.post("/wallet/webhook", webhookHandler);
+  app.get("/wallet/payments/:id", async (request) => {
+    const user = await requireUser(request);
+    const { id } = request.params;
+    const db2 = await getDb();
+    const rows = await db2.select().from(payments).where(eq11(payments.id, id));
+    const p = rows[0];
+    if (!p || p.userId !== user.id) throw new ApiError("not_found", "Payment not found.");
+    return {
+      id: p.id,
+      invoice: p.invoiceNumber,
+      amountPaise: p.amountPaise,
+      amountFormatted: formatMoney(p.amountPaise),
+      gateway: p.gateway,
+      status: p.status,
+      creditedAt: p.creditedAt ? p.creditedAt.toISOString() : null,
+      createdAt: p.createdAt.toISOString()
+    };
   });
   app.get("/payments", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(payments).where(eq11(payments.userId, user.id)).orderBy(desc5(payments.createdAt)).limit(50);
+    const rows = await db2.select().from(payments).where(eq11(payments.userId, user.id)).orderBy(desc6(payments.createdAt)).limit(50);
     return {
       items: rows.map((p) => ({
         id: p.id,
@@ -3906,16 +4376,16 @@ async function walletRoutes(app) {
 
 // apps/api/src/routes/promotions.ts
 import { z as z6 } from "zod";
-import { and as and6, desc as desc6, eq as eq12, gt as gt2, lt, sql as sql6 } from "drizzle-orm";
+import { and as and7, desc as desc7, eq as eq12, gt as gt3, lt, sql as sql6 } from "drizzle-orm";
 async function getActiveCampaign() {
   const db2 = await getDb();
   const now = /* @__PURE__ */ new Date();
-  const rows = await db2.select().from(astraCampaigns).where(and6(eq12(astraCampaigns.active, true), lt(astraCampaigns.startsAt, now))).orderBy(desc6(astraCampaigns.startsAt));
+  const rows = await db2.select().from(astraCampaigns).where(and7(eq12(astraCampaigns.active, true), lt(astraCampaigns.startsAt, now))).orderBy(desc7(astraCampaigns.startsAt));
   return rows.find((c) => !c.endsAt || c.endsAt > now) ?? null;
 }
 async function getOrCreatePersonalCode(userId, campaignId) {
   const db2 = await getDb();
-  const existing = await db2.select().from(giftCodes).where(and6(eq12(giftCodes.ownerUserId, userId), eq12(giftCodes.campaignId, campaignId)));
+  const existing = await db2.select().from(giftCodes).where(and7(eq12(giftCodes.ownerUserId, userId), eq12(giftCodes.campaignId, campaignId)));
   if (existing[0]) return existing[0].code;
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = `PRO-${randomCode(6)}`;
@@ -3937,7 +4407,7 @@ async function promotionRoutes(app) {
     try {
       const user = await requireUser(request);
       const db2 = await getDb();
-      const ent = await db2.select().from(astraEntitlements).where(and6(eq12(astraEntitlements.userId, user.id), eq12(astraEntitlements.status, "active"), gt2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()))).orderBy(desc6(astraEntitlements.activatedAt));
+      const ent = await db2.select().from(astraEntitlements).where(and7(eq12(astraEntitlements.userId, user.id), eq12(astraEntitlements.status, "active"), gt3(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()))).orderBy(desc7(astraEntitlements.activatedAt));
       if (ent[0]) {
         const msLeft = ent[0].expiresAt.getTime() - Date.now();
         entitlement = { activatedAt: ent[0].activatedAt.toISOString(), expiresAt: ent[0].expiresAt.toISOString(), daysLeft: Math.max(0, Math.ceil(msLeft / 864e5)) };
@@ -3979,7 +4449,7 @@ async function promotionRoutes(app) {
     if (code.ownerUserId && code.ownerUserId === user.id) {
       throw new ApiError("self_redemption_not_allowed", "You cannot redeem your own referral code. Share it with a friend instead.");
     }
-    const already = await db2.select().from(giftCodeRedemptions).where(and6(eq12(giftCodeRedemptions.codeId, code.id), eq12(giftCodeRedemptions.redeemerUserId, user.id)));
+    const already = await db2.select().from(giftCodeRedemptions).where(and7(eq12(giftCodeRedemptions.codeId, code.id), eq12(giftCodeRedemptions.redeemerUserId, user.id)));
     if (already.length > 0) throw new ApiError("already_redeemed", "You have already redeemed this code.");
     const maxPerCode = code.maxRedemptions ?? campaign.maxRedemptionsPerCode ?? null;
     if (!campaign.allowMultiRedeem && code.redemptionCount > 0) {
@@ -4030,7 +4500,7 @@ async function promotionRoutes(app) {
     const codes = await db2.select().from(giftCodes).where(eq12(giftCodes.code, code));
     const codeRow = codes[0];
     const redemptions = await db2.select({ count: sql6`count(*)::int` }).from(giftCodeRedemptions).where(eq12(giftCodeRedemptions.codeId, codeRow.id));
-    const activeCount = await db2.select({ count: sql6`count(*)::int` }).from(astraEntitlements).where(and6(eq12(astraEntitlements.sourceCodeId, codeRow.id), eq12(astraEntitlements.status, "active"), gt2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const activeCount = await db2.select({ count: sql6`count(*)::int` }).from(astraEntitlements).where(and7(eq12(astraEntitlements.sourceCodeId, codeRow.id), eq12(astraEntitlements.status, "active"), gt3(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
     return {
       code,
       sharePath: `/redeem?code=${code}`,
@@ -4043,7 +4513,7 @@ async function promotionRoutes(app) {
 
 // apps/api/src/routes/admin.ts
 import { z as z7 } from "zod";
-import { and as and7, desc as desc7, eq as eq13, gte as gte2, sql as sql7 } from "drizzle-orm";
+import { and as and8, desc as desc8, eq as eq13, gte as gte2, sql as sql7 } from "drizzle-orm";
 async function runHealthCheck(providerId) {
   const db2 = await getDb();
   const rows = await db2.select().from(providers).where(eq13(providers.id, providerId));
@@ -4142,7 +4612,7 @@ async function adminRoutes(app) {
     const balance = await db2.select({ total: sql7`coalesce(sum(${wallets.balancePaise}),0)::bigint` }).from(wallets);
     const [redemptions] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodeRedemptions);
     const [ents] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()));
-    const [freeReqs] = await db2.select({ n: sql7`count(*)::int` }).from(requests).where(and7(gte2(requests.createdAt, since), eq13(requests.isFree, true)));
+    const [freeReqs] = await db2.select({ n: sql7`count(*)::int` }).from(requests).where(and8(gte2(requests.createdAt, since), eq13(requests.isFree, true)));
     return {
       users: userCount?.n ?? 0,
       requests30d: reqCount?.n ?? 0,
@@ -4159,7 +4629,7 @@ async function adminRoutes(app) {
     await requireRole(request, ["admin", "support"]);
     const q = request.query;
     const db2 = await getDb();
-    const rows = await db2.select({ r: requests, u: email(users), m: slug(models), p: slug(providers) }).from(requests).leftJoin(users, eq13(users.id, requests.userId)).leftJoin(models, eq13(models.id, requests.modelId)).leftJoin(providers, eq13(providers.id, requests.providerId)).orderBy(desc7(requests.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
+    const rows = await db2.select({ r: requests, u: email(users), m: slug(models), p: slug(providers) }).from(requests).leftJoin(users, eq13(users.id, requests.userId)).leftJoin(models, eq13(models.id, requests.modelId)).leftJoin(providers, eq13(providers.id, requests.providerId)).orderBy(desc8(requests.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     return { items: rows.map((x) => ({ id: x.r.id, createdAt: x.r.createdAt.toISOString(), user: x.u, model: x.m, provider: x.p, status: x.r.status, httpStatus: x.r.httpStatus, latencyMs: x.r.latencyMs, costPaise: x.r.costPaise, tokens: x.r.totalTokens, errorCode: x.r.errorCode })) };
   });
   app.get("/admin/providers", async (request) => {
@@ -4291,9 +4761,9 @@ async function adminRoutes(app) {
     let rows;
     if (q.q) {
       const pattern = `%${q.q.toLowerCase()}%`;
-      rows = await db2.select().from(users).where(sql7`lower(${users.email}) LIKE ${pattern}`).orderBy(desc7(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
+      rows = await db2.select().from(users).where(sql7`lower(${users.email}) LIKE ${pattern}`).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     } else {
-      rows = await db2.select().from(users).orderBy(desc7(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
+      rows = await db2.select().from(users).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     }
     return { items: rows.map((u) => ({ id: u.id, email: u.email, name: u.name, role: u.role, status: u.status, createdAt: u.createdAt.toISOString() })) };
   });
@@ -4329,12 +4799,12 @@ async function adminRoutes(app) {
   app.get("/admin/promotions/astra", async (request) => {
     await requireRole(request, ["admin", "support"]);
     const db2 = await getDb();
-    const campaign = (await db2.select().from(astraCampaigns).orderBy(desc7(astraCampaigns.createdAt)))[0];
+    const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) return { campaign: null, stats: null, codes: [] };
     const [codeCount] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id));
     const [redCount] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodeRedemptions).where(eq13(giftCodeRedemptions.campaignId, campaign.id));
-    const [activeUsers] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(and7(eq13(astraEntitlements.campaignId, campaign.id), eq13(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
-    const codes = await db2.select().from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id)).orderBy(desc7(giftCodes.createdAt)).limit(200);
+    const [activeUsers] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(and8(eq13(astraEntitlements.campaignId, campaign.id), eq13(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const codes = await db2.select().from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id)).orderBy(desc8(giftCodes.createdAt)).limit(200);
     return {
       campaign,
       stats: { totalCodes: codeCount?.n ?? 0, totalRedemptions: redCount?.n ?? 0, activeAstraUsers: activeUsers?.n ?? 0, conversions: codeCount?.n ? Math.round((redCount?.n ?? 0) / codeCount.n * 100) : 0 },
@@ -4354,7 +4824,7 @@ async function adminRoutes(app) {
       maxRedemptionsPerCode: z7.number().int().min(1).nullable().optional()
     }).parse(request.body);
     const db2 = await getDb();
-    const campaign = (await db2.select().from(astraCampaigns).orderBy(desc7(astraCampaigns.createdAt)))[0];
+    const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) throw new ApiError("not_found", "No campaign configured.");
     const rows = await db2.update(astraCampaigns).set({ ...body, endsAt: body.endsAt === null ? null : body.endsAt ? new Date(body.endsAt) : void 0, updatedAt: /* @__PURE__ */ new Date() }).where(eq13(astraCampaigns.id, campaign.id)).returning();
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "campaign.update", targetType: "astra_campaign", targetId: campaign.id, metadata: body });
@@ -4365,7 +4835,7 @@ async function adminRoutes(app) {
     const admin = await requireRole(request, ["admin"]);
     const body = z7.object({ count: z7.number().int().min(1).max(500), ownerUserId: z7.string().uuid().nullable().optional(), maxRedemptions: z7.number().int().min(1).nullable().optional() }).parse(request.body);
     const db2 = await getDb();
-    const campaign = (await db2.select().from(astraCampaigns).orderBy(desc7(astraCampaigns.createdAt)))[0];
+    const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) throw new ApiError("not_found", "No campaign configured.");
     const created = [];
     for (let i = 0; i < body.count; i++) {
@@ -4450,7 +4920,7 @@ async function adminRoutes(app) {
   app.get("/admin/audit", async (request) => {
     await requireRole(request, ["admin"]);
     const db2 = await getDb();
-    const rows = await db2.select().from(auditLogs).orderBy(desc7(auditLogs.createdAt)).limit(200);
+    const rows = await db2.select().from(auditLogs).orderBy(desc8(auditLogs.createdAt)).limit(200);
     return { items: rows.map((a) => ({ ...a, createdAt: a.createdAt.toISOString() })) };
   });
 }
@@ -4462,7 +4932,7 @@ function slug(m) {
 }
 
 // apps/api/src/routes/dashboard.ts
-import { and as and8, desc as desc8, eq as eq14, gte as gte3, sql as sql8 } from "drizzle-orm";
+import { and as and9, desc as desc9, eq as eq14, gte as gte3, sql as sql8 } from "drizzle-orm";
 import { and as and22, eq as eq22, gte as gte22 } from "drizzle-orm";
 async function dashboardRoutes(app) {
   app.get("/dashboard/overview", async (request) => {
@@ -4472,9 +4942,9 @@ async function dashboardRoutes(app) {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const balance = await getBalance(user.id);
-    const [today] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and8(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
-    const [month] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and8(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
-    const [keys] = await db2.select({ n: sql8`count(*)::int` }).from(apiKeys).where(and8(eq14(apiKeys.userId, user.id), sql8`${apiKeys.revokedAt} IS NULL`));
+    const [today] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and9(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
+    const [month] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and9(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
+    const [keys] = await db2.select({ n: sql8`count(*)::int` }).from(apiKeys).where(and9(eq14(apiKeys.userId, user.id), sql8`${apiKeys.revokedAt} IS NULL`));
     const subRows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq22(subscriptions.planId, plans.id)).where(eq22(subscriptions.userId, user.id));
     const plan = subRows.find((s) => s.plan)?.plan ?? null;
     const [freeToday] = await db2.select({ n: sql8`coalesce(sum(count),0)::int` }).from(freeUsage).where(eq22(freeUsage.userId, user.id));
@@ -4498,7 +4968,7 @@ async function dashboardRoutes(app) {
     const days = Math.min(Math.max(Number(q.days ?? 7), 1), 90);
     const db2 = await getDb();
     const since = new Date(Date.now() - days * 864e5);
-    const rows = await db2.select().from(requests).where(and8(eq14(requests.userId, user.id), gte3(requests.createdAt, since)));
+    const rows = await db2.select().from(requests).where(and9(eq14(requests.userId, user.id), gte3(requests.createdAt, since)));
     const buckets2 = /* @__PURE__ */ new Map();
     for (let i = 0; i < days; i++) {
       const d = new Date(Date.now() - (days - 1 - i) * 864e5);
@@ -4523,8 +4993,8 @@ async function dashboardRoutes(app) {
     const conditions = [eq14(requests.userId, user.id)];
     if (q.status === "errors") conditions.push(eq14(requests.status, "error"));
     if (q.status === "success") conditions.push(eq14(requests.status, "success"));
-    const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and8(...conditions)).orderBy(desc8(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
-    const [total] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(and8(...conditions));
+    const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and9(...conditions)).orderBy(desc9(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
+    const [total] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(and9(...conditions));
     return {
       total: total?.n ?? 0,
       items: rows.map((x) => ({
@@ -4596,27 +5066,27 @@ async function dashboardRoutes(app) {
     const user = await requireUser(request);
     const db2 = await getDb();
     const since = new Date(Date.now() - 30 * 864e5);
-    const byModel = await db2.select({ model: models.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and8(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc8(sql8`count(*)`));
-    const byProvider = await db2.select({ provider: providers.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and8(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc8(sql8`count(*)`));
+    const byModel = await db2.select({ model: models.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and9(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql8`count(*)`));
+    const byProvider = await db2.select({ provider: providers.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and9(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql8`count(*)`));
     return { byModel: byModel.map((r) => ({ ...r, cost: Number(r.cost) })), byProvider };
   });
   app.get("/notifications", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(notifications).where(eq14(notifications.userId, user.id)).orderBy(desc8(notifications.createdAt)).limit(30);
+    const rows = await db2.select().from(notifications).where(eq14(notifications.userId, user.id)).orderBy(desc9(notifications.createdAt)).limit(30);
     return { items: rows.map((n) => ({ ...n, createdAt: n.createdAt.toISOString(), readAt: n.readAt?.toISOString() ?? null })) };
   });
   app.post("/notifications/read", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and8(eq14(notifications.userId, user.id), sql8`${notifications.readAt} IS NULL`));
+    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and9(eq14(notifications.userId, user.id), sql8`${notifications.readAt} IS NULL`));
     return { ok: true };
   });
   app.get("/status", async () => {
     const db2 = await getDb();
     const providerRows = await db2.select().from(providers);
-    const healthRows = await db2.select().from(providerHealth).orderBy(desc8(providerHealth.checkedAt)).limit(50);
-    const incidentRows = await db2.select().from(incidents).orderBy(desc8(incidents.startedAt)).limit(20);
+    const healthRows = await db2.select().from(providerHealth).orderBy(desc9(providerHealth.checkedAt)).limit(50);
+    const incidentRows = await db2.select().from(incidents).orderBy(desc9(incidents.startedAt)).limit(20);
     const snapshot = queueSnapshot();
     const services = [
       { name: "API", operational: true },
@@ -4668,7 +5138,7 @@ async function planRoutes(app) {
 
 // apps/api/src/routes/usage.ts
 import { z as z8 } from "zod";
-import { and as and9, desc as desc9, eq as eq16, gte as gte4, lte, sql as sql9 } from "drizzle-orm";
+import { and as and10, desc as desc10, eq as eq16, gte as gte4, lte, sql as sql9 } from "drizzle-orm";
 var usageQuery = z8.object({
   limit: z8.coerce.number().int().min(1).max(100).default(50),
   offset: z8.coerce.number().int().min(0).default(0),
@@ -4701,13 +5171,13 @@ async function usageRoutes(app) {
     if (q.status) conditions.push(eq16(requests.status, q.status));
     if (q.from) conditions.push(gte4(requests.createdAt, new Date(q.from)));
     if (q.to) conditions.push(lte(requests.createdAt, new Date(q.to)));
-    const where = and9(...conditions);
+    const where = and10(...conditions);
     const totalRows = await db2.select({ n: sql9`count(*)::int` }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).where(where);
     const rows = await db2.select({
       request: requests,
       modelSlug: models.slug,
       providerSlug: providers.slug
-    }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).leftJoin(providers, eq16(providers.id, requests.providerId)).where(where).orderBy(desc9(requests.createdAt)).limit(q.limit).offset(q.offset);
+    }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).leftJoin(providers, eq16(providers.id, requests.providerId)).where(where).orderBy(desc10(requests.createdAt)).limit(q.limit).offset(q.offset);
     return {
       object: "list",
       data: rows.map(toUsageRecord),
@@ -4720,7 +5190,7 @@ async function usageRoutes(app) {
     const auth = await authenticateRequest(request);
     const params = z8.object({ request_id: z8.string().min(1) }).parse(request.params);
     const db2 = await getDb();
-    const rows = await db2.select({ request: requests, modelSlug: models.slug, providerSlug: providers.slug }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).leftJoin(providers, eq16(providers.id, requests.providerId)).where(and9(eq16(requests.id, params.request_id), eq16(requests.userId, auth.user.id)));
+    const rows = await db2.select({ request: requests, modelSlug: models.slug, providerSlug: providers.slug }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).leftJoin(providers, eq16(providers.id, requests.providerId)).where(and10(eq16(requests.id, params.request_id), eq16(requests.userId, auth.user.id)));
     const row = rows[0];
     if (!row) throw new ApiError("not_found", "Usage record not found.");
     return { ...toUsageRecord(row), route: row.request.route, queue_wait_ms: row.request.queueWaitMs };
@@ -4749,6 +5219,58 @@ function toUsageRecord(row) {
     ttft_ms: r.ttftMs,
     error: r.errorCode ? { code: r.errorCode, message: r.errorMessage } : null
   };
+}
+
+// apps/api/src/routes/events.ts
+async function authenticateEventStream(request) {
+  const sessionUser = await resolveSessionUser(request);
+  if (sessionUser) return sessionUser;
+  const keyAuth = await resolveApiKey(request);
+  if (keyAuth) return keyAuth.user;
+  const query = request.query;
+  if (query.token) {
+    const bearerReq = {
+      ...request,
+      headers: { ...request.headers, authorization: `Bearer ${query.token}` }
+    };
+    try {
+      const qAuth = await resolveApiKey(bearerReq);
+      if (qAuth) return qAuth.user;
+    } catch {
+    }
+  }
+  throw new ApiError("unauthenticated", "Authentication required to subscribe to dashboard events.");
+}
+async function eventRoutes(app) {
+  const handler = async (request, reply) => {
+    const user = await authenticateEventStream(request);
+    reply.raw.setHeader("Content-Type", "text/event-stream");
+    reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
+    reply.raw.setHeader("Connection", "keep-alive");
+    reply.raw.setHeader("X-Accel-Buffering", "no");
+    reply.raw.flushHeaders();
+    const lastEventId = request.headers["last-event-id"];
+    eventHub.subscribe(user.id, reply, lastEventId);
+    const [balancePaise, availablePaise] = await Promise.all([
+      getBalance(user.id),
+      getAvailableBalance(user.id)
+    ]);
+    reply.raw.write(
+      `event: wallet.balance.updated
+data: ${JSON.stringify({
+        balancePaise,
+        availablePaise,
+        balanceFormatted: formatMoney(balancePaise),
+        currency: "INR"
+      })}
+
+`
+    );
+    await new Promise(() => {
+    });
+  };
+  app.get("/dashboard/events", handler);
+  app.get("/v1/dashboard/events", handler);
 }
 
 // apps/api/src/app.ts
@@ -4851,6 +5373,7 @@ async function buildApp() {
   await app.register(promotionRoutes);
   await app.register(adminRoutes);
   await app.register(dashboardRoutes);
+  await app.register(eventRoutes);
   return app;
 }
 
