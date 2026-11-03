@@ -1,9 +1,22 @@
 /**
- * ProRouter — routing engine (§11, §66).
+ * ProRouter — Intelligent Routing Engine & 500+ Model Catalog (§1, §5, §6, §9).
  *
- * The engine is a pure function over candidate data so it is deterministic,
- * testable and observable. Database hydration happens in the API layer.
+ * Provides capability-based model selection, multi-tier fallback chains (Primary -> Secondary -> Final Fallback),
+ * model behavior and persona enforcement, and in-memory indexed catalog management.
  */
+
+export * from "./types.js";
+export * from "./backend-registry.js";
+export * from "./catalog-generator.js";
+export * from "./profile-registry.js";
+export * from "./capability-matcher.js";
+export * from "./behavior-engine.js";
+export * from "./health-monitor.js";
+export * from "./fallback-manager.js";
+export * from "./intelligent-router.js";
+export * from "./catalog-service.js";
+
+// ── Backward Compatible Route Request Interface (§11, §66) ──
 
 export interface RouteCandidate {
   linkId: string;

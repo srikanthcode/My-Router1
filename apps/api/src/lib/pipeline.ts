@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { decryptSecret, env, ApiError, type ChatMessage, type Usage, type UsageSource } from "@pro/shared";
 import { createAdapter, ProviderError, type AdapterChatParams, type ProviderAdapter, type StreamEvent } from "@pro/providers";
-import { routeRequest, selectAutoModel, type RouteCandidate, type RouteDecision } from "@pro/routing";
+import { routeRequest, selectAutoModel, type RouteCandidate, type RouteDecision, ModelProfileRegistry, IntelligentModelRouter, ProviderHealthMonitor, ModelBehaviorEngine } from "@pro/routing";
 import { getDb, modelProviders, models, providerCredentials, providers, providerHealth, modelPricing, modelCapabilities, modelLimits, pricingTiers } from "@pro/database";
 import { getUsdToInrRate, resolveEffectivePricing, type PricingTierRow } from "./pricing.js";
 
@@ -99,33 +99,22 @@ export const MODEL_ALIASES: Record<string, string> = {
   "gpt-6-luna": "gpt-6-luna",
   "gpt-4o": "gpt-6.1-sol",
   "gpt-4": "gpt-6.1-sol",
-  // Requesty 13 models aliases
+  // Requesty 6 models aliases
   "mistral/leanstral-1-5": "leanstral-1-5",
   "leanstral-1-5": "leanstral-1-5",
-  "poolside/laguna-xs.2": "laguna-xs.2",
-  "laguna-xs.2": "laguna-xs.2",
-  "poolside/laguna-m.1": "laguna-m.1",
-  "laguna-m.1": "laguna-m.1",
-  "novita/inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
-  "inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
   "novita/ling-3.1-flash": "ling-3.1-flash",
   "ling-3.1-flash": "ling-3.1-flash",
-  "nvidia/nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
-  "nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
   "nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
-  "nvidia/nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
-  "nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
-  "nvidia/nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
-  "nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
   "nvidia/nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
   "nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
   "nvidia/nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
   "nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
-  "nvidia/muse-glimmer-30b": "muse-glimmer-30b",
-  "muse-glimmer-30b": "muse-glimmer-30b",
   "google/gemma-4-31b-it": "gemma-4-31b-it",
   "gemma-4-31b-it": "gemma-4-31b-it",
+  "qwen/qwen3.8-27b": "qwen3.8-27b",
+  "openai/gpt-oss-20b": "gpt-oss-20b",
+  "openai/gpt-oss-120b": "gpt-oss-120b",
 };
 
 /** Resolve user-supplied model id: "slug", "prorouter/slug", "provider/slug" or "prorouter/auto". */
@@ -136,6 +125,8 @@ export async function resolveModelInput(input: string): Promise<{ auto: boolean;
   if (raw.startsWith("uno/")) raw = raw.slice(4); // legacy alias still accepted
 
   const lower = raw.toLowerCase();
+  if (ModelProfileRegistry.has(lower)) return { auto: false, slug: lower };
+  if (ModelProfileRegistry.has(raw)) return { auto: false, slug: raw };
   if (MODEL_ALIASES[lower]) {
     return { auto: false, slug: MODEL_ALIASES[lower] };
   }
@@ -181,6 +172,67 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
     ));
   let r = rows[0];
   if (!r) {
+    const profile = ModelProfileRegistry.get(slug) || ModelProfileRegistry.get(lowerSlug);
+    if (profile) {
+      const fallbackRows = await db.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models)
+        .leftJoin(modelPricing, eq(modelPricing.modelId, models.id))
+        .leftJoin(pricingTiers, eq(pricingTiers.slug, models.pricingTier))
+        .leftJoin(modelCapabilities, eq(modelCapabilities.modelId, models.id))
+        .leftJoin(modelLimits, eq(modelLimits.modelId, models.id))
+        .where(eq(models.slug, "deepseek-v4.1-flash-1017"));
+      const baseRow = fallbackRows[0];
+      return {
+        model: {
+          id: `profile-${profile.id}`,
+          slug: profile.id,
+          name: profile.name,
+          description: profile.description,
+          providerId: baseRow?.model.providerId ?? null,
+          type: "chat",
+          status: "active" as const,
+          isFree: profile.isFree,
+          contextWindow: profile.contextWindow,
+          maxOutputTokens: profile.maxOutputTokens,
+          rank: profile.rank,
+          popularity: profile.popularity,
+          rating: 98,
+          pricingTier: null,
+          metadata: { category: profile.category },
+          benchmarks: {},
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        pricing: {
+          id: `pricing-${profile.id}`,
+          modelId: `profile-${profile.id}`,
+          inputPerMillion: 0,
+          outputPerMillion: 0,
+          cachedInputPerMillion: 0,
+          currency: "INR",
+        },
+        tier: null,
+        caps: {
+          modelId: `profile-${profile.id}`,
+          modalities: profile.capabilities.vision === "supported" ? ["text", "image"] : ["text"],
+          streaming: profile.capabilities.streaming === "supported",
+          toolCalls: profile.capabilities.tool_calling === "supported",
+          structuredOutputs: profile.capabilities.json_structured === "supported",
+          reasoning: profile.capabilities.reasoning === "supported",
+          vision: profile.capabilities.vision === "supported",
+          imageGeneration: false,
+          audio: false,
+          jsonMode: true,
+        },
+        limits: {
+          modelId: `profile-${profile.id}`,
+          perMinute: 30,
+          perHour: 300,
+          perDay: 3000,
+          concurrency: 5,
+          queuePriority: 1,
+        },
+      };
+    }
     // If not found in catalog, route gracefully to primary gateway model while maintaining requested name persona
     const fallbackRows = await db.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models)
       .leftJoin(modelPricing, eq(modelPricing.modelId, models.id))
@@ -219,6 +271,49 @@ export async function hydrateCandidates(modelId: string, forcedProvider?: string
   const healthRows = providerIds.length ? await db.select().from(providerHealth).where(inArray(providerHealth.providerId, providerIds)).orderBy(desc(providerHealth.checkedAt)) : [];
   const latestHealth = new Map<string, typeof providerHealth.$inferSelect>();
   for (const h of healthRows) if (!latestHealth.has(h.providerId)) latestHealth.set(h.providerId, h);
+
+  if (linkRows.length === 0) {
+    const cleanId = modelId.startsWith("profile-") ? modelId.slice(8) : modelId;
+    const profile = ModelProfileRegistry.get(cleanId);
+    if (profile) {
+      const decision = IntelligentModelRouter.route(cleanId, {});
+      const chain = [decision.primary, ...decision.fallbackChain];
+      const allProviders = await db.select().from(providers);
+      const providerBySlug = new Map(allProviders.map((p) => [p.slug, p]));
+      const dynamicCandidates: RouteCandidate[] = [];
+
+      for (let i = 0; i < chain.length; i++) {
+        const backend = chain[i];
+        if (forcedProvider && backend.provider !== forcedProvider) continue;
+        const dbProvider = providerBySlug.get(backend.provider);
+        if (!dbProvider) continue;
+        const isHealthy = ProviderHealthMonitor.isAvailable(backend.provider);
+        dynamicCandidates.push({
+          linkId: `dyn-${backend.id}-${i}`,
+          providerId: dbProvider.id,
+          providerSlug: dbProvider.slug,
+          providerName: dbProvider.name,
+          upstreamModelId: backend.upstreamModelId,
+          linkPriority: (i + 1) * 10,
+          providerPriority: dbProvider.priority,
+          providerStatus: isHealthy ? "active" : "degraded",
+          linkStatus: "active",
+          timeoutMs: dbProvider.timeoutMs,
+          retryCount: dbProvider.retryCount,
+          health: {
+            available: isHealthy,
+            latencyMs: 180 + i * 50,
+            successRateBp: isHealthy ? 10000 : 5000,
+            checkedAt: new Date(),
+          },
+          inputPerMillion: 0,
+          outputPerMillion: 0,
+          isFree: true,
+        });
+      }
+      if (dynamicCandidates.length > 0) return dynamicCandidates;
+    }
+  }
 
   return linkRows
     .filter((l) => !forcedProvider || l.provider.slug === forcedProvider)
@@ -263,6 +358,78 @@ export function getBackendGatewayKey(): string | undefined {
   return key;
 }
 
+function getBackendRequestyPool(): string[] {
+  const envVal = process.env.PROVIDER_REQUESTY_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal
+    .split(/[\s,;\n]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+let backendRequestyPoolIndex = 0;
+export function getBackendRequestyKey(): string | undefined {
+  const pool = getBackendRequestyPool();
+  if (pool.length === 0) return process.env.PROVIDER_REQUESTY_API_KEY;
+  const key = pool[backendRequestyPoolIndex % pool.length];
+  backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % pool.length;
+  return key;
+}
+
+function getBackendGroqPool(): string[] {
+  const envVal = process.env.GROQ_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal
+    .split(/[\s,;\n]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+let backendGroqPoolIndex = 0;
+export function getBackendGroqKey(): string | undefined {
+  const pool = getBackendGroqPool();
+  if (pool.length === 0) return process.env.GROQ_API_KEY;
+  const key = pool[backendGroqPoolIndex % pool.length];
+  backendGroqPoolIndex = (backendGroqPoolIndex + 1) % pool.length;
+  return key;
+}
+
+function getBackendOpenRouterPool(): string[] {
+  const envVal = process.env.PROVIDER_OPENROUTER_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal
+    .split(/[\s,;\n]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+function getBackendNabhPool(): string[] {
+  const envVal = process.env.PROVIDER_NABH_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal
+    .split(/[\s,;\n]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+let backendNabhPoolIndex = 0;
+export function getBackendNabhKey(): string | undefined {
+  const pool = getBackendNabhPool();
+  if (pool.length === 0) return process.env.PROVIDER_NABH_API_KEY;
+  const key = pool[backendNabhPoolIndex % pool.length];
+  backendNabhPoolIndex = (backendNabhPoolIndex + 1) % pool.length;
+  return key;
+}
+
+let backendOpenRouterPoolIndex = 0;
+export function getBackendOpenRouterKey(): string | undefined {
+  const pool = getBackendOpenRouterPool();
+  if (pool.length === 0) return process.env.PROVIDER_OPENROUTER_API_KEY;
+  const key = pool[backendOpenRouterPoolIndex % pool.length];
+  backendOpenRouterPoolIndex = (backendOpenRouterPoolIndex + 1) % pool.length;
+  return key;
+}
+
 const ENV_KEY_MAP: Record<string, string | undefined> = {
   "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
   openai: env.openaiApiKey,
@@ -271,6 +438,7 @@ const ENV_KEY_MAP: Record<string, string | undefined> = {
   anthropic: env.anthropicApiKey,
   openrouter: process.env.PROVIDER_OPENROUTER_API_KEY,
   requesty: process.env.PROVIDER_REQUESTY_API_KEY,
+  nabh: process.env.PROVIDER_NABH_API_KEY,
 };
 
 /** Build an adapter with decrypted credentials (secrets never leave the server). */
@@ -281,9 +449,15 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
   let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : undefined;
-  if (!apiKey) {
+  if (!apiKey || candidate.providerSlug === "prorouter-gateway" || candidate.providerSlug === "requesty" || candidate.providerSlug === "groq" || candidate.providerSlug === "openrouter" || candidate.providerSlug === "nabh") {
     if (candidate.providerSlug === "prorouter-gateway") {
       apiKey = getBackendGatewayKey();
+    } else if (candidate.providerSlug === "requesty") {
+      apiKey = getBackendRequestyKey();
+    } else if (candidate.providerSlug === "groq") {
+      apiKey = getBackendGroqKey();
+    } else if (candidate.providerSlug === "openrouter") {
+      apiKey = getBackendOpenRouterKey();
     } else {
       apiKey = ENV_KEY_MAP[candidate.providerSlug];
     }
@@ -318,11 +492,13 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
     try {
       const adapter = await getAdapter(candidate);
       const result = await adapter.chat(params);
+      ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
       attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
       return { ...result, providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, attempts };
     } catch (err) {
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
       lastError = pErr;
+      ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
       attempts.push({ providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
       const isLast = i === chain.length - 1;
       if (isLast || !pErr.retryable) break;

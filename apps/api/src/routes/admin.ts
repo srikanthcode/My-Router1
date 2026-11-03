@@ -7,6 +7,7 @@ import { requireRole } from "../lib/auth.js";
 import { creditWallet } from "../lib/wallet.js";
 import { getAdapter } from "../lib/pipeline.js";
 import { getNumber, loadSettings } from "../lib/settings.js";
+import { ProviderHealthMonitor, ModelProfileRegistry, IntelligentModelRouter, ModelCatalogService } from "@pro/routing";
 
 /** Run a live health check against a provider and persist the result (§43). */
 export async function runHealthCheck(providerId: string) {
@@ -441,6 +442,26 @@ export async function adminRoutes(app: FastifyInstance) {
     await db.insert(auditLogs).values({ actorUserId: admin.id, action: "flag.update", targetType: "feature_flag", targetId: key, metadata: { enabled: body.enabled } });
     await loadSettings(true);
     return { ok: true };
+  });
+
+  // ── Intelligent Routing & 500+ Model Monitoring Endpoints ──
+  app.get("/admin/model-health", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    return ProviderHealthMonitor.getReport();
+  });
+
+  app.get("/admin/models-catalog", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    return {
+      total: ModelProfileRegistry.count(),
+      categories: ModelCatalogService.getCategoryDistribution(),
+      items: ModelProfileRegistry.getAll(),
+    };
+  });
+
+  app.get("/admin/routing-metrics", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    return IntelligentModelRouter.getMetrics();
   });
 
   app.get("/admin/audit", async (request) => {

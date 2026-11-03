@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError } from "@pro/shared";
 import { getProviderDetail, getModelDetail, listModels, listProviders } from "../lib/catalog.js";
+import { ModelCatalogService } from "@pro/routing";
 
 const listQuery = z.object({
   q: z.string().optional(),
@@ -21,6 +22,18 @@ function truthy(v: string | undefined): boolean | undefined {
 }
 
 export async function catalogRoutes(app: FastifyInstance) {
+  app.get("/catalog/profiles", async (request) => {
+    const q = request.query as Record<string, string>;
+    return ModelCatalogService.list({
+      q: q.q,
+      category: q.category,
+      tier: q.tier,
+      page: q.page ? parseInt(q.page, 10) : 1,
+      pageSize: q.pageSize ? parseInt(q.pageSize, 10) : 50,
+      sort: (q.sort as any) || "popularity",
+    });
+  });
+
   app.get("/models", async (request) => {
     const q = listQuery.parse(request.query);
     return listModels({ q: q.q, provider: q.provider, free: truthy(q.free), paid: truthy(q.paid), category: q.category, minContext: q.min_context, sort: q.sort, limit: q.limit, offset: q.offset });

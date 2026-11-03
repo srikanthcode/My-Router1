@@ -12,3 +12,5 @@ envcheck.txt
 versions.txt
 npmtest.txt
 *.pem
+*.sh
+*.py

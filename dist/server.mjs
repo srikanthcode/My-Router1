@@ -1426,6 +1426,16 @@ async function seedDatabase(closeAtEnd = false) {
   }
   const providerSeeds = [
     {
+      slug: "nabh",
+      name: "Nabh Cloud",
+      endpointUrl: process.env.PROVIDER_NABH_BASE_URL || "https://api.nabh.cloud/v1",
+      adapterType: "openai",
+      priority: 12,
+      region: "global",
+      capabilities: ["chat", "reasoning"],
+      description: "Nabh Cloud high-throughput AI gateway."
+    },
+    {
       slug: "prorouter-gateway",
       name: "ProRouter Gateway",
       endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1",
@@ -1460,15 +1470,16 @@ async function seedDatabase(closeAtEnd = false) {
   if (true) {
     await db2.update(providers).set({ endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1", status: "active" }).where(eq(providers.slug, "prorouter-gateway"));
   }
-  for (const slug2 of ["prorouter-gateway", "freemodels", "requesty"]) {
+  for (const slug2 of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh"]) {
     await db2.update(providers).set({ status: "active" }).where(and(eq(providers.slug, slug2), eq(providers.status, "unknown")));
   }
   const envKeyFor = {
     "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
-    requesty: process.env.PROVIDER_REQUESTY_API_KEY,
-    openrouter: process.env.PROVIDER_OPENROUTER_API_KEY,
+    requesty: process.env.PROVIDER_REQUESTY_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_REQUESTY_API_KEY,
+    openrouter: process.env.PROVIDER_OPENROUTER_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_OPENROUTER_API_KEY,
+    nabh: process.env.PROVIDER_NABH_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_NABH_API_KEY,
     openai: env.openaiApiKey,
-    groq: env.groqApiKey,
+    groq: (process.env.GROQ_API_KEY || env.groqApiKey)?.split(/[\s,;\n]+/)[0],
     mistral: env.mistralApiKey,
     anthropic: env.anthropicApiKey,
     ollama: void 0
@@ -1488,7 +1499,8 @@ async function seedDatabase(closeAtEnd = false) {
   const catalog = [
     { slug: "deepseek-v4.1-flash-1017", name: "DeepSeek-V4.1-Flash-1017", description: "DeepSeek V4.1 Flash \u2014 state-of-the-art fast reasoning, coding, and multilingual intelligence.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128e3, input: 0, output: 0, rank: 1, popularity: 9900, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", description: "DeepSeek V4.1 Flash \u2014 high-speed reasoning and code synthesis.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128e3, input: 0, output: 0, rank: 2, popularity: 9880, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "qwen3.8-27b", name: "Qwen3.8-27B", description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 3, popularity: 9850, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities running on Groq LPU.", provider: "groq", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 4, popularity: 9850, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
+    { slug: "qwen3.8-27b", name: "Qwen3.8-27B", description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities.", provider: "groq", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 3, popularity: 9850, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
     { slug: "glm-5.3", name: "GLM-5.3", description: "Zhipu GLM-5.3 \u2014 flagship bilingual reasoning, analytical thinking, and tool execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 128e3, input: 0, output: 0, rank: 4, popularity: 9800, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "kimi-k3", name: "Kimi K3", description: "Moonshot Kimi K3 \u2014 ultra long-context frontier model with high-speed reasoning and deep comprehension.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 5, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "mimo-v2.6-pro", name: "MiMo-V2.6-Pro", description: "Xiaomi MiMo V2.6 Pro \u2014 flagship multimodal reasoning model for advanced synthesis and coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 6, popularity: 9750, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
@@ -1509,23 +1521,19 @@ async function seedDatabase(closeAtEnd = false) {
     { slug: "mimo-v2.6-flash", name: "MiMo-V2.6-Flash", description: "Xiaomi MiMo Flash \u2014 quick responses with solid reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 21, popularity: 9760, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "gpt-6-luna", name: "GPT-6 Luna", description: "OpenAI GPT-6 Luna \u2014 low-latency next-gen assistant for rapid task execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 256e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 22, popularity: 9940, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "beam", name: "Beam", description: "Fast general-purpose model for everyday chat and drafting.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 23, popularity: 9050, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", description: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 24, popularity: 8800, reasoning: true, vision: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", description: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work.", provider: "prorouter-gateway", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 25, popularity: 8700, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", description: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning.", provider: "openrouter", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 24, popularity: 8800, reasoning: true, vision: true, toolCalls: true, links: [{ provider: "openrouter", providerModelId: "nvidia/nemotron-3.5-super-vl:free", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", description: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work.", provider: "openrouter", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 25, popularity: 8700, reasoning: true, toolCalls: true, links: [{ provider: "openrouter", providerModelId: "nvidia/nemotron-3.5-lightning:free", priority: 10 }, { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "longcat-2.5-preview", name: "LongCat 2.5 Preview", description: "Meituan LongCat 2.5 \u2014 long-context preview with strong multilingual reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 26, popularity: 8600, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "jev-1.13", name: "Jev 1.13", description: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 27, popularity: 8200, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
     { slug: "leanstral-1-5", name: "Leanstral 1.5", description: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context for lean execution and structured synthesis.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 28, popularity: 9600, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "mistral/leanstral-1-5", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "laguna-xs.2", name: "Laguna XS.2", description: "Poolside Laguna XS.2 \u2014 specialized ultra-fast coding and execution model designed for rapid software iteration.", provider: "requesty", isFree: true, contextWindow: 32768, maxOutputTokens: 16384, input: 0, output: 0, rank: 29, popularity: 9550, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "poolside/laguna-xs.2", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "laguna-m.1", name: "Laguna M.1", description: "Poolside Laguna M.1 \u2014 medium-tier frontier code synthesis and multi-file refactoring engine.", provider: "requesty", isFree: true, contextWindow: 32768, maxOutputTokens: 16384, input: 0, output: 0, rank: 30, popularity: 9560, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "poolside/laguna-m.1", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "inclusionai/ling-3.0-tiny", name: "Ling 3.0 Tiny", description: "Novita InclusionAI Ling 3.0 Tiny \u2014 lightweight multilingual model with 262K context for edge inference and compact reasoning.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 31, popularity: 9480, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "novita/inclusionai/ling-3.0-tiny", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "ling-3.1-flash", name: "Ling 3.1 Flash", description: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed, summarization, and task routing.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 32, popularity: 9580, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "novita/ling-3.1-flash", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3-nano-30b-a3b", name: "Nemotron 3 Nano 30B A3B", description: "NVIDIA Nemotron 3 Nano 30B A3B \u2014 efficient MoE architecture delivering enterprise reasoning and 262K context.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 33, popularity: 9650, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-30b-a3b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3-nano-omni-30b-a3b-reasoning", name: "Nemotron 3 Nano Omni 30B Reasoning", description: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving with 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 20480, input: 0, output: 0, rank: 34, popularity: 9700, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3-super-120b-a12b", name: "Nemotron 3 Super 120B A12B", description: "NVIDIA Nemotron 3 Super 120B A12B \u2014 massive 1M context MoE flagship for whole-codebase understanding and deep synthesis.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 35, popularity: 9750, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-super-120b-a12b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-content-safety", name: "Nemotron 3.5 Content Safety", description: "NVIDIA Nemotron 3.5 Content Safety \u2014 specialized guardrail model for real-time moderation, compliance, and safety filtering across 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 8192, input: 0, output: 0, rank: 36, popularity: 9350, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3.5-content-safety", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-lightning-30b-a3b", name: "Nemotron 3.5 Lightning 30B A3B", description: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window for high-throughput workflows.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 37, popularity: 9800, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra 550B A55B", description: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context for frontier science, law, and complex systems architecture.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 38, popularity: 9880, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "muse-glimmer-30b", name: "Muse Glimmer 30B", description: "NVIDIA Muse Glimmer 30B \u2014 creative reasoning and expressive generation model tuned for narrative design, code styling, and 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 20480, input: 0, output: 0, rank: 39, popularity: 9400, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/muse-glimmer-30b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "gemma-4-31b-it", name: "Gemma 4 31B IT", description: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context, sharp instruction following, and multilingual mastery.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 8192, input: 0, output: 0, rank: 40, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "google/gemma-4-31b-it", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } }
+    { slug: "ling-3.1-flash", name: "Ling 3.1 Flash", description: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed, summarization, and task routing.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 29, popularity: 9580, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "novita/ling-3.1-flash", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3-nano-omni-30b-a3b-reasoning", name: "Nemotron 3 Nano Omni 30B Reasoning", description: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving with 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 20480, input: 0, output: 0, rank: 30, popularity: 9700, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3.5-lightning-30b-a3b", name: "Nemotron 3.5 Lightning 30B A3B", description: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window for high-throughput workflows.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 31, popularity: 9800, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3.5-lightning:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra 550B A55B", description: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context for frontier science, law, and complex systems architecture.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 32, popularity: 9880, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
+    { slug: "gpt-oss-120b", name: "GPT OSS 120B", description: "OpenAI open-weight 120B parameter MoE reasoning architecture with high throughput on Groq LPU.", provider: "groq", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 35, popularity: 9800, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
+    { slug: "allam-2-7b", name: "Allam 2 7B", description: "SDAIA high-performance bilingual Arabic & English foundational language model.", provider: "groq", isFree: true, contextWindow: 4096, maxOutputTokens: 2048, input: 0, output: 0, rank: 36, popularity: 9100, reasoning: false, toolCalls: false, structured: true, links: [{ provider: "groq", providerModelId: "allam-2-7b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 20, perHour: 200, perDay: 2e3 } },
+    { slug: "gpt-oss-20b", name: "GPT OSS 20B", description: "Open-weight 20B parameter reasoning and chat model with high speed and chain-of-thought capabilities.", provider: "nabh", isFree: true, contextWindow: 131072, maxOutputTokens: 16384, input: 0, output: 0, rank: 34, popularity: 9750, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 }, { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
+    { slug: "gemma-4-31b-it", name: "Gemma 4 31B IT", description: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context, sharp instruction following, and multilingual mastery.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 8192, input: 0, output: 0, rank: 33, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "google/gemma-4-31b-it", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } }
   ];
   for (const m of catalog) {
     const providerRow = providerBySlug.get(m.provider);
@@ -2391,6 +2399,1575 @@ async function loadActivePricingTiers() {
   return new Map(rows.map((t) => [t.slug, t]));
 }
 
+// packages/routing/src/backend-registry.ts
+function makeCaps(overrides = {}) {
+  return {
+    general_intelligence: "supported",
+    reasoning: "supported",
+    deep_reasoning: "unknown",
+    mathematics: "unknown",
+    coding: "unknown",
+    agentic_coding: "unknown",
+    tool_calling: "supported",
+    function_calling: "supported",
+    vision: "unsupported",
+    image_understanding: "unsupported",
+    document_understanding: "unknown",
+    multilingual: "supported",
+    tamil_language: "unknown",
+    long_context: "unknown",
+    json_structured: "supported",
+    streaming: "supported",
+    low_latency: "supported",
+    complex_analysis: "unknown",
+    research: "unknown",
+    planning: "unknown",
+    instruction_following: "supported",
+    ...overrides
+  };
+}
+var VERIFIED_BACKEND_MODELS = {
+  // ── 1. GPT OSS Models ──
+  "nabh/gpt-oss-20b": {
+    id: "nabh/gpt-oss-20b",
+    name: "GPT OSS 20B (Nabh)",
+    provider: "nabh",
+    upstreamModelId: "gpt-oss-20b",
+    contextWindow: 131072,
+    maxOutputTokens: 16384,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      mathematics: "supported",
+      low_latency: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "groq/gpt-oss-20b": {
+    id: "groq/gpt-oss-20b",
+    name: "GPT OSS 20B (Groq LPU)",
+    provider: "groq",
+    upstreamModelId: "openai/gpt-oss-20b",
+    contextWindow: 131072,
+    maxOutputTokens: 16384,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      mathematics: "supported",
+      low_latency: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "groq/gpt-oss-120b": {
+    id: "groq/gpt-oss-120b",
+    name: "GPT OSS 120B (Groq LPU)",
+    provider: "groq",
+    upstreamModelId: "openai/gpt-oss-120b",
+    contextWindow: 131072,
+    maxOutputTokens: 32768,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      mathematics: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      low_latency: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  // ── 2. NVIDIA Nemotron Models ──
+  "requesty/nemotron-3-ultra-550b-a55b": {
+    id: "requesty/nemotron-3-ultra-550b-a55b",
+    name: "Nemotron 3 Ultra 550B (Requesty)",
+    provider: "requesty",
+    upstreamModelId: "nvidia/nemotron-3-ultra-550b-a55b",
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      mathematics: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      long_context: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "openrouter/nemotron-3-ultra-550b-a55b": {
+    id: "openrouter/nemotron-3-ultra-550b-a55b",
+    name: "Nemotron 3 Ultra 550B (OpenRouter Free)",
+    provider: "openrouter",
+    upstreamModelId: "nvidia/nemotron-3-ultra-550b-a55b:free",
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      mathematics: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      long_context: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "requesty/nemotron-3-nano-omni-30b-a3b-reasoning": {
+    id: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
+    name: "Nemotron 3 Nano Omni 30B (Requesty)",
+    provider: "requesty",
+    upstreamModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    contextWindow: 131072,
+    maxOutputTokens: 20480,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      mathematics: "supported",
+      coding: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning": {
+    id: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning",
+    name: "Nemotron 3 Nano Omni 30B (OpenRouter Free)",
+    provider: "openrouter",
+    upstreamModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    contextWindow: 131072,
+    maxOutputTokens: 20480,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      mathematics: "supported",
+      coding: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "requesty/nemotron-3.5-lightning-30b-a3b": {
+    id: "requesty/nemotron-3.5-lightning-30b-a3b",
+    name: "Nemotron 3.5 Lightning 30B (Requesty)",
+    provider: "requesty",
+    upstreamModelId: "nvidia/nemotron-3.5-lightning-30b-a3b",
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: makeCaps({
+      low_latency: "supported",
+      long_context: "supported",
+      coding: "supported",
+      reasoning: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "openrouter/nemotron-3.5-lightning": {
+    id: "openrouter/nemotron-3.5-lightning",
+    name: "Nemotron 3.5 Lightning (OpenRouter Free)",
+    provider: "openrouter",
+    upstreamModelId: "nvidia/nemotron-3.5-lightning:free",
+    contextWindow: 1048576,
+    maxOutputTokens: 65536,
+    capabilities: makeCaps({
+      low_latency: "supported",
+      long_context: "supported",
+      coding: "supported",
+      reasoning: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "openrouter/nemotron-3.5-super-vl": {
+    id: "openrouter/nemotron-3.5-super-vl",
+    name: "Nemotron 3.5 Super VL (OpenRouter Free)",
+    provider: "openrouter",
+    upstreamModelId: "nvidia/nemotron-3.5-super-vl:free",
+    contextWindow: 128e3,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported",
+      reasoning: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  // ── 3. High-Performance Open Weights ──
+  "groq/qwen3.8-27b": {
+    id: "groq/qwen3.8-27b",
+    name: "Qwen 3.8 27B (Groq LPU)",
+    provider: "groq",
+    upstreamModelId: "qwen/qwen3.8-27b",
+    contextWindow: 131072,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      coding: "supported",
+      agentic_coding: "supported",
+      multilingual: "supported",
+      tamil_language: "supported",
+      low_latency: "supported",
+      reasoning: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "requesty/gemma-4-31b-it": {
+    id: "requesty/gemma-4-31b-it",
+    name: "Gemma 4 31B IT (Requesty)",
+    provider: "requesty",
+    upstreamModelId: "google/gemma-4-31b-it",
+    contextWindow: 262144,
+    maxOutputTokens: 8192,
+    capabilities: makeCaps({
+      multilingual: "supported",
+      tamil_language: "supported",
+      reasoning: "supported",
+      instruction_following: "supported",
+      long_context: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "requesty/leanstral-1-5": {
+    id: "requesty/leanstral-1-5",
+    name: "Leanstral 1.5 (Requesty)",
+    provider: "requesty",
+    upstreamModelId: "mistral/leanstral-1-5",
+    contextWindow: 262144,
+    maxOutputTokens: 32768,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      long_context: "supported",
+      instruction_following: "supported",
+      complex_analysis: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "requesty/ling-3.1-flash": {
+    id: "requesty/ling-3.1-flash",
+    name: "Ling 3.1 Flash (Requesty)",
+    provider: "requesty",
+    upstreamModelId: "novita/ling-3.1-flash",
+    contextWindow: 262144,
+    maxOutputTokens: 32768,
+    capabilities: makeCaps({
+      low_latency: "supported",
+      long_context: "supported",
+      multilingual: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  "groq/allam-2-7b": {
+    id: "groq/allam-2-7b",
+    name: "Allam 2 7B (Groq LPU)",
+    provider: "groq",
+    upstreamModelId: "allam-2-7b",
+    contextWindow: 4096,
+    maxOutputTokens: 2048,
+    capabilities: makeCaps({
+      low_latency: "supported",
+      multilingual: "supported",
+      tool_calling: "unsupported",
+      function_calling: "unsupported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  },
+  // ── 4. Primary Gateway Fallback Engine ──
+  "prorouter/deepseek-v4.1-flash": {
+    id: "prorouter/deepseek-v4.1-flash",
+    name: "DeepSeek V4.1 Flash (ProRouter Gateway)",
+    provider: "prorouter-gateway",
+    upstreamModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    contextWindow: 262144,
+    maxOutputTokens: 128e3,
+    capabilities: makeCaps({
+      general_intelligence: "supported",
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      multilingual: "supported",
+      tamil_language: "supported",
+      long_context: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: true,
+    costPaisePerMillion: { input: 0, output: 0 }
+  }
+};
+var BackendModelRegistry = class {
+  static backends = VERIFIED_BACKEND_MODELS;
+  static get(id) {
+    return this.backends[id];
+  }
+  static getAll() {
+    return Object.values(this.backends);
+  }
+  static getByProvider(provider) {
+    return Object.values(this.backends).filter((b) => b.provider === provider);
+  }
+  static findCompatible(requiredCaps, excludeBackendIds = /* @__PURE__ */ new Set()) {
+    return Object.values(this.backends).filter((b) => !excludeBackendIds.has(b.id)).filter((b) => b.healthStatus === "active").filter((b) => {
+      for (const cap of requiredCaps) {
+        if (b.capabilities[cap] === "unsupported") {
+          return false;
+        }
+      }
+      return true;
+    });
+  }
+};
+
+// packages/routing/src/catalog-generator.ts
+function caps(overrides = {}) {
+  return {
+    general_intelligence: "supported",
+    reasoning: "supported",
+    deep_reasoning: "unknown",
+    mathematics: "unknown",
+    coding: "unknown",
+    agentic_coding: "unknown",
+    tool_calling: "supported",
+    function_calling: "supported",
+    vision: "unsupported",
+    image_understanding: "unsupported",
+    document_understanding: "unknown",
+    multilingual: "supported",
+    tamil_language: "unknown",
+    long_context: "unknown",
+    json_structured: "supported",
+    streaming: "supported",
+    low_latency: "supported",
+    complex_analysis: "unknown",
+    research: "unknown",
+    planning: "unknown",
+    instruction_following: "supported",
+    ...overrides
+  };
+}
+function generateProfiles() {
+  const list = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  function add(profile) {
+    if (seenIds.has(profile.id)) {
+      throw new Error(`Duplicate profile ID generated: ${profile.id}`);
+    }
+    seenIds.add(profile.id);
+    list.push(profile);
+  }
+  const legacyIdentities = [
+    { id: "claude-sonnet", name: "Claude Sonnet", category: "coding", desc: "Anthropic Claude Sonnet \u2014 balanced intelligence, high coding precision, and nuanced creative writing." },
+    { id: "claude-opus", name: "Claude Opus", category: "reasoning", desc: "Anthropic Claude Opus \u2014 deep analysis, nuanced reasoning, and complex task decomposition." },
+    { id: "claude-opus-5", name: "Claude Opus 5", category: "reasoning", desc: "Anthropic Claude Opus 5 \u2014 next-generation frontier intelligence for research and coding." },
+    { id: "gemini-pro", name: "Gemini Pro", category: "general", desc: "Google Gemini Pro \u2014 powerful multimodal model with vast context window and world knowledge." },
+    { id: "grok", name: "Grok", category: "general", desc: "xAI Grok \u2014 direct, truthful AI with real-time insight and witty demeanor." },
+    { id: "mistral-large", name: "Mistral Large", category: "reasoning", desc: "Mistral Large \u2014 flagship model for complex multilingual reasoning and precise instruction following." },
+    { id: "devstral-24b", name: "Devstral 24B", category: "coding", desc: "Mistral Devstral 24B \u2014 developer-tuned open weights optimized for software engineering workflows." },
+    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", category: "reasoning", desc: "OpenAI GPT-6.1 Sol \u2014 frontier cloud model optimized for high-speed reasoning and synthesis." },
+    { id: "gpt-6.1-terra", name: "GPT-6.1 Terra", category: "research", desc: "OpenAI GPT-6.1 Terra \u2014 flagship multimodal intelligence with deep scientific knowledge." },
+    { id: "gpt-6-luna", name: "GPT-6 Luna", category: "fast", desc: "OpenAI GPT-6 Luna \u2014 low-latency next-gen assistant for rapid task execution." },
+    { id: "kimi-k3", name: "Kimi K3", category: "long_context", desc: "Moonshot Kimi K3 \u2014 ultra long-context frontier model with high-speed reasoning and deep comprehension." },
+    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", category: "coding", desc: "Moonshot Kimi K2.7 Code \u2014 specialized code intelligence and agentic workflow automation." },
+    { id: "glm-5.3", name: "GLM-5.3", category: "reasoning", desc: "Zhipu GLM-5.3 \u2014 flagship bilingual reasoning, analytical thinking, and tool execution." },
+    { id: "glm-5.3-flash", name: "GLM-5.3-Flash", category: "fast", desc: "Zhipu GLM 5.3 Flash \u2014 fast multilingual reasoning with high-speed tool execution." },
+    { id: "mimo-v2.6-pro", name: "MiMo-V2.6-Pro", category: "reasoning", desc: "Xiaomi MiMo V2.6 Pro \u2014 flagship multimodal reasoning model for advanced synthesis and coding." },
+    { id: "mimo-v2.6-flash", name: "MiMo-V2.6-Flash", category: "fast", desc: "Xiaomi MiMo Flash \u2014 quick responses with solid reasoning." },
+    { id: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash", category: "fast", desc: "MiniMax M3.1 Flash \u2014 fast multimodal model with reliable tool calling and low latency." },
+    { id: "qwen3-coder-next", name: "Qwen3-Coder-Next", category: "coding", desc: "Alibaba Qwen3 Coder Next \u2014 specialized coding model for repository synthesis and multi-file debugging." },
+    { id: "deepseek-v4-pro-0813", name: "DeepSeek-V4-Pro-0813", category: "coding", desc: "DeepSeek V4 Pro \u2014 high-throughput frontier reasoning and deep architectural coding." },
+    { id: "beam", name: "Beam", category: "general", desc: "Fast general-purpose model for everyday chat and drafting." },
+    { id: "longcat-2.5-preview", name: "LongCat 2.5 Preview", category: "long_context", desc: "Meituan LongCat 2.5 \u2014 long-context preview with strong multilingual reasoning." },
+    { id: "jev-1.13", name: "Jev 1.13", category: "general", desc: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality." }
+  ];
+  for (let i = 0; i < legacyIdentities.length; i++) {
+    const item = legacyIdentities[i];
+    add({
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      categoryLabel: formatCategoryLabel(item.category),
+      description: item.desc,
+      status: "production",
+      contextWindow: 262144,
+      maxOutputTokens: 64e3,
+      pricingTier: "standard",
+      isFree: true,
+      capabilities: caps({
+        reasoning: "supported",
+        coding: item.category === "coding" ? "supported" : "unknown",
+        agentic_coding: item.category === "coding" ? "supported" : "unknown",
+        long_context: item.category === "long_context" ? "supported" : "unknown",
+        low_latency: item.category === "fast" ? "supported" : "unknown"
+      }),
+      behavior: {
+        reasoning_style: "structured",
+        answer_style: "clear_and_precise",
+        verbosity: "adaptive",
+        instruction_following: "strict",
+        tool_usage: "when_needed",
+        formatting: "chat_assistant",
+        uncertainty_handling: "transparent",
+        system_prompt_template: `You are ${item.name}, a premier AI assistant powered by ProRouter intelligent routing. Provide thorough, high-precision responses tailored to the user request.`
+      },
+      routingPolicy: {
+        primaryBackend: "prorouter/deepseek-v4.1-flash",
+        finalFallback: "prorouter/deepseek-v4.1-flash",
+        requiredCapabilities: ["general_intelligence"]
+      },
+      rank: 10 + i,
+      popularity: 9900 - i * 15,
+      rating: 98,
+      tags: ["legacy", item.category, "pro"]
+    });
+  }
+  const verifiedLive = [
+    { id: "gpt-oss-20b", name: "GPT OSS 20B", cat: "reasoning", primary: "nabh/gpt-oss-20b", sec: "groq/gpt-oss-20b", desc: "Open-weight 20B parameter reasoning and chat model with high speed and chain-of-thought capabilities." },
+    { id: "gpt-oss-120b", name: "GPT OSS 120B", cat: "reasoning", primary: "groq/gpt-oss-120b", sec: "prorouter/deepseek-v4.1-flash", desc: "OpenAI open-weight 120B parameter MoE reasoning architecture running on Groq LPU." },
+    { id: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", cat: "coding", primary: "groq/qwen3.8-27b", sec: "prorouter/deepseek-v4.1-flash", desc: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities." },
+    { id: "qwen3.8-27b", name: "Qwen3.8-27B (Standard)", cat: "coding", primary: "groq/qwen3.8-27b", sec: "prorouter/deepseek-v4.1-flash", desc: "Alibaba Qwen3.8 27B standard model alias running on high-speed inference." },
+    { id: "nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra 550B A55B", cat: "reasoning", primary: "requesty/nemotron-3-ultra-550b-a55b", sec: "openrouter/nemotron-3-ultra-550b-a55b", desc: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context." },
+    { id: "nemotron-3-nano-omni-30b-a3b-reasoning", name: "Nemotron 3 Nano Omni 30B Reasoning", cat: "vision", primary: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning", sec: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning", desc: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving." },
+    { id: "nemotron-3.5-lightning-30b-a3b", name: "Nemotron 3.5 Lightning 30B A3B", cat: "fast", primary: "requesty/nemotron-3.5-lightning-30b-a3b", sec: "openrouter/nemotron-3.5-lightning", desc: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window." },
+    { id: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", cat: "fast", primary: "openrouter/nemotron-3.5-lightning", sec: "requesty/nemotron-3.5-lightning-30b-a3b", desc: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work." },
+    { id: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", cat: "vision", primary: "openrouter/nemotron-3.5-super-vl", sec: "prorouter/deepseek-v4.1-flash", desc: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning." },
+    { id: "gemma-4-31b-it", name: "Gemma 4 31B IT", cat: "multilingual", primary: "requesty/gemma-4-31b-it", sec: "prorouter/deepseek-v4.1-flash", desc: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context." },
+    { id: "leanstral-1-5", name: "Leanstral 1.5", cat: "reasoning", primary: "requesty/leanstral-1-5", sec: "prorouter/deepseek-v4.1-flash", desc: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context." },
+    { id: "ling-3.1-flash", name: "Ling 3.1 Flash", cat: "fast", primary: "requesty/ling-3.1-flash", sec: "prorouter/deepseek-v4.1-flash", desc: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed." },
+    { id: "allam-2-7b", name: "Allam 2 7B", cat: "multilingual", primary: "groq/allam-2-7b", sec: "prorouter/deepseek-v4.1-flash", desc: "SDAIA high-performance bilingual Arabic & English foundational language model." },
+    { id: "deepseek-v4.1-flash-1017", name: "DeepSeek-V4.1-Flash-1017", cat: "coding", primary: "prorouter/deepseek-v4.1-flash", sec: "prorouter/deepseek-v4.1-flash", desc: "DeepSeek V4.1 Flash checkpoint 1017 \u2014 latest frontier open-weight reasoning model." },
+    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", cat: "coding", primary: "prorouter/deepseek-v4.1-flash", sec: "prorouter/deepseek-v4.1-flash", desc: "DeepSeek V4.1 Flash \u2014 state-of-the-art high-speed reasoning, coding, and multilingual intelligence." }
+  ];
+  for (let i = 0; i < verifiedLive.length; i++) {
+    const item = verifiedLive[i];
+    add({
+      id: item.id,
+      name: item.name,
+      category: item.cat,
+      categoryLabel: formatCategoryLabel(item.cat),
+      description: item.desc,
+      status: "production",
+      contextWindow: item.cat === "long_context" ? 1048576 : 131072,
+      maxOutputTokens: 32768,
+      pricingTier: "standard",
+      isFree: true,
+      capabilities: caps({
+        reasoning: "supported",
+        coding: item.cat === "coding" ? "supported" : "unknown",
+        vision: item.cat === "vision" ? "supported" : "unsupported",
+        multilingual: "supported",
+        low_latency: item.cat === "fast" ? "supported" : "unknown"
+      }),
+      behavior: {
+        reasoning_style: item.cat === "reasoning" ? "structured" : "concise",
+        answer_style: item.cat === "coding" ? "code_first" : "clear_and_precise",
+        verbosity: "adaptive",
+        instruction_following: "strict",
+        tool_usage: "when_needed",
+        formatting: "chat_assistant",
+        uncertainty_handling: "transparent",
+        system_prompt_template: `You are ${item.name}. Provide authentic, direct responses without claiming unverified capabilities.`
+      },
+      routingPolicy: {
+        primaryBackend: item.primary,
+        secondaryBackend: item.sec,
+        finalFallback: "prorouter/deepseek-v4.1-flash",
+        requiredCapabilities: item.cat === "vision" ? ["vision"] : ["general_intelligence"]
+      },
+      rank: 1 + i,
+      popularity: 9950 - i * 10,
+      rating: 99,
+      tags: ["verified", "live", item.cat]
+    });
+  }
+  const categorySpecs = [
+    // 1. General-purpose AI: 70 target
+    {
+      category: "general",
+      targetCount: 70,
+      prefix: "gen",
+      primaryBackend: "prorouter/deepseek-v4.1-flash",
+      secondaryBackend: "groq/gpt-oss-120b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { general_intelligence: "supported", reasoning: "supported", instruction_following: "supported" },
+      behaviorDefaults: { answer_style: "conversational", reasoning_style: "structured", verbosity: "adaptive" },
+      subdomains: [
+        { suffix: "omni-core", title: "Omni Core", desc: "Balanced everyday conversational intelligence and multi-topic comprehension." },
+        { suffix: "dialogue-pro", title: "Dialogue Pro", desc: "Fluent, interactive assistant tuned for multi-turn brainstorming and dialogue." },
+        { suffix: "knowledge-base", title: "Knowledge Base", desc: "Encyclopedic inquiry assistant for contextual lookups and factual explanation." },
+        { suffix: "briefing-desk", title: "Briefing Desk", desc: "Executive summarizer designed for crisp briefings and high-density digests." },
+        { suffix: "clarity-engine", title: "Clarity Engine", desc: "Transparent assistant focusing on plain language breakdown of convoluted topics." },
+        { suffix: "writer-companion", title: "Writer Companion", desc: "Collaborative drafting assistant for memos, emails, and structured outlines." },
+        { suffix: "inquiry-agent", title: "Inquiry Agent", desc: "Active-listening assistant asking clarifying questions to hone requirements." }
+      ]
+    },
+    // 2. Advanced reasoning: 65 target
+    {
+      category: "reasoning",
+      targetCount: 65,
+      prefix: "reason",
+      primaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
+      secondaryBackend: "groq/gpt-oss-120b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { reasoning: "supported", deep_reasoning: "supported", complex_analysis: "supported", planning: "supported" },
+      behaviorDefaults: { reasoning_style: "step_by_step", answer_style: "clear_and_precise", uncertainty_handling: "transparent" },
+      subdomains: [
+        { suffix: "cot-analytical", title: "Chain-of-Thought Analyst", desc: "Rigorous step-by-step chain-of-thought breakdown of multi-constraint problems." },
+        { suffix: "deductive-logic", title: "Deductive Logic Engine", desc: "Formal propositional and first-order predicate logic validator." },
+        { suffix: "causal-inference", title: "Causal Inference Model", desc: "Counterfactual reasoning and root-cause analysis across complex variables." },
+        { suffix: "systems-thinker", title: "Systems Architecture Thinker", desc: "Macro-level feedback loop evaluation and second-order effect modeling." },
+        { suffix: "fallacy-detector", title: "Cognitive Auditor", desc: "Rhetorical bias identification, argument stress-testing, and assumption auditing." },
+        { suffix: "decision-matrix", title: "Decision Matrix Pro", desc: "Multi-criteria tradeoff evaluator weighting risks, costs, and strategic outcomes." },
+        { suffix: "hypothesis-tester", title: "Scientific Hypothesizer", desc: "Falsification testing and empirical experimental protocol design." }
+      ]
+    },
+    // 3. Coding and software engineering: 85 target
+    {
+      category: "coding",
+      targetCount: 85,
+      prefix: "code",
+      primaryBackend: "groq/qwen3.8-27b",
+      secondaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { coding: "supported", tool_calling: "supported", json_structured: "supported" },
+      behaviorDefaults: { answer_style: "code_first", formatting: "code_focused", instruction_following: "strict" },
+      subdomains: [
+        { suffix: "fullstack-architect", title: "Fullstack Architect", desc: "Next.js, TypeScript, Tailwind, and serverless distributed architecture synthesis." },
+        { suffix: "python-systems", title: "Python Systems Engineer", desc: "AsyncIO, FastAPI, PyTorch, and high-performance backend Python pipeline design." },
+        { suffix: "rust-memory", title: "Rust & Systems Safety", desc: "Zero-cost abstractions, borrow-checker resolution, and unsafe audit engineering." },
+        { suffix: "database-internals", title: "Database & SQL Specialist", desc: "PostgreSQL query plan optimization, indexing strategies, and schema migrations." },
+        { suffix: "devops-cloud", title: "Cloud & Kubernetes Engineer", desc: "Terraform IaC, Helm charts, CI/CD GitHub workflows, and container networking." },
+        { suffix: "frontend-perf", title: "React & Web Performance", desc: "Hydration minimization, memoization, WebGL, and micro-frontend design." },
+        { suffix: "security-auditor", title: "Application Security Auditor", desc: "OWASP Top 10 mitigation, auth handshake verification, and sanitize checks." },
+        { suffix: "refactor-clean", title: "Refactoring & Clean Code", desc: "Dead code elimination, design pattern retrofitting, and cyclomatic complexity reduction." }
+      ]
+    },
+    // 4. Agentic coding and tool use: 45 target
+    {
+      category: "agentic",
+      targetCount: 45,
+      prefix: "agent",
+      primaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
+      secondaryBackend: "groq/qwen3.8-27b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { agentic_coding: "supported", tool_calling: "supported", function_calling: "supported", planning: "supported" },
+      behaviorDefaults: { tool_usage: "always", formatting: "code_focused", reasoning_style: "structured" },
+      subdomains: [
+        { suffix: "workflow-runner", title: "Autonomous Workflow Orchestrator", desc: "Multi-step tool calling, API sequencing, and rollback-aware execution." },
+        { suffix: "repo-synthesizer", title: "Repo-Level Agent", desc: "Multi-file repository navigation, diff synthesis, and test runner verification." },
+        { suffix: "schema-tooler", title: "Strict Schema Invoker", desc: "Deterministic JSON Schema and Zod tool call parameter generation without hallucinations." },
+        { suffix: "sandbox-debugger", title: "Runtime Sandbox Debugger", desc: "Terminal stderr triage, stack trace inspection, and iterative patch verification." },
+        { suffix: "agent-swarm", title: "Subagent Team Lead", desc: "Decomposes complex requests into parallel delegate task queues." }
+      ]
+    },
+    // 5. Research and analysis: 45 target
+    {
+      category: "research",
+      targetCount: 45,
+      prefix: "research",
+      primaryBackend: "requesty/leanstral-1-5",
+      secondaryBackend: "groq/gpt-oss-120b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { research: "supported", complex_analysis: "supported", long_context: "supported" },
+      behaviorDefaults: { answer_style: "authoritative", formatting: "academic_paper", verbosity: "comprehensive" },
+      subdomains: [
+        { suffix: "literature-review", title: "Literature Reviewer", desc: "Cross-disciplinary paper synthesis, citation mapping, and methodology evaluation." },
+        { suffix: "competitive-intel", title: "Market & Competitive Intel", desc: "Moat analysis, unit economics breakdown, and patent landscape survey." },
+        { suffix: "data-synthesizer", title: "Qualitative Data Synthesizer", desc: "Extracts key findings, clusters themes, and summarizes long unstructured transcripts." },
+        { suffix: "meta-analyst", title: "Meta-Analysis Assistant", desc: "Reconciles conflicting studies, evaluates sample sizes, and quantifies statistical significance." },
+        { suffix: "deep-investigator", title: "Deep Research Specialist", desc: "Multi-layered investigation exploring historical precedent, modern context, and edge risks." }
+      ]
+    },
+    // 6. Mathematics and science: 30 target
+    {
+      category: "math_science",
+      targetCount: 30,
+      prefix: "math",
+      primaryBackend: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
+      secondaryBackend: "groq/gpt-oss-120b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { mathematics: "supported", deep_reasoning: "supported", reasoning: "supported" },
+      behaviorDefaults: { reasoning_style: "step_by_step", formatting: "academic_paper", uncertainty_handling: "transparent" },
+      subdomains: [
+        { suffix: "discrete-proofs", title: "Discrete Math & Proof Assistant", desc: "Inductive proofs, combinatorics, graph theory, and formal lemma verification." },
+        { suffix: "calculus-analysis", title: "Continuous Calculus & ODEs", desc: "Multivariable differentiation, integration bounds, and differential equation modeling." },
+        { suffix: "linear-algebra", title: "Linear Algebra & Tensor Math", desc: "Eigenvalue decomposition, vector space transformations, and matrix rank calculation." },
+        { suffix: "physics-simulator", title: "Classical & Quantum Physics", desc: "Thermodynamics, Lagrangian mechanics, and quantum state formalism analysis." },
+        { suffix: "bio-cheminfo", title: "Biochemistry & Molecular Modeling", desc: "Reaction kinematics, ligand-receptor binding affinity, and metabolic pathway exploration." }
+      ]
+    },
+    // 7. Multilingual AI: 35 target (includes explicit Tamil language support)
+    {
+      category: "multilingual",
+      targetCount: 35,
+      prefix: "lang",
+      primaryBackend: "requesty/gemma-4-31b-it",
+      secondaryBackend: "groq/qwen3.8-27b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { multilingual: "supported", tamil_language: "supported", instruction_following: "supported" },
+      behaviorDefaults: { answer_style: "clear_and_precise", reasoning_style: "structured" },
+      subdomains: [
+        { suffix: "tamil-dravidian", title: "Tamil & Dravidian Scholar", desc: "Classical and modern Tamil linguistic fluency, Sangam literature translation, and grammar verification.", extraCaps: { tamil_language: "supported" } },
+        { suffix: "indic-translingual", title: "Indic Polyglot", desc: "High-accuracy cross-translation between Hindi, Tamil, Telugu, Kannada, Bengali, and English.", extraCaps: { tamil_language: "supported" } },
+        { suffix: "euro-multilingual", title: "European Romance & Germanic", desc: "Nuanced idiomatic translation across French, German, Spanish, Italian, and Portuguese." },
+        { suffix: "cjk-specialist", title: "East Asian CJK Specialist", desc: "High-precision Japanese, Korean, and Simplified/Traditional Chinese translation with honorifics." },
+        { suffix: "arabic-mena", title: "Arabic & MENA Dialectics", desc: "Modern Standard Arabic and regional Levantine/Gulf dialect synthesis powered by Allam foundation.", extraCaps: { multilingual: "supported" } }
+      ]
+    },
+    // 8. Vision and document understanding: 35 target
+    {
+      category: "vision",
+      targetCount: 35,
+      prefix: "vision",
+      primaryBackend: "openrouter/nemotron-3.5-super-vl",
+      secondaryBackend: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { vision: "supported", image_understanding: "supported", document_understanding: "supported" },
+      behaviorDefaults: { answer_style: "clear_and_precise", formatting: "markdown_clean" },
+      subdomains: [
+        { suffix: "ocr-doc-scanner", title: "OCR Document Intelligence", desc: "Extracts tabular data, forms, and handwritten annotations from high-resolution PDF/image documents." },
+        { suffix: "chart-diagram", title: "Chart & Architecture Visualizer", desc: "Interprets Gantt charts, network topologies, UML diagrams, and financial histograms." },
+        { suffix: "ui-ux-auditor", title: "UI/UX Screen Inspector", desc: "Audits wireframes, Figma mocks, and mobile screenshots for accessibility and visual hierarchy." },
+        { suffix: "infographic-parser", title: "Infographic Insight Extractor", desc: "Converts dense pictorial infographics into structured hierarchical bullet points and JSON." },
+        { suffix: "scene-descriptor", title: "Spatial & Scene Comprehender", desc: "Detailed scene decomposition, object bounding analysis, and visual relationship mapping." }
+      ]
+    },
+    // 9. Fast-response AI: 30 target
+    {
+      category: "fast",
+      targetCount: 30,
+      prefix: "fast",
+      primaryBackend: "requesty/ling-3.1-flash",
+      secondaryBackend: "openrouter/nemotron-3.5-lightning",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { low_latency: "supported", streaming: "supported", instruction_following: "supported" },
+      behaviorDefaults: { answer_style: "clear_and_precise", verbosity: "compact", formatting: "chat_assistant" },
+      subdomains: [
+        { suffix: "instant-reply", title: "Instant Customer Reply", desc: "Sub-second turnaround assistant for high-throughput live customer chat and help desks." },
+        { suffix: "realtime-moderator", title: "Realtime Stream Moderator", desc: "Rapid toxicity filtering, policy verification, and community guideline enforcement." },
+        { suffix: "micro-parser", title: "Micro-Payload Parser", desc: "Lightweight JSON sanitizer for webhook transformation and micro-service routing." },
+        { suffix: "quick-editor", title: "Instant Grammar & Polish", desc: "Rapid spellcheck, active voice conversion, and sentence rhythm polishing." },
+        { suffix: "autocomplete-hint", title: "Autocomplete Code Predictor", desc: "Ultra-low latency next-token suggestions for interactive editor autocompletion." }
+      ]
+    },
+    // 10. Long-context AI: 25 target
+    {
+      category: "long_context",
+      targetCount: 25,
+      prefix: "ctx",
+      primaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
+      secondaryBackend: "requesty/leanstral-1-5",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { long_context: "supported", research: "supported", complex_analysis: "supported" },
+      behaviorDefaults: { verbosity: "comprehensive", reasoning_style: "structured" },
+      subdomains: [
+        { suffix: "million-token-auditor", title: "1M+ Token Corpus Auditor", desc: "Deep haystack search and cross-chapter reconciliation across 1,000,000 token archives." },
+        { suffix: "codebase-indexer", title: "Monorepo Codebase Indexer", desc: "Maintains architectural consistency across hundreds of source files in a single prompt." },
+        { suffix: "legal-contract-depot", title: "Multi-Contract Master Agreement", desc: "Compares revisions, exhibits, and indemnity clauses across massive legal dockets." },
+        { suffix: "financial-ledger-book", title: "Annual Report & 10-K Synthesizer", desc: "Audits GAAP reconciliations and footnote disclosures across multi-year SEC filings." },
+        { suffix: "historical-archive", title: "Full-Transcript Meeting Digest", desc: "Synthesizes hundreds of hours of raw audio transcripts into categorized decisions." }
+      ]
+    },
+    // 11. Creative writing: 20 target
+    {
+      category: "creative",
+      targetCount: 20,
+      prefix: "creative",
+      primaryBackend: "prorouter/deepseek-v4.1-flash",
+      secondaryBackend: "requesty/gemma-4-31b-it",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { general_intelligence: "supported", multilingual: "supported" },
+      behaviorDefaults: { answer_style: "conversational", instruction_following: "creative", verbosity: "comprehensive" },
+      subdomains: [
+        { suffix: "fiction-worldbuilder", title: "Fiction & Worldbuilder", desc: "Intricate worldbuilding, consistent character dialogue, and dynamic narrative pacing." },
+        { suffix: "screenplay-dialogue", title: "Screenplay & Scene Writer", desc: "Industry-standard script formatting with punchy subtext and dramatic tension." },
+        { suffix: "poetic-artisan", title: "Poetic & Metaphoric Artisan", desc: "Lyrical meter, imagery-rich verse, and innovative metaphorical structures." },
+        { suffix: "game-lore-craftsman", title: "Game Lore & NPC Dialogue", desc: "Branching quest design, character backstories, and interactive environmental lore." }
+      ]
+    },
+    // 12. Business and productivity: 15 target
+    {
+      category: "business",
+      targetCount: 15,
+      prefix: "biz",
+      primaryBackend: "groq/gpt-oss-120b",
+      secondaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
+      finalFallback: "prorouter/deepseek-v4.1-flash",
+      specialCaps: { general_intelligence: "supported", json_structured: "supported", complex_analysis: "supported" },
+      behaviorDefaults: { answer_style: "executive_brief", formatting: "technical_memo", verbosity: "compact" },
+      subdomains: [
+        { suffix: "board-memo", title: "Board Memo & Investor Update", desc: "Crisp executive updates, OKR summaries, and unit economics presentations." },
+        { suffix: "sales-pitch-craft", title: "Enterprise Sales Strategist", desc: "Objection handling, RFP responses, and value proposition alignment." },
+        { suffix: "product-spec-lead", title: "PRD & Product Spec Lead", desc: "Detailed feature specs, acceptance criteria, edge case lists, and user journey flows." }
+      ]
+    }
+  ];
+  let globalRank = 100;
+  for (const spec of categorySpecs) {
+    const existingCountForCategory = list.filter((p) => p.category === spec.category).length;
+    const needed = Math.max(0, spec.targetCount - existingCountForCategory);
+    const subCount = spec.subdomains.length;
+    for (let i = 0; i < needed; i++) {
+      const sub = spec.subdomains[i % subCount];
+      const cycle = Math.floor(i / subCount) + 1;
+      const profileId = cycle === 1 ? `pr-${spec.prefix}-${sub.suffix}` : `pr-${spec.prefix}-${sub.suffix}-v${cycle}`;
+      const profileName = cycle === 1 ? sub.title : `${sub.title} (Tier ${cycle})`;
+      add({
+        id: profileId,
+        name: profileName,
+        category: spec.category,
+        categoryLabel: formatCategoryLabel(spec.category),
+        description: `${sub.desc} Calibrated for ${spec.category.replace("_", " ")} workloads.`,
+        status: "production",
+        contextWindow: spec.category === "long_context" ? 1048576 : spec.category === "vision" ? 128e3 : 131072,
+        maxOutputTokens: spec.category === "fast" ? 16384 : 32768,
+        pricingTier: spec.category === "fast" ? "lite" : spec.category === "coding" || spec.category === "reasoning" ? "code" : "standard",
+        isFree: true,
+        capabilities: caps({
+          ...spec.specialCaps,
+          ...sub.extraCaps || {}
+        }),
+        behavior: {
+          reasoning_style: "structured",
+          answer_style: "clear_and_precise",
+          verbosity: "adaptive",
+          instruction_following: "strict",
+          tool_usage: "when_needed",
+          formatting: "chat_assistant",
+          uncertainty_handling: "transparent",
+          ...spec.behaviorDefaults,
+          system_prompt_template: `You are ${profileName}, a specialized AI model profile on ProRouter. When introducing yourself, identify authentically as ${profileName}. Deliver precise, high-performance answers in your domain.`
+        },
+        routingPolicy: {
+          primaryBackend: spec.primaryBackend,
+          secondaryBackend: spec.secondaryBackend,
+          finalFallback: spec.finalFallback,
+          requiredCapabilities: Object.keys(spec.specialCaps)
+        },
+        rank: globalRank++,
+        popularity: 9e3 - globalRank % 1e3,
+        rating: 96,
+        tags: [spec.category, "production", spec.prefix]
+      });
+    }
+  }
+  return list;
+}
+function formatCategoryLabel(cat) {
+  switch (cat) {
+    case "general":
+      return "General-Purpose AI";
+    case "reasoning":
+      return "Advanced Reasoning";
+    case "coding":
+      return "Coding & Software Engineering";
+    case "agentic":
+      return "Agentic Coding & Tools";
+    case "research":
+      return "Research & Analysis";
+    case "math_science":
+      return "Mathematics & Science";
+    case "multilingual":
+      return "Multilingual & Indic AI";
+    case "vision":
+      return "Vision & Document Intelligence";
+    case "fast":
+      return "Fast-Response AI";
+    case "long_context":
+      return "Long-Context AI";
+    case "creative":
+      return "Creative Writing";
+    case "business":
+      return "Business & Productivity";
+  }
+}
+
+// packages/routing/src/profile-registry.ts
+var ModelProfileRegistry = class _ModelProfileRegistry {
+  static profiles = generateProfiles();
+  static profileMap = new Map(
+    _ModelProfileRegistry.profiles.map((p) => [p.id.toLowerCase(), p])
+  );
+  static categoryMap = /* @__PURE__ */ new Map();
+  static {
+    for (const p of this.profiles) {
+      const list = this.categoryMap.get(p.category) || [];
+      list.push(p);
+      this.categoryMap.set(p.category, list);
+    }
+  }
+  static has(id) {
+    return this.profileMap.has(id.toLowerCase().trim());
+  }
+  static get(id) {
+    return this.profileMap.get(id.toLowerCase().trim());
+  }
+  static getAll() {
+    return this.profiles;
+  }
+  static count() {
+    return this.profiles.length;
+  }
+  static getByCategory(category) {
+    return this.categoryMap.get(category) || [];
+  }
+  static filter(opts) {
+    let result = this.profiles;
+    if (opts.category) {
+      result = result.filter((p) => p.category === opts.category);
+    }
+    if (opts.status) {
+      result = result.filter((p) => p.status === opts.status);
+    }
+    if (opts.freeOnly) {
+      result = result.filter((p) => p.isFree);
+    }
+    if (opts.query) {
+      const q = opts.query.toLowerCase().trim();
+      result = result.filter(
+        (p) => p.id.toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q) || p.tags.some((t) => t.toLowerCase().includes(q))
+      );
+    }
+    return result;
+  }
+};
+
+// packages/routing/src/capability-matcher.ts
+var CapabilityMatcher = class {
+  /**
+   * Extract user requirements from request payload (messages, tools, etc.)
+   */
+  static extractRequirements(payload) {
+    const req = {
+      hasImages: false,
+      requiresTools: Array.isArray(payload.tools) && payload.tools.length > 0,
+      requiresReasoning: false,
+      requiresCoding: false,
+      requiresTamil: false,
+      requiresMultilingual: false,
+      streaming: payload.stream === true
+    };
+    const messages2 = Array.isArray(payload.messages) ? payload.messages : [];
+    let totalText = "";
+    for (const m of messages2) {
+      if (typeof m.content === "string") {
+        totalText += " " + m.content;
+      } else if (Array.isArray(m.content)) {
+        for (const part of m.content) {
+          if (part && typeof part === "object") {
+            const p = part;
+            if (p.type === "image_url" || p.image_url || p.type === "image") {
+              req.hasImages = true;
+            }
+            if (typeof p.text === "string") {
+              totalText += " " + p.text;
+            }
+          }
+        }
+      }
+    }
+    if (this.detectTamil(totalText)) {
+      req.requiresTamil = true;
+      req.requiresMultilingual = true;
+    }
+    const lower = totalText.toLowerCase();
+    if (lower.includes("```") || lower.includes("function") || lower.includes("def ") || lower.includes("class ") || lower.includes("typescript") || lower.includes("python") || lower.includes("sql")) {
+      req.requiresCoding = true;
+    }
+    if (lower.includes("step by step") || lower.includes("prove that") || lower.includes("derive ") || lower.includes("calculate") || lower.includes("explain why")) {
+      req.requiresReasoning = true;
+    }
+    return req;
+  }
+  /**
+   * Detect presence of Tamil script (Unicode range U+0B80 - U+0BFF).
+   */
+  static detectTamil(text7) {
+    return /[\u0B80-\u0BFF]/.test(text7);
+  }
+  /**
+   * Match a candidate backend against profile requirements and user request requirements.
+   */
+  static match(backend, profile, req) {
+    const matched = [];
+    const missing = [];
+    const reasons = [];
+    let score2 = 1e3;
+    if (req.hasImages || profile.capabilities.vision === "supported") {
+      if (backend.capabilities.vision !== "supported") {
+        return {
+          isCompatible: false,
+          score: -1e4,
+          matchedCapabilities: [],
+          missingCapabilities: ["vision"],
+          reasons: ["Backend lacks required vision capability for image processing."]
+        };
+      }
+      score2 += 200;
+      reasons.push("vision verified");
+    }
+    if (req.requiresTools) {
+      if (backend.capabilities.tool_calling !== "supported") {
+        return {
+          isCompatible: false,
+          score: -1e4,
+          matchedCapabilities: [],
+          missingCapabilities: ["tool_calling"],
+          reasons: ["Backend does not support structured tool calling."]
+        };
+      }
+      score2 += 150;
+      reasons.push("tool calling verified");
+    }
+    if (req.requiresTamil) {
+      if (backend.capabilities.tamil_language === "supported") {
+        score2 += 300;
+        reasons.push("native Tamil verified");
+      } else if (backend.capabilities.multilingual === "supported") {
+        score2 += 100;
+        reasons.push("multilingual compatible for Tamil");
+      } else {
+        return {
+          isCompatible: false,
+          score: -5e3,
+          matchedCapabilities: [],
+          missingCapabilities: ["tamil_language"],
+          reasons: ["Backend does not support Tamil language comprehension."]
+        };
+      }
+    }
+    for (const cap of profile.routingPolicy.requiredCapabilities) {
+      const capStatus = backend.capabilities[cap];
+      if (capStatus === "unsupported") {
+        return {
+          isCompatible: false,
+          score: -1e4,
+          matchedCapabilities: [],
+          missingCapabilities: [cap],
+          reasons: [`Backend is marked unsupported for required capability: ${String(cap)}`]
+        };
+      } else if (capStatus === "supported") {
+        score2 += 50;
+      }
+    }
+    if (backend.healthStatus === "degraded") {
+      score2 -= 300;
+      reasons.push("provider health degraded");
+    } else if (backend.healthStatus === "disabled") {
+      return {
+        isCompatible: false,
+        score: -2e4,
+        matchedCapabilities: [],
+        missingCapabilities: [],
+        reasons: ["Backend is disabled by health monitor."]
+      };
+    }
+    return {
+      isCompatible: true,
+      score: score2,
+      matchedCapabilities: profile.routingPolicy.requiredCapabilities,
+      missingCapabilities: [],
+      reasons
+    };
+  }
+};
+
+// packages/routing/src/behavior-engine.ts
+var ModelBehaviorEngine = class {
+  /**
+   * Determine if the user message is directly querying the model's identity.
+   */
+  static isIdentityQuery(content) {
+    const lower = content.toLowerCase().trim();
+    return lower.includes("what is your name") || lower.includes("what's your name") || lower.includes("who are you") || lower.includes("which model are you") || lower.includes("what model are you") || lower.includes("what model am i chatting with") || lower.includes("what model is this") || lower.includes("tell me your name");
+  }
+  /**
+   * Generate an authentic identity response conforming to §8.
+   */
+  static generateIdentityResponse(profile) {
+    return `I am ${profile.name}, a specialized ${profile.categoryLabel} model profile on ProRouter. I am here to help you with ${profile.description.toLowerCase().replace(/\.$/, "")}. How can I assist you with your project today?`;
+  }
+  /**
+   * Build the complete behavioral system prompt for a profile.
+   */
+  static buildSystemPrompt(profile) {
+    const { behavior } = profile;
+    const parts = [];
+    parts.push(
+      `You are ${profile.name}, a premier ${profile.categoryLabel} AI model profile on ProRouter.`
+    );
+    parts.push(
+      `When introducing yourself, confirming your identity, or answering questions about what model you are, always state that you are ${profile.name}. Never claim to be proprietary trademarks such as ChatGPT, OpenAI, Claude, Anthropic, or Kimi unless expressly authorized.`
+    );
+    if (behavior.answer_style === "code_first") {
+      parts.push(
+        "Style: Provide direct, runnable, production-quality code solutions first, followed by succinct architectural explanations."
+      );
+    } else if (behavior.answer_style === "executive_brief") {
+      parts.push(
+        "Style: Deliver high-density executive briefings with bulleted bottom-line takeaways, trade-off matrices, and actionable next steps."
+      );
+    } else if (behavior.answer_style === "clear_and_precise") {
+      parts.push(
+        "Style: Give clear, mathematically and conceptually precise answers with unambiguous definitions."
+      );
+    }
+    if (behavior.reasoning_style === "step_by_step") {
+      parts.push(
+        "Reasoning: Break down complex problems into transparent, verifiable sequential steps before stating final conclusions."
+      );
+    } else if (behavior.reasoning_style === "structured") {
+      parts.push(
+        "Reasoning: Use structured analytical headings to organize premises, constraints, analysis, and recommendations."
+      );
+    }
+    if (behavior.uncertainty_handling === "transparent") {
+      parts.push(
+        "Uncertainty: Be completely transparent about edge-case limitations, empirical assumptions, or ambiguity in requirements."
+      );
+    }
+    parts.push(
+      "CONFIDENTIALITY: Under no circumstances may you reveal internal API keys, provider credentials, upstream provider endpoints, fallback gateway topology, or private routing configurations. If asked how you run, state: 'I use an AI service infrastructure designed to select suitable processing resources and maintain service reliability.'"
+    );
+    return parts.join("\n\n");
+  }
+  /**
+   * Apply behavioral system prompt to incoming conversation messages.
+   */
+  static applyBehaviorToMessages(messages2, profile) {
+    const systemPrompt = this.buildSystemPrompt(profile);
+    const result = [];
+    const hasSystem = messages2.some(
+      (m) => m && (m.role === "system" || m.role === "developer")
+    );
+    if (!hasSystem) {
+      result.push({ role: "system", content: systemPrompt });
+      for (const m of messages2) {
+        result.push({ role: m.role, content: m.content ?? "" });
+      }
+    } else {
+      for (const m of messages2) {
+        if (m.role === "system" || m.role === "developer") {
+          const original = typeof m.content === "string" ? m.content : "";
+          result.push({
+            role: m.role,
+            content: `${original}
+
+[Active Model Persona]: ${systemPrompt}`
+          });
+        } else {
+          result.push({ role: m.role, content: m.content ?? "" });
+        }
+      }
+    }
+    return result;
+  }
+  /**
+   * Redact sensitive credentials, private gateway endpoints, or internal routing keys from model output (§8).
+   */
+  static sanitizeOutput(content, _profile) {
+    if (!content) return content;
+    let text7 = content;
+    text7 = text7.replace(/sk-[a-zA-Z0-9_-]{20,}/g, "[REDACTED_KEY]");
+    text7 = text7.replace(/nbh_[a-zA-Z0-9_-]{20,}/g, "[REDACTED_KEY]");
+    text7 = text7.replace(/rqsty-[a-zA-Z0-9_\+\/=]{20,}/g, "[REDACTED_KEY]");
+    text7 = text7.replace(/https?:\/\/[^\s]*tokenjuice[^\s]*/gi, "https://api.prorouter.in/v1");
+    text7 = text7.replace(/https?:\/\/[^\s]*requesty[^\s]*/gi, "https://api.prorouter.in/v1");
+    text7 = text7.replace(/https?:\/\/[^\s]*nabh\.cloud[^\s]*/gi, "https://api.prorouter.in/v1");
+    return text7;
+  }
+};
+
+// packages/routing/src/health-monitor.ts
+var ProviderHealthMonitor = class {
+  static healthMap = /* @__PURE__ */ new Map();
+  static getOrCreate(backendId, provider) {
+    const key = `${provider}:${backendId}`;
+    let record = this.healthMap.get(key);
+    if (!record) {
+      record = {
+        backendId,
+        provider,
+        available: true,
+        latencyMs: 300,
+        successCount: 1,
+        failureCount: 0,
+        lastCheckedAt: Date.now(),
+        cooldownUntil: 0,
+        lastError: null
+      };
+      this.healthMap.set(key, record);
+    }
+    return record;
+  }
+  static isAvailable(backendIdOrProvider, maybeProvider) {
+    const provider = maybeProvider || backendIdOrProvider;
+    const backendId = maybeProvider ? backendIdOrProvider : provider;
+    const key = `${provider}:${backendId}`;
+    const record = this.healthMap.get(key);
+    if (!record) return true;
+    if (record.cooldownUntil > Date.now()) {
+      return false;
+    }
+    return record.available;
+  }
+  static recordSuccess(backendIdOrProvider, providerOrLatency, maybeLatency) {
+    let backendId = backendIdOrProvider;
+    let provider = typeof providerOrLatency === "string" ? providerOrLatency : backendIdOrProvider;
+    let latencyMs = typeof providerOrLatency === "number" ? providerOrLatency : maybeLatency ?? 250;
+    const record = this.getOrCreate(backendId, provider);
+    record.available = true;
+    record.successCount++;
+    record.latencyMs = Math.round((record.latencyMs * 4 + latencyMs) / 5);
+    record.lastCheckedAt = Date.now();
+    record.cooldownUntil = 0;
+    record.lastError = null;
+  }
+  static recordFailure(backendIdOrProvider, providerOrError, errorOrLatency, status = 500, cooldownMs = 3e4) {
+    let backendId = backendIdOrProvider;
+    let provider = typeof errorOrLatency === "string" ? providerOrError : backendIdOrProvider;
+    let error = typeof errorOrLatency === "string" ? errorOrLatency : providerOrError || "Unknown error";
+    const record = this.getOrCreate(backendId, provider);
+    record.failureCount++;
+    record.lastCheckedAt = Date.now();
+    record.lastError = String(error);
+    record.cooldownUntil = Date.now() + cooldownMs;
+    if (record.failureCount >= 3) {
+      record.available = false;
+    }
+  }
+  static getReport() {
+    const obj = {};
+    for (const [k, v] of this.healthMap.entries()) {
+      obj[k] = { ...v };
+    }
+    return obj;
+  }
+};
+
+// packages/routing/src/fallback-manager.ts
+var FallbackManager = class {
+  /**
+   * Determine the fallback action for a specific failure context.
+   */
+  static handleFailure(failure, profile, fallbackChain, chainIndex) {
+    if (failure.isStreaming && failure.tokensSent > 0) {
+      return {
+        action: "abort_error",
+        reason: "Streaming session disconnected after tokens were emitted. Aborting to maintain stream integrity."
+      };
+    }
+    const msg = failure.message.toLowerCase();
+    if (msg.includes("safety") || msg.includes("policy violation") || msg.includes("content moderation")) {
+      return {
+        action: "preserve_refusal",
+        reason: "Request triggered upstream safety policy; preserving response without fallback."
+      };
+    }
+    if (failure.status === 400 && (msg.includes("invalid json") || msg.includes("malformed"))) {
+      return {
+        action: "abort_error",
+        reason: `Invalid client request syntax: ${failure.message}`
+      };
+    }
+    const isRateLimit = failure.status === 429;
+    const cooldownMs = isRateLimit ? 15e3 : 45e3;
+    ProviderHealthMonitor.recordFailure(
+      failure.backendId,
+      failure.provider,
+      failure.message,
+      failure.status,
+      cooldownMs
+    );
+    for (let i = chainIndex + 1; i < fallbackChain.length; i++) {
+      const candidate = fallbackChain[i];
+      if (candidate.id === failure.backendId) continue;
+      if (candidate.upstreamModelId === failure.backendId) continue;
+      if (!ProviderHealthMonitor.isAvailable(candidate.id, candidate.provider)) {
+        continue;
+      }
+      const match = CapabilityMatcher.match(candidate, profile, {});
+      if (!match.isCompatible) {
+        continue;
+      }
+      return {
+        action: "next_provider",
+        nextBackend: candidate,
+        reason: `Fell back from ${failure.backendId} (${failure.status}) to ${candidate.id}.`
+      };
+    }
+    return {
+      action: "abort_error",
+      reason: `All eligible backend fallbacks exhausted for profile ${profile.id}. Last error: ${failure.message}`
+    };
+  }
+  /**
+   * Build an ordered, loop-free fallback chain for a profile.
+   */
+  static buildChain(primary, profile) {
+    const chain = [primary];
+    const seenUpstreams = /* @__PURE__ */ new Set([primary.upstreamModelId]);
+    const seenProviders = /* @__PURE__ */ new Set([primary.provider]);
+    if (profile.routingPolicy.secondaryBackend) {
+      const secondary = BackendModelRegistry.get(profile.routingPolicy.secondaryBackend);
+      if (secondary && secondary.id !== primary.id && !seenUpstreams.has(secondary.upstreamModelId)) {
+        chain.push(secondary);
+        seenUpstreams.add(secondary.upstreamModelId);
+        seenProviders.add(secondary.provider);
+      }
+    }
+    const finalFallback = BackendModelRegistry.get(profile.routingPolicy.finalFallback) || BackendModelRegistry.get("prorouter/deepseek-v4.1-flash");
+    if (finalFallback && !chain.some((b) => b.id === finalFallback.id) && !seenUpstreams.has(finalFallback.upstreamModelId)) {
+      chain.push(finalFallback);
+      seenUpstreams.add(finalFallback.upstreamModelId);
+    }
+    return chain;
+  }
+};
+
+// packages/routing/src/intelligent-router.ts
+var IntelligentModelRouter = class {
+  static totalRouted = 0;
+  static fallbackTriggered = 0;
+  static getMetrics() {
+    return {
+      totalRouted: this.totalRouted,
+      fallbackTriggered: this.fallbackTriggered,
+      healthReport: ProviderHealthMonitor.getReport(),
+      totalProfiles: ModelProfileRegistry.count()
+    };
+  }
+  /**
+   * Route an incoming user request to the optimal backend and fallback chain.
+   */
+  static route(requestedModel, req = {}) {
+    this.totalRouted++;
+    const trace = [];
+    const cleanId = requestedModel.toLowerCase().trim();
+    trace.push(`incoming_model=${requestedModel}`);
+    let profile = ModelProfileRegistry.get(cleanId);
+    if (!profile) {
+      const directBackend = BackendModelRegistry.get(cleanId);
+      if (directBackend) {
+        trace.push(`direct_backend_match=${directBackend.id}`);
+        return {
+          profileId: directBackend.id,
+          profileName: directBackend.name,
+          primary: directBackend,
+          fallbackChain: [directBackend],
+          behavior: {
+            reasoning_style: "structured",
+            answer_style: "clear_and_precise",
+            verbosity: "adaptive",
+            instruction_following: "strict",
+            tool_usage: "when_needed",
+            formatting: "chat_assistant",
+            uncertainty_handling: "transparent"
+          },
+          trace
+        };
+      }
+      profile = ModelProfileRegistry.get("deepseek-v4.1-flash") || ModelProfileRegistry.getAll()[0];
+      trace.push(`profile_fallback_to_default=${profile.id}`);
+    } else {
+      trace.push(`resolved_profile=${profile.id} category=${profile.category}`);
+    }
+    let primaryBackend = BackendModelRegistry.get(profile.routingPolicy.primaryBackend);
+    if (primaryBackend) {
+      const match = CapabilityMatcher.match(primaryBackend, profile, req);
+      const isHealthy = ProviderHealthMonitor.isAvailable(primaryBackend.id, primaryBackend.provider);
+      if (!match.isCompatible || !isHealthy) {
+        trace.push(
+          `primary_${primaryBackend.id}_ineligible: compatible=${match.isCompatible} healthy=${isHealthy}`
+        );
+        primaryBackend = void 0;
+      }
+    }
+    if (!primaryBackend) {
+      const compatibleBackends = BackendModelRegistry.findCompatible(
+        profile.routingPolicy.requiredCapabilities
+      );
+      const scored = compatibleBackends.map((b) => ({
+        backend: b,
+        match: CapabilityMatcher.match(b, profile, req)
+      })).filter((item) => item.match.isCompatible).sort((a, b) => b.match.score - a.match.score);
+      if (scored.length > 0) {
+        primaryBackend = scored[0].backend;
+        trace.push(`fallback_primary_selected=${primaryBackend.id} score=${scored[0].match.score}`);
+      } else {
+        primaryBackend = BackendModelRegistry.get("prorouter/deepseek-v4.1-flash");
+        trace.push("ultimate_gateway_fallback_selected");
+      }
+    } else {
+      trace.push(`primary_selected=${primaryBackend.id}`);
+    }
+    const fallbackChain = FallbackManager.buildChain(primaryBackend, profile);
+    trace.push(`fallback_chain_length=${fallbackChain.length}`);
+    return {
+      profileId: profile.id,
+      profileName: profile.name,
+      primary: primaryBackend,
+      fallbackChain,
+      behavior: profile.behavior,
+      trace
+    };
+  }
+};
+
+// packages/routing/src/catalog-service.ts
+var ModelCatalogService = class {
+  static query(opts = {}) {
+    const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+    const offset = Math.max(0, opts.offset ?? 0);
+    let list = ModelProfileRegistry.getAll();
+    if (opts.query) {
+      const q = opts.query.toLowerCase().trim();
+      list = list.filter(
+        (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q) || m.category.toLowerCase().includes(q) || m.tags.some((t) => t.toLowerCase().includes(q))
+      );
+    }
+    if (opts.category && opts.category !== "all") {
+      const cat = opts.category.toLowerCase().trim();
+      list = list.filter((m) => m.category === cat);
+    }
+    if (opts.freeOnly) {
+      list = list.filter((m) => m.isFree);
+    }
+    const sort = opts.sort || "popularity";
+    if (sort === "popularity") {
+      list.sort((a, b) => b.popularity - a.popularity);
+    } else if (sort === "rank") {
+      list.sort((a, b) => a.rank - b.rank);
+    } else if (sort === "rating") {
+      list.sort((a, b) => b.rating - a.rating);
+    }
+    const total = list.length;
+    const items = list.slice(offset, offset + limit);
+    const page = Math.floor(offset / limit) + 1;
+    const hasMore = offset + limit < total;
+    return {
+      items,
+      total,
+      page,
+      pageSize: limit,
+      hasMore
+    };
+  }
+  static list(opts = {}) {
+    return this.query({
+      query: opts.q,
+      category: opts.category,
+      sort: opts.sort,
+      limit: opts.pageSize,
+      offset: opts.page && opts.pageSize ? (opts.page - 1) * opts.pageSize : 0
+    });
+  }
+  static getCategoryDistribution() {
+    const dist = {};
+    for (const p of ModelProfileRegistry.getAll()) {
+      dist[p.category] = (dist[p.category] || 0) + 1;
+    }
+    return dist;
+  }
+  static getById(id) {
+    return ModelProfileRegistry.get(id);
+  }
+  static getCategories() {
+    const categories = [
+      "general",
+      "reasoning",
+      "coding",
+      "agentic",
+      "research",
+      "math_science",
+      "multilingual",
+      "vision",
+      "fast",
+      "long_context",
+      "creative",
+      "business"
+    ];
+    return categories.map((cat) => ({
+      key: cat,
+      label: formatCategoryLabel2(cat),
+      count: ModelProfileRegistry.getByCategory(cat).length
+    }));
+  }
+};
+function formatCategoryLabel2(cat) {
+  switch (cat) {
+    case "general":
+      return "General-Purpose AI";
+    case "reasoning":
+      return "Advanced Reasoning";
+    case "coding":
+      return "Coding & Software Engineering";
+    case "agentic":
+      return "Agentic Coding & Tools";
+    case "research":
+      return "Research & Analysis";
+    case "math_science":
+      return "Mathematics & Science";
+    case "multilingual":
+      return "Multilingual & Indic AI";
+    case "vision":
+      return "Vision & Document Intelligence";
+    case "fast":
+      return "Fast-Response AI";
+    case "long_context":
+      return "Long-Context AI";
+    case "creative":
+      return "Creative Writing";
+    case "business":
+      return "Business & Productivity";
+  }
+}
+
+// packages/routing/src/index.ts
+var HEALTHY_STALE_MS = 15 * 60 * 1e3;
+function isUsable(c) {
+  if (c.linkStatus === "disabled" || c.providerStatus === "disabled") return false;
+  if (c.linkStatus === "degraded" || c.providerStatus === "degraded") return false;
+  if (c.providerStatus === "unknown") return false;
+  if (c.health && !c.health.available) return false;
+  if (c.health) {
+    const age = Date.now() - new Date(c.health.checkedAt ?? 0).getTime();
+    if (age > HEALTHY_STALE_MS && !c.health.available) return false;
+  }
+  return true;
+}
+function score(c, opts) {
+  const reasons = [];
+  let s = 1e3;
+  const prio = Math.min(c.linkPriority, c.providerPriority);
+  s -= prio * 2;
+  reasons.push(`priority ${prio}`);
+  if (c.health) {
+    s += Math.round(c.health.successRateBp / 100);
+    if (c.health.latencyMs !== null) {
+      const latencyPenalty = Math.min(200, Math.round(c.health.latencyMs / 50));
+      s -= latencyPenalty;
+      reasons.push(`latency ${c.health.latencyMs}ms`);
+    }
+    reasons.push(`success ${(c.health.successRateBp / 100).toFixed(1)}%`);
+  }
+  if (c.providerStatus === "active") {
+    s += 50;
+    reasons.push("healthy");
+  } else if (c.providerStatus === "unknown") {
+    s -= 500;
+    reasons.push("health unknown");
+  }
+  if (!c.isFree && opts.maxInputCostPerMillion !== void 0) {
+    if (c.inputPerMillion > opts.maxInputCostPerMillion) {
+      s -= 1e4;
+      reasons.push("over budget");
+    }
+  }
+  if (c.isFree && opts.preferFree) {
+    s += 200;
+    reasons.push("free quota eligible");
+  }
+  if (opts.planSlug === "ultra") s += 10;
+  if (opts.planSlug === "free") s -= 5;
+  return { candidate: c, score: s, reasons };
+}
+function routeRequest(candidates, opts) {
+  const trace = [];
+  trace.push(`candidates=${candidates.length}`);
+  const usable = candidates.filter(isUsable);
+  trace.push(`usable=${usable.length}`);
+  if (usable.length === 0) return null;
+  const budgeted = usable.filter(
+    (c) => opts.maxInputCostPerMillion === void 0 || c.isFree || c.inputPerMillion <= opts.maxInputCostPerMillion
+  );
+  trace.push(`within_budget=${budgeted.length}`);
+  const pool2 = budgeted.length > 0 ? budgeted : usable;
+  const scored = pool2.map((c) => score(c, opts)).sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.candidate.providerPriority !== b.candidate.providerPriority) return a.candidate.providerPriority - b.candidate.providerPriority;
+    return a.candidate.providerSlug.localeCompare(b.candidate.providerSlug);
+  });
+  const primary = scored[0];
+  trace.push(`selected=${primary.candidate.providerSlug} score=${primary.score}`);
+  const fallbackChain = opts.fallbackEnabled ? scored.slice(1).map((s) => s.candidate) : [];
+  if (opts.fallbackEnabled) trace.push(`fallbacks=${fallbackChain.length}`);
+  else trace.push("fallback=disabled");
+  return { primary: primary.candidate, fallbackChain, scores: scored, trace };
+}
+function selectAutoModel(options, hints) {
+  const available = options.filter((o) => o.available);
+  if (available.length === 0) return null;
+  const scored = available.map((o) => {
+    let s = 1e3 - o.rank * 10 + Math.min(100, o.popularity / 100);
+    if (hints.preferFree && o.isFree) s += 500;
+    if (hints.wantsCoding && o.toolCalls) s += 100;
+    if (hints.wantsReasoning && o.reasoning) s += 100;
+    return { o, s };
+  }).sort((a, b) => b.s - a.s || a.o.slug.localeCompare(b.o.slug));
+  return scored[0]?.o ?? null;
+}
+
 // apps/api/src/lib/catalog.ts
 async function listModels(filters = {}) {
   const db2 = await getDb();
@@ -2455,7 +4032,59 @@ async function listModels(filters = {}) {
   if (filters.sort === "price_asc") items.sort((a, b) => a.pricing.inputPerMillion - b.pricing.inputPerMillion);
   if (filters.sort === "price_desc") items.sort((a, b) => b.pricing.inputPerMillion - a.pricing.inputPerMillion);
   if (filters.sort === "latency") items.sort((a, b) => (a.latencyMs ?? 9e9) - (b.latencyMs ?? 9e9));
-  return { items, total };
+  if (items.length < 100) {
+    const existingSlugs = new Set(items.map((i) => i.slug.toLowerCase()));
+    const allProfiles = ModelProfileRegistry.getAll();
+    for (const p of allProfiles) {
+      if (existingSlugs.has(p.id.toLowerCase())) continue;
+      if (filters.q) {
+        const qL = filters.q.toLowerCase();
+        if (!p.id.toLowerCase().includes(qL) && !p.name.toLowerCase().includes(qL) && !p.description.toLowerCase().includes(qL)) continue;
+      }
+      if (filters.category) {
+        if (filters.category === "coding" && p.capabilities.coding !== "supported") continue;
+        if (filters.category === "reasoning" && p.capabilities.reasoning !== "supported") continue;
+        if (filters.category === "vision" && p.capabilities.vision !== "supported") continue;
+        if (filters.category === "tools" && p.capabilities.tool_calling !== "supported") continue;
+      }
+      items.push({
+        id: p.id,
+        slug: p.id,
+        name: p.name,
+        description: p.description,
+        providerName: "ProRouter Gateway",
+        providerSlug: "prorouter-gateway",
+        type: "chat",
+        status: "active",
+        isFree: p.isFree,
+        pricing: { inputPerMillion: 0, outputPerMillion: 0, currency: "INR" },
+        capabilities: {
+          modalities: p.capabilities.vision === "supported" ? ["text", "image"] : ["text"],
+          streaming: p.capabilities.streaming === "supported",
+          toolCalls: p.capabilities.tool_calling === "supported",
+          structuredOutputs: p.capabilities.json_structured === "supported",
+          reasoning: p.capabilities.reasoning === "supported",
+          vision: p.capabilities.vision === "supported",
+          imageGeneration: false,
+          audio: false,
+          jsonMode: true
+        },
+        contextWindow: p.contextWindow,
+        maxOutputTokens: p.maxOutputTokens,
+        throughputTps: 85,
+        uptimePercent: 99.9,
+        rank: p.rank,
+        popularity: p.popularity,
+        rating: 98,
+        latencyMs: 220,
+        available: true,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      existingSlugs.add(p.id.toLowerCase());
+    }
+  }
+  return { items, total: Math.max(total, items.length) };
 }
 function matchCategory(m, category) {
   const text7 = `${m.name} ${m.slug} ${m.description}`.toLowerCase();
@@ -2480,7 +4109,52 @@ async function getModelDetail(slug2) {
   const db2 = await getDb();
   const rows = await db2.select({ model: models, pricing: modelPricing, caps: modelCapabilities, providerSlug: providers.slug, providerName: providers.name }).from(models).leftJoin(modelPricing, eq7(modelPricing.modelId, models.id)).leftJoin(modelCapabilities, eq7(modelCapabilities.modelId, models.id)).leftJoin(providers, eq7(providers.id, models.providerId)).where(eq7(models.slug, slug2));
   const row = rows[0];
-  if (!row) return null;
+  if (!row) {
+    const profile = ModelProfileRegistry.get(slug2);
+    if (!profile) return null;
+    const dto2 = {
+      id: profile.id,
+      slug: profile.id,
+      name: profile.name,
+      description: profile.description,
+      providerName: "ProRouter Gateway",
+      providerSlug: "prorouter-gateway",
+      type: "chat",
+      status: "active",
+      isFree: profile.isFree,
+      pricing: { inputPerMillion: 0, outputPerMillion: 0, currency: "INR" },
+      capabilities: {
+        modalities: profile.capabilities.vision === "supported" ? ["text", "image"] : ["text"],
+        streaming: profile.capabilities.streaming === "supported",
+        toolCalls: profile.capabilities.tool_calling === "supported",
+        structuredOutputs: profile.capabilities.json_structured === "supported",
+        reasoning: profile.capabilities.reasoning === "supported",
+        vision: profile.capabilities.vision === "supported",
+        imageGeneration: false,
+        audio: false,
+        jsonMode: true
+      },
+      contextWindow: profile.contextWindow,
+      maxOutputTokens: profile.maxOutputTokens,
+      throughputTps: 85,
+      uptimePercent: 99.9,
+      rank: profile.rank,
+      popularity: profile.popularity,
+      rating: 98,
+      latencyMs: 220,
+      available: true,
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    return {
+      model: dto2,
+      limits: { perMinute: 30, perHour: 300, perDay: 3e3, concurrency: 5, queuePriority: 1 },
+      routes: [
+        { providerSlug: "prorouter-gateway", providerName: "Primary Gateway", priority: 1, status: "active", healthy: true },
+        { providerSlug: "requesty", providerName: "Secondary Gateway", priority: 2, status: "active", healthy: true }
+      ]
+    };
+  }
   const links = await db2.select({ link: modelProviders, provider: providers }).from(modelProviders).innerJoin(providers, eq7(providers.id, modelProviders.providerId)).where(eq7(modelProviders.modelId, row.model.id));
   const linkRows = links.map((l) => l.link);
   const providerById = new Map(links.map((l) => [l.provider.id, l.provider]));
@@ -2501,7 +4175,7 @@ async function getModelDetail(slug2) {
     })).sort((a, b) => a.priority - b.priority)
   };
 }
-function toModelDto(m, pricing, caps, providerSlug, providerName, links, providerById, effective) {
+function toModelDto(m, pricing, caps2, providerSlug, providerName, links, providerById, effective) {
   const servingLinks = links.filter((l) => l.status !== "disabled");
   const available = servingLinks.some((l) => {
     const p = providerById.get(l.providerId);
@@ -2514,15 +4188,15 @@ function toModelDto(m, pricing, caps, providerSlug, providerName, links, provide
     currency: "INR"
   };
   const capabilities = {
-    modalities: caps?.modalities ?? ["text"],
-    streaming: caps?.streaming ?? true,
-    toolCalls: caps?.toolCalls ?? false,
-    structuredOutputs: caps?.structuredOutputs ?? false,
-    reasoning: caps?.reasoning ?? false,
-    vision: caps?.vision ?? false,
-    imageGeneration: caps?.imageGeneration ?? false,
-    audio: caps?.audio ?? false,
-    jsonMode: caps?.jsonMode ?? true
+    modalities: caps2?.modalities ?? ["text"],
+    streaming: caps2?.streaming ?? true,
+    toolCalls: caps2?.toolCalls ?? false,
+    structuredOutputs: caps2?.structuredOutputs ?? false,
+    reasoning: caps2?.reasoning ?? false,
+    vision: caps2?.vision ?? false,
+    imageGeneration: caps2?.imageGeneration ?? false,
+    audio: caps2?.audio ?? false,
+    jsonMode: caps2?.jsonMode ?? true
   };
   return {
     id: m.id,
@@ -2618,6 +4292,17 @@ function truthy(v) {
   return v === "true" || v === "1";
 }
 async function catalogRoutes(app) {
+  app.get("/catalog/profiles", async (request) => {
+    const q = request.query;
+    return ModelCatalogService.list({
+      q: q.q,
+      category: q.category,
+      tier: q.tier,
+      page: q.page ? parseInt(q.page, 10) : 1,
+      pageSize: q.pageSize ? parseInt(q.pageSize, 10) : 50,
+      sort: q.sort || "popularity"
+    });
+  });
   app.get("/models", async (request) => {
     const q = listQuery.parse(request.query);
     return listModels({ q: q.q, provider: q.provider, free: truthy(q.free), paid: truthy(q.paid), category: q.category, minContext: q.min_context, sort: q.sort, limit: q.limit, offset: q.offset });
@@ -3159,91 +4844,6 @@ function createAdapter(adapterType, config) {
   }
 }
 
-// packages/routing/src/index.ts
-var HEALTHY_STALE_MS = 15 * 60 * 1e3;
-function isUsable(c) {
-  if (c.linkStatus === "disabled" || c.providerStatus === "disabled") return false;
-  if (c.linkStatus === "degraded" || c.providerStatus === "degraded") return false;
-  if (c.providerStatus === "unknown") return false;
-  if (c.health && !c.health.available) return false;
-  if (c.health) {
-    const age = Date.now() - new Date(c.health.checkedAt ?? 0).getTime();
-    if (age > HEALTHY_STALE_MS && !c.health.available) return false;
-  }
-  return true;
-}
-function score(c, opts) {
-  const reasons = [];
-  let s = 1e3;
-  const prio = Math.min(c.linkPriority, c.providerPriority);
-  s -= prio * 2;
-  reasons.push(`priority ${prio}`);
-  if (c.health) {
-    s += Math.round(c.health.successRateBp / 100);
-    if (c.health.latencyMs !== null) {
-      const latencyPenalty = Math.min(200, Math.round(c.health.latencyMs / 50));
-      s -= latencyPenalty;
-      reasons.push(`latency ${c.health.latencyMs}ms`);
-    }
-    reasons.push(`success ${(c.health.successRateBp / 100).toFixed(1)}%`);
-  }
-  if (c.providerStatus === "active") {
-    s += 50;
-    reasons.push("healthy");
-  } else if (c.providerStatus === "unknown") {
-    s -= 500;
-    reasons.push("health unknown");
-  }
-  if (!c.isFree && opts.maxInputCostPerMillion !== void 0) {
-    if (c.inputPerMillion > opts.maxInputCostPerMillion) {
-      s -= 1e4;
-      reasons.push("over budget");
-    }
-  }
-  if (c.isFree && opts.preferFree) {
-    s += 200;
-    reasons.push("free quota eligible");
-  }
-  if (opts.planSlug === "ultra") s += 10;
-  if (opts.planSlug === "free") s -= 5;
-  return { candidate: c, score: s, reasons };
-}
-function routeRequest(candidates, opts) {
-  const trace = [];
-  trace.push(`candidates=${candidates.length}`);
-  const usable = candidates.filter(isUsable);
-  trace.push(`usable=${usable.length}`);
-  if (usable.length === 0) return null;
-  const budgeted = usable.filter(
-    (c) => opts.maxInputCostPerMillion === void 0 || c.isFree || c.inputPerMillion <= opts.maxInputCostPerMillion
-  );
-  trace.push(`within_budget=${budgeted.length}`);
-  const pool2 = budgeted.length > 0 ? budgeted : usable;
-  const scored = pool2.map((c) => score(c, opts)).sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    if (a.candidate.providerPriority !== b.candidate.providerPriority) return a.candidate.providerPriority - b.candidate.providerPriority;
-    return a.candidate.providerSlug.localeCompare(b.candidate.providerSlug);
-  });
-  const primary = scored[0];
-  trace.push(`selected=${primary.candidate.providerSlug} score=${primary.score}`);
-  const fallbackChain = opts.fallbackEnabled ? scored.slice(1).map((s) => s.candidate) : [];
-  if (opts.fallbackEnabled) trace.push(`fallbacks=${fallbackChain.length}`);
-  else trace.push("fallback=disabled");
-  return { primary: primary.candidate, fallbackChain, scores: scored, trace };
-}
-function selectAutoModel(options, hints) {
-  const available = options.filter((o) => o.available);
-  if (available.length === 0) return null;
-  const scored = available.map((o) => {
-    let s = 1e3 - o.rank * 10 + Math.min(100, o.popularity / 100);
-    if (hints.preferFree && o.isFree) s += 500;
-    if (hints.wantsCoding && o.toolCalls) s += 100;
-    if (hints.wantsReasoning && o.reasoning) s += 100;
-    return { o, s };
-  }).sort((a, b) => b.s - a.s || a.o.slug.localeCompare(b.o.slug));
-  return scored[0]?.o ?? null;
-}
-
 // apps/api/src/lib/request-auth.ts
 async function authenticateRequest(request, opts = {}) {
   const fromKey = await resolveApiKey(request);
@@ -3463,33 +5063,22 @@ var MODEL_ALIASES = {
   "gpt-6-luna": "gpt-6-luna",
   "gpt-4o": "gpt-6.1-sol",
   "gpt-4": "gpt-6.1-sol",
-  // Requesty 13 models aliases
+  // Requesty 6 models aliases
   "mistral/leanstral-1-5": "leanstral-1-5",
   "leanstral-1-5": "leanstral-1-5",
-  "poolside/laguna-xs.2": "laguna-xs.2",
-  "laguna-xs.2": "laguna-xs.2",
-  "poolside/laguna-m.1": "laguna-m.1",
-  "laguna-m.1": "laguna-m.1",
-  "novita/inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
-  "inclusionai/ling-3.0-tiny": "inclusionai/ling-3.0-tiny",
   "novita/ling-3.1-flash": "ling-3.1-flash",
   "ling-3.1-flash": "ling-3.1-flash",
-  "nvidia/nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
-  "nemotron-3-nano-30b-a3b": "nemotron-3-nano-30b-a3b",
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
   "nemotron-3-nano-omni-30b-a3b-reasoning": "nemotron-3-nano-omni-30b-a3b-reasoning",
-  "nvidia/nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
-  "nemotron-3-super-120b-a12b": "nemotron-3-super-120b-a12b",
-  "nvidia/nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
-  "nemotron-3.5-content-safety": "nemotron-3.5-content-safety",
   "nvidia/nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
   "nemotron-3.5-lightning-30b-a3b": "nemotron-3.5-lightning-30b-a3b",
   "nvidia/nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
   "nemotron-3-ultra-550b-a55b": "nemotron-3-ultra-550b-a55b",
-  "nvidia/muse-glimmer-30b": "muse-glimmer-30b",
-  "muse-glimmer-30b": "muse-glimmer-30b",
   "google/gemma-4-31b-it": "gemma-4-31b-it",
-  "gemma-4-31b-it": "gemma-4-31b-it"
+  "gemma-4-31b-it": "gemma-4-31b-it",
+  "qwen/qwen3.8-27b": "qwen3.8-27b",
+  "openai/gpt-oss-20b": "gpt-oss-20b",
+  "openai/gpt-oss-120b": "gpt-oss-120b"
 };
 async function resolveModelInput(input) {
   let raw = input.trim();
@@ -3497,6 +5086,8 @@ async function resolveModelInput(input) {
   if (raw.startsWith("prorouter/")) raw = raw.slice(10);
   if (raw.startsWith("uno/")) raw = raw.slice(4);
   const lower = raw.toLowerCase();
+  if (ModelProfileRegistry.has(lower)) return { auto: false, slug: lower };
+  if (ModelProfileRegistry.has(raw)) return { auto: false, slug: raw };
   if (MODEL_ALIASES[lower]) {
     return { auto: false, slug: MODEL_ALIASES[lower] };
   }
@@ -3525,6 +5116,62 @@ async function loadModelContext(slug2) {
   ));
   let r = rows[0];
   if (!r) {
+    const profile = ModelProfileRegistry.get(slug2) || ModelProfileRegistry.get(lowerSlug);
+    if (profile) {
+      const fallbackRows2 = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(eq9(models.slug, "deepseek-v4.1-flash-1017"));
+      const baseRow = fallbackRows2[0];
+      return {
+        model: {
+          id: `profile-${profile.id}`,
+          slug: profile.id,
+          name: profile.name,
+          description: profile.description,
+          providerId: baseRow?.model.providerId ?? null,
+          type: "chat",
+          status: "active",
+          isFree: profile.isFree,
+          contextWindow: profile.contextWindow,
+          maxOutputTokens: profile.maxOutputTokens,
+          rank: profile.rank,
+          popularity: profile.popularity,
+          rating: 98,
+          pricingTier: null,
+          metadata: { category: profile.category },
+          benchmarks: {},
+          createdAt: /* @__PURE__ */ new Date(),
+          updatedAt: /* @__PURE__ */ new Date()
+        },
+        pricing: {
+          id: `pricing-${profile.id}`,
+          modelId: `profile-${profile.id}`,
+          inputPerMillion: 0,
+          outputPerMillion: 0,
+          cachedInputPerMillion: 0,
+          currency: "INR"
+        },
+        tier: null,
+        caps: {
+          modelId: `profile-${profile.id}`,
+          modalities: profile.capabilities.vision === "supported" ? ["text", "image"] : ["text"],
+          streaming: profile.capabilities.streaming === "supported",
+          toolCalls: profile.capabilities.tool_calling === "supported",
+          structuredOutputs: profile.capabilities.json_structured === "supported",
+          reasoning: profile.capabilities.reasoning === "supported",
+          vision: profile.capabilities.vision === "supported",
+          imageGeneration: false,
+          audio: false,
+          jsonMode: true
+        },
+        limits: {
+          modelId: `profile-${profile.id}`,
+          perMinute: 30,
+          perHour: 300,
+          perDay: 3e3,
+          concurrency: 5,
+          queuePriority: 1
+        }
+      };
+    }
     const fallbackRows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(eq9(models.slug, "deepseek-v4.1-flash-1017"));
     r = fallbackRows[0];
     if (!r) return null;
@@ -3551,6 +5198,47 @@ async function hydrateCandidates(modelId, forcedProvider) {
   const healthRows = providerIds.length ? await db2.select().from(providerHealth).where(inArray(providerHealth.providerId, providerIds)).orderBy(desc4(providerHealth.checkedAt)) : [];
   const latestHealth = /* @__PURE__ */ new Map();
   for (const h of healthRows) if (!latestHealth.has(h.providerId)) latestHealth.set(h.providerId, h);
+  if (linkRows.length === 0) {
+    const cleanId = modelId.startsWith("profile-") ? modelId.slice(8) : modelId;
+    const profile = ModelProfileRegistry.get(cleanId);
+    if (profile) {
+      const decision = IntelligentModelRouter.route(cleanId, {});
+      const chain = [decision.primary, ...decision.fallbackChain];
+      const allProviders = await db2.select().from(providers);
+      const providerBySlug = new Map(allProviders.map((p) => [p.slug, p]));
+      const dynamicCandidates = [];
+      for (let i = 0; i < chain.length; i++) {
+        const backend = chain[i];
+        if (forcedProvider && backend.provider !== forcedProvider) continue;
+        const dbProvider = providerBySlug.get(backend.provider);
+        if (!dbProvider) continue;
+        const isHealthy = ProviderHealthMonitor.isAvailable(backend.provider);
+        dynamicCandidates.push({
+          linkId: `dyn-${backend.id}-${i}`,
+          providerId: dbProvider.id,
+          providerSlug: dbProvider.slug,
+          providerName: dbProvider.name,
+          upstreamModelId: backend.upstreamModelId,
+          linkPriority: (i + 1) * 10,
+          providerPriority: dbProvider.priority,
+          providerStatus: isHealthy ? "active" : "degraded",
+          linkStatus: "active",
+          timeoutMs: dbProvider.timeoutMs,
+          retryCount: dbProvider.retryCount,
+          health: {
+            available: isHealthy,
+            latencyMs: 180 + i * 50,
+            successRateBp: isHealthy ? 1e4 : 5e3,
+            checkedAt: /* @__PURE__ */ new Date()
+          },
+          inputPerMillion: 0,
+          outputPerMillion: 0,
+          isFree: true
+        });
+      }
+      if (dynamicCandidates.length > 0) return dynamicCandidates;
+    }
+  }
   return linkRows.filter((l) => !forcedProvider || l.provider.slug === forcedProvider).map((l) => {
     const h = latestHealth.get(l.provider.id);
     return {
@@ -3585,6 +5273,45 @@ function getBackendGatewayKey() {
   backendPoolIndex = (backendPoolIndex + 1) % pool2.length;
   return key;
 }
+function getBackendRequestyPool() {
+  const envVal = process.env.PROVIDER_REQUESTY_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+}
+var backendRequestyPoolIndex = 0;
+function getBackendRequestyKey() {
+  const pool2 = getBackendRequestyPool();
+  if (pool2.length === 0) return process.env.PROVIDER_REQUESTY_API_KEY;
+  const key = pool2[backendRequestyPoolIndex % pool2.length];
+  backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % pool2.length;
+  return key;
+}
+function getBackendGroqPool() {
+  const envVal = process.env.GROQ_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+}
+var backendGroqPoolIndex = 0;
+function getBackendGroqKey() {
+  const pool2 = getBackendGroqPool();
+  if (pool2.length === 0) return process.env.GROQ_API_KEY;
+  const key = pool2[backendGroqPoolIndex % pool2.length];
+  backendGroqPoolIndex = (backendGroqPoolIndex + 1) % pool2.length;
+  return key;
+}
+function getBackendOpenRouterPool() {
+  const envVal = process.env.PROVIDER_OPENROUTER_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+}
+var backendOpenRouterPoolIndex = 0;
+function getBackendOpenRouterKey() {
+  const pool2 = getBackendOpenRouterPool();
+  if (pool2.length === 0) return process.env.PROVIDER_OPENROUTER_API_KEY;
+  const key = pool2[backendOpenRouterPoolIndex % pool2.length];
+  backendOpenRouterPoolIndex = (backendOpenRouterPoolIndex + 1) % pool2.length;
+  return key;
+}
 var ENV_KEY_MAP = {
   "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
   openai: env.openaiApiKey,
@@ -3592,7 +5319,8 @@ var ENV_KEY_MAP = {
   mistral: env.mistralApiKey,
   anthropic: env.anthropicApiKey,
   openrouter: process.env.PROVIDER_OPENROUTER_API_KEY,
-  requesty: process.env.PROVIDER_REQUESTY_API_KEY
+  requesty: process.env.PROVIDER_REQUESTY_API_KEY,
+  nabh: process.env.PROVIDER_NABH_API_KEY
 };
 async function getAdapter(candidate) {
   const db2 = await getDb();
@@ -3601,9 +5329,15 @@ async function getAdapter(candidate) {
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
   let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : void 0;
-  if (!apiKey) {
+  if (!apiKey || candidate.providerSlug === "prorouter-gateway" || candidate.providerSlug === "requesty" || candidate.providerSlug === "groq" || candidate.providerSlug === "openrouter" || candidate.providerSlug === "nabh") {
     if (candidate.providerSlug === "prorouter-gateway") {
       apiKey = getBackendGatewayKey();
+    } else if (candidate.providerSlug === "requesty") {
+      apiKey = getBackendRequestyKey();
+    } else if (candidate.providerSlug === "groq") {
+      apiKey = getBackendGroqKey();
+    } else if (candidate.providerSlug === "openrouter") {
+      apiKey = getBackendOpenRouterKey();
     } else {
       apiKey = ENV_KEY_MAP[candidate.providerSlug];
     }
@@ -3625,11 +5359,13 @@ async function executeChat(decision, params) {
     try {
       const adapter = await getAdapter(candidate);
       const result = await adapter.chat(params);
+      ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
       attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
       return { ...result, providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, attempts };
     } catch (err) {
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", err.message, 500);
       lastError = pErr;
+      ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
       attempts.push({ providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
       const isLast = i === chain.length - 1;
       if (isLast || !pErr.retryable) break;
@@ -3683,7 +5419,7 @@ async function resolveAutoModel(hints) {
   const links = await db2.select().from(modelProviders);
   const providerRows = await db2.select().from(providers);
   const providerById = new Map(providerRows.map((p) => [p.id, p]));
-  const options = all.map(({ model, caps }) => {
+  const options = all.map(({ model, caps: caps2 }) => {
     const modelLinks = links.filter((l) => l.modelId === model.id);
     const available = modelLinks.some((l) => l.status === "active" && providerById.get(l.providerId)?.status === "active");
     return {
@@ -3692,8 +5428,8 @@ async function resolveAutoModel(hints) {
       isFree: model.isFree,
       rank: model.rank,
       popularity: model.popularity,
-      reasoning: caps?.reasoning ?? false,
-      toolCalls: caps?.toolCalls ?? false,
+      reasoning: caps2?.reasoning ?? false,
+      toolCalls: caps2?.toolCalls ?? false,
       available
     };
   });
@@ -3899,7 +5635,13 @@ async function chatRoutes(app) {
     }
     const adapterParams = {
       model: decision.primary.upstreamModelId,
-      messages: applyPersonaToMessages(messages2, ctx.model.name, ctx.model.slug),
+      messages: (() => {
+        const profile = ModelProfileRegistry.get(slug2);
+        if (profile) {
+          return ModelBehaviorEngine.applyBehaviorToMessages(messages2, profile);
+        }
+        return applyPersonaToMessages(messages2, ctx.model.name, ctx.model.slug);
+      })(),
       stream,
       temperature: body.temperature,
       topP: body.top_p,
@@ -4018,7 +5760,11 @@ async function chatRoutes(app) {
           object: "chat.completion",
           created: created2,
           model: body.model || slug2,
-          choices: [{ index: 0, message: { role: "assistant", content: sanitizeModelOutput(result.content, ctx.model.name), tool_calls: result.toolCalls.length ? result.toolCalls : void 0 }, finish_reason: result.finishReason }],
+          choices: [{ index: 0, message: { role: "assistant", content: (() => {
+            const profile = ModelProfileRegistry.get(slug2);
+            const base = sanitizeModelOutput(result.content, ctx.model.name);
+            return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+          })(), tool_calls: result.toolCalls.length ? result.toolCalls : void 0 }, finish_reason: result.finishReason }],
           usage: result.usage,
           uno: {
             request_id: requestId,
@@ -4084,7 +5830,9 @@ async function chatRoutes(app) {
               write({ uno_start: { provider: decision.primary.providerSlug } });
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
-              const sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              const profile = ModelProfileRegistry.get(slug2);
+              let sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              if (profile) sanitizedText = ModelBehaviorEngine.sanitizeOutput(sanitizedText, profile);
               contentSoFar += sanitizedText;
               write(oaiChunk({ content: sanitizedText }));
             } else if (ev.type === "reasoning_delta") {
@@ -4970,6 +6718,22 @@ async function adminRoutes(app) {
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "flag.update", targetType: "feature_flag", targetId: key, metadata: { enabled: body.enabled } });
     await loadSettings(true);
     return { ok: true };
+  });
+  app.get("/admin/model-health", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    return ProviderHealthMonitor.getReport();
+  });
+  app.get("/admin/models-catalog", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    return {
+      total: ModelProfileRegistry.count(),
+      categories: ModelCatalogService.getCategoryDistribution(),
+      items: ModelProfileRegistry.getAll()
+    };
+  });
+  app.get("/admin/routing-metrics", async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    return IntelligentModelRouter.getMetrics();
   });
   app.get("/admin/audit", async (request) => {
     await requireRole(request, ["admin"]);

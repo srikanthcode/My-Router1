@@ -4,7 +4,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { apiKeys, getDb, modelProviders, models, plans, providers, requestAttempts, requests, subscriptions } from "@pro/database";
 import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput } from "@pro/shared";
 import { estimateTokens } from "@pro/providers";
-import { routeRequest } from "@pro/routing";
+import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine } from "@pro/routing";
 import { getActiveAstra } from "../lib/auth.js";
 import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
@@ -238,7 +238,13 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const adapterParams = {
       model: decision.primary.upstreamModelId,
-      messages: applyPersonaToMessages(messages, ctx.model.name, ctx.model.slug),
+      messages: (() => {
+        const profile = ModelProfileRegistry.get(slug);
+        if (profile) {
+          return ModelBehaviorEngine.applyBehaviorToMessages(messages as unknown as Array<{ role: string; content?: unknown }>, profile) as unknown as ChatMessage[];
+        }
+        return applyPersonaToMessages(messages, ctx.model.name, ctx.model.slug);
+      })(),
       stream,
       temperature: body.temperature,
       topP: body.top_p,
@@ -363,7 +369,11 @@ export async function chatRoutes(app: FastifyInstance) {
           object: "chat.completion",
           created,
           model: body.model || slug,
-          choices: [{ index: 0, message: { role: "assistant", content: sanitizeModelOutput(result.content, ctx.model.name), tool_calls: result.toolCalls.length ? result.toolCalls : undefined }, finish_reason: result.finishReason }],
+          choices: [{ index: 0, message: { role: "assistant", content: (() => {
+            const profile = ModelProfileRegistry.get(slug);
+            const base = sanitizeModelOutput(result.content, ctx.model.name);
+            return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+          })(), tool_calls: result.toolCalls.length ? result.toolCalls : undefined }, finish_reason: result.finishReason }],
           usage: result.usage,
           uno: {
             request_id: requestId,
@@ -430,7 +440,9 @@ export async function chatRoutes(app: FastifyInstance) {
               write({ uno_start: { provider: decision.primary.providerSlug } });
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
-              const sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              const profile = ModelProfileRegistry.get(slug);
+              let sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              if (profile) sanitizedText = ModelBehaviorEngine.sanitizeOutput(sanitizedText, profile);
               contentSoFar += sanitizedText;
               write(oaiChunk({ content: sanitizedText }));
             } else if (ev.type === "reasoning_delta") {
