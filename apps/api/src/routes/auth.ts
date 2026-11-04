@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, users, wallets, notifications, auditLogs, plans, subscriptions } from "@pro/database";
-import { ApiError, hashPassword, isStrongPassword, verifyPassword, isValidGmail } from "@pro/shared";
+import { ApiError, hashPassword, isStrongPassword, verifyPassword, isValidGmail, generateDeterministicAccountNumber } from "@pro/shared";
 import { createSession, destroySession, getActiveAstra, requireUser, resolveSessionUser } from "../lib/auth.js";
 import { checkRateLimit } from "../lib/ratelimit.js";
 import { getBalance } from "../lib/wallet.js";
@@ -14,7 +14,8 @@ const registerSchema = z.object({
 });
 
 function publicUser(u: { id: string; email: string; name: string; role: string; status: string }) {
-  return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status };
+  const accountNumber = generateDeterministicAccountNumber(u.email || u.id);
+  return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status, accountNumber };
 }
 
 export async function authRoutes(app: FastifyInstance) {

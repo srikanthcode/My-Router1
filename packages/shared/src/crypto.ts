@@ -72,3 +72,37 @@ export function randomCode(length = 6): string {
   for (let i = 0; i < length; i++) out += alphabet[bytes[i] % alphabet.length];
   return out;
 }
+
+/**
+ * Canonical deterministic User ID generation for any account identifier (e.g. email or external sub).
+ * Always returns a stable, permanent identifier (e.g. usr_pr_4a91b2c4).
+ */
+export function generateDeterministicUserId(identifier: string): string {
+  const clean = (identifier || "").trim().toLowerCase();
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) {
+    hash = (hash << 5) - hash + clean.charCodeAt(i);
+    hash |= 0;
+  }
+  const hex = Math.abs(hash).toString(16).padStart(8, "0");
+  return `usr_pr_${hex}`;
+}
+
+/**
+ * Canonical deterministic Account Number generation for real-time customer support,
+ * billing, account segregation, and diagnostic isolation.
+ * Always returns an institutional 8-digit formatted number (e.g. PR-ACC-8924-1049).
+ */
+export function generateDeterministicAccountNumber(identifier: string): string {
+  const clean = (identifier || "").trim().toLowerCase();
+  let hash1 = 5381;
+  let hash2 = 52711;
+  for (let i = 0; i < clean.length; i++) {
+    const char = clean.charCodeAt(i);
+    hash1 = (hash1 * 33) ^ char;
+    hash2 = (hash2 * 33) ^ char;
+  }
+  const part1 = (Math.abs(hash1) % 9000 + 1000).toString();
+  const part2 = (Math.abs(hash2) % 9000 + 1000).toString();
+  return `PR-ACC-${part1}-${part2}`;
+}
