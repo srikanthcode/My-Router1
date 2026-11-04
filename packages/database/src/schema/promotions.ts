@@ -110,3 +110,28 @@ export const astraEntitlements = pgTable(
     uniqueIndex("astra_entitlements_code_user_uq").on(t.sourceCodeId, t.userId),
   ],
 );
+
+/**
+ * 48-Hour Promotional Launch Campaign Activations (§Phase 4)
+ * Free access exclusively for DeepSeek V4.1 Flash & Qwen3.8-27B for 48 hours.
+ */
+export const promotionalActivations = pgTable(
+  "promotional_activations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    campaignSlug: text("campaign_slug").notNull().default("launch-48h-special"),
+    activatedAt: timestamp("activated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    requestCount: integer("request_count").notNull().default(0),
+    tokensConsumed: integer("tokens_consumed").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("promo_act_user_campaign_uq").on(t.userId, t.campaignSlug),
+    index("promo_act_user_idx").on(t.userId, t.active),
+  ],
+);

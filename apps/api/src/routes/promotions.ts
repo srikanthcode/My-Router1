@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
-import { astraCampaigns, astraEntitlements, auditLogs, getDb, giftCodeRedemptions, giftCodes, notifications, users } from "@pro/database";
-import { ApiError, formatMoney, randomCode } from "@pro/shared";
+import { astraCampaigns, astraEntitlements, auditLogs, getDb, giftCodeRedemptions, giftCodes, notifications, promotionalActivations, users } from "@pro/database";
+import { ApiError, formatMoney, randomCode, PROMO_DURATION_MS, isPromotionActive, PROMOTIONAL_48H_MODELS } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
 import { getFlag } from "../lib/settings.js";
 
@@ -155,4 +155,97 @@ export async function promotionRoutes(app: FastifyInstance) {
       trialDays: campaign.trialDays,
     };
   });
+
+  // ── 48-Hour Promotional Launch Special (§Phase 4) ──
+  app.get("/promotions/launch-48h", async (request) => {
+    let status = {
+      campaign: "launch-48h-special",
+      name: "Launch Special: 48 Hours Free",
+      eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
+      durationHours: 48,
+      activated: false,
+      active: false,
+      remainingMs: 0,
+      remainingFormatted: "Not activated",
+      expiresAt: null as string | null,
+    };
+
+    try {
+      const user = await requireUser(request);
+      const db = await getDb();
+      const rows = await db
+        .select()
+        .from(promotionalActivations)
+        .where(
+          and(
+            eq(promotionalActivations.userId, user.id),
+            eq(promotionalActivations.campaignSlug, "launch-48h-special")
+          )
+        );
+      if (rows[0]) {
+        const promo = isPromotionActive(rows[0].activatedAt);
+        status = {
+          ...status,
+          activated: true,
+          active: promo.active,
+          remainingMs: promo.remainingMs,
+          remainingFormatted: promo.remainingFormatted,
+          expiresAt: rows[0].expiresAt.toISOString(),
+        };
+      }
+    } catch {
+      // unauthenticated
+    }
+
+    return status;
+  });
+
+  app.post("/promotions/launch-48h/activate", async (request) => {
+    const user = await requireUser(request);
+    const db = await getDb();
+
+    // Check if user already activated
+    const existing = await db
+      .select()
+      .from(promotionalActivations)
+      .where(
+        and(
+          eq(promotionalActivations.userId, user.id),
+          eq(promotionalActivations.campaignSlug, "launch-48h-special")
+        )
+      );
+
+    if (existing[0]) {
+      const promo = isPromotionActive(existing[0].activatedAt);
+      return {
+        ok: true,
+        alreadyActivated: true,
+        active: promo.active,
+        remainingMs: promo.remainingMs,
+        remainingFormatted: promo.remainingFormatted,
+        expiresAt: existing[0].expiresAt.toISOString(),
+      };
+    }
+
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + PROMO_DURATION_MS);
+
+    await db.insert(promotionalActivations).values({
+      userId: user.id,
+      campaignSlug: "launch-48h-special",
+      activatedAt: now,
+      expiresAt,
+      active: true,
+    });
+
+    return {
+      ok: true,
+      alreadyActivated: false,
+      active: true,
+      remainingMs: PROMO_DURATION_MS,
+      remainingFormatted: "48h 0m left",
+      expiresAt: expiresAt.toISOString(),
+    };
+  });
+
 }

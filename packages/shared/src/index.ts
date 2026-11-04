@@ -5,3 +5,4 @@ export * from "./types.js";
 export * from "./password.js";
 export * from "./crypto.js";
 export * from "./persona.js";
+export * from "./pricing-engine.js";
