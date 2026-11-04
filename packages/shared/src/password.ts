@@ -39,3 +39,20 @@ export async function verifyPassword(password: string, stored: string): Promise<
 export function isStrongPassword(pw: string): boolean {
   return pw.length >= 8 && /[a-zA-Z]/.test(pw) && /\d/.test(pw);
 }
+
+/**
+ * Official Google Gmail validation policy:
+ * - Must strictly end in @gmail.com
+ * - No Google aliases (no '+' allowed)
+ * - Username between 6 and 30 characters, letters, numbers, and non-consecutive dots
+ * - Rejects disposable/temporary emails and arbitrary domains
+ */
+export function isValidGmail(email: string): boolean {
+  if (!email || typeof email !== "string") return false;
+  const trimmed = email.trim().toLowerCase();
+  if (trimmed.includes("+")) return false;
+  if (!trimmed.endsWith("@gmail.com")) return false;
+  const username = trimmed.slice(0, trimmed.length - "@gmail.com".length);
+  const gmailRegex = /^[a-z0-9](?!.*\.\.)[a-z0-9.]{4,28}[a-z0-9]$/;
+  return gmailRegex.test(username);
+}

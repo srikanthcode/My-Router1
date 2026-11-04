@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, users, wallets, notifications, auditLogs, plans, subscriptions } from "@pro/database";
-import { ApiError, hashPassword, isStrongPassword, verifyPassword } from "@pro/shared";
+import { ApiError, hashPassword, isStrongPassword, verifyPassword, isValidGmail } from "@pro/shared";
 import { createSession, destroySession, getActiveAstra, requireUser, resolveSessionUser } from "../lib/auth.js";
 import { checkRateLimit } from "../lib/ratelimit.js";
 import { getBalance } from "../lib/wallet.js";
@@ -28,6 +28,9 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const db = await getDb();
     const email = body.email.toLowerCase();
+    if (!isValidGmail(email)) {
+      throw new ApiError("invalid_request", "Only official standard Google Gmail accounts (@gmail.com) are allowed. Temporary emails and aliases with '+' are not permitted.");
+    }
     const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
     if (existing.length > 0) throw new ApiError("invalid_request", "An account with this email already exists.");
 
