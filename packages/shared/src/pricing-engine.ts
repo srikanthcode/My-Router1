@@ -136,3 +136,4 @@ export function isPromotionActive(activatedAt: Date | string | null): {
     expiresAt: new Date(expires),
   };
 }
+
