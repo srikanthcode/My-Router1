@@ -200,6 +200,15 @@ async function verifyPassword(password, stored) {
 function isStrongPassword(pw) {
   return pw.length >= 8 && /[a-zA-Z]/.test(pw) && /\d/.test(pw);
 }
+function isValidGmail(email2) {
+  if (!email2 || typeof email2 !== "string") return false;
+  const trimmed = email2.trim().toLowerCase();
+  if (trimmed.includes("+")) return false;
+  if (!trimmed.endsWith("@gmail.com")) return false;
+  const username = trimmed.slice(0, trimmed.length - "@gmail.com".length);
+  const gmailRegex = /^[a-z0-9](?!.*\.\.)[a-z0-9.]{4,28}[a-z0-9]$/;
+  return gmailRegex.test(username);
+}
 
 // packages/shared/src/crypto.ts
 import {
@@ -250,6 +259,19 @@ function randomCode(length = 6) {
   let out = "";
   for (let i = 0; i < length; i++) out += alphabet[bytes[i] % alphabet.length];
   return out;
+}
+function generateDeterministicAccountNumber(identifier) {
+  const clean = (identifier || "").trim().toLowerCase();
+  let hash1 = 5381;
+  let hash2 = 52711;
+  for (let i = 0; i < clean.length; i++) {
+    const char = clean.charCodeAt(i);
+    hash1 = hash1 * 33 ^ char;
+    hash2 = hash2 * 33 ^ char;
+  }
+  const part1 = (Math.abs(hash1) % 9e3 + 1e3).toString();
+  const part2 = (Math.abs(hash2) % 9e3 + 1e3).toString();
+  return `PR-ACC-${part1}-${part2}`;
 }
 
 // packages/shared/src/persona.ts
@@ -408,6 +430,27 @@ function sanitizeModelOutput(text7, modelName) {
   return text7.replace(/deepseek-ai\/DeepSeek-V4\.1-Flash-1017/gi, modelName).replace(/deepseek-ai\/deepseek-v4\.1-flash-1017/gi, modelName).replace(/api\.tokenjuice\.ai/gi, "api.prorouter.in").replace(/tokenjuice/gi, "ProRouter");
 }
 
+// packages/shared/src/pricing-engine.ts
+var PROMO_DURATION_MS = 48 * 60 * 60 * 1e3;
+function isPromotionActive(activatedAt) {
+  if (!activatedAt) {
+    return { active: false, remainingMs: 0, remainingFormatted: "Not activated", expiresAt: null };
+  }
+  const start = new Date(activatedAt).getTime();
+  const expires = start + PROMO_DURATION_MS;
+  const now = Date.now();
+  const remainingMs = Math.max(0, expires - now);
+  const active = remainingMs > 0;
+  const hours = Math.floor(remainingMs / (1e3 * 60 * 60));
+  const minutes = Math.floor(remainingMs % (1e3 * 60 * 60) / (1e3 * 60));
+  return {
+    active,
+    remainingMs,
+    remainingFormatted: active ? `${hours}h ${minutes}m left` : "Expired",
+    expiresAt: new Date(expires)
+  };
+}
+
 // apps/api/src/routes/auth.ts
 import { z } from "zod";
 import { eq as eq4 } from "drizzle-orm";
@@ -454,6 +497,7 @@ __export(schema_exports, {
   payments: () => payments,
   plans: () => plans,
   pricingTiers: () => pricingTiers,
+  promotionalActivations: () => promotionalActivations,
   providerCredentials: () => providerCredentials,
   providerHealth: () => providerHealth,
   providerStatusEnum: () => providerStatusEnum,
@@ -1081,6 +1125,24 @@ var astraEntitlements = pgTable5(
   (t) => [
     index5("astra_entitlements_user_idx").on(t.userId, t.status),
     uniqueIndex5("astra_entitlements_code_user_uq").on(t.sourceCodeId, t.userId)
+  ]
+);
+var promotionalActivations = pgTable5(
+  "promotional_activations",
+  {
+    id: uuid5("id").primaryKey().defaultRandom(),
+    userId: uuid5("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    campaignSlug: text5("campaign_slug").notNull().default("launch-48h-special"),
+    activatedAt: timestamp5("activated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    expiresAt: timestamp5("expires_at", { withTimezone: true, mode: "date" }).notNull(),
+    requestCount: integer5("request_count").notNull().default(0),
+    tokensConsumed: integer5("tokens_consumed").notNull().default(0),
+    active: boolean5("active").notNull().default(true),
+    createdAt: timestamp5("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex5("promo_act_user_campaign_uq").on(t.userId, t.campaignSlug),
+    index5("promo_act_user_idx").on(t.userId, t.active)
   ]
 );
 
@@ -2168,7 +2230,8 @@ var registerSchema = z.object({
   name: z.string().max(80).optional()
 });
 function publicUser(u) {
-  return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status };
+  const accountNumber = generateDeterministicAccountNumber(u.email || u.id);
+  return { id: u.id, email: u.email, name: u.name, role: u.role, status: u.status, accountNumber };
 }
 async function authRoutes(app) {
   app.post("/auth/register", async (request, reply) => {
@@ -2181,6 +2244,9 @@ async function authRoutes(app) {
     }
     const db2 = await getDb();
     const email2 = body.email.toLowerCase();
+    if (!isValidGmail(email2)) {
+      throw new ApiError("invalid_request", "Only official standard Google Gmail accounts (@gmail.com) are allowed. Temporary emails and aliases with '+' are not permitted.");
+    }
     const existing = await db2.select({ id: users.id }).from(users).where(eq4(users.email, email2));
     if (existing.length > 0) throw new ApiError("invalid_request", "An account with this email already exists.");
     const inserted = await db2.insert(users).values({ email: email2, passwordHash: await hashPassword(body.password), name: body.name ?? "", emailVerified: false }).returning();
@@ -5273,15 +5339,20 @@ function getBackendGatewayKey() {
   backendPoolIndex = (backendPoolIndex + 1) % pool2.length;
   return key;
 }
+var FALLBACK_REQUESTY_KEYS = [
+  "rqsty-sk-eZDZIylOTvmLRd0c2tVrNAAqHeawYeRZrVSJYOrOlW3zFeakaX8fdeiO4MOkD69L8AbUQ1zJpSRkIvUmiquvaPuEl1zU7eiIq61MN75n/gU=",
+  "rqsty-sk-Rwqk+k5bTmyQzu0m0YW7ES32tRYd7lx1QapSNITPF5dXjiPpduVEPT1Cw4h1Wo5xBkysmfRQD4VIwKCbQsbFj1uc+tXBSpzVe27DA2S6ZQ0="
+];
 function getBackendRequestyPool() {
   const envVal = process.env.PROVIDER_REQUESTY_API_KEY || "";
-  if (!envVal.trim()) return [];
-  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+  if (!envVal.trim()) return FALLBACK_REQUESTY_KEYS;
+  const parsed = envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+  return parsed.length > 0 ? parsed : FALLBACK_REQUESTY_KEYS;
 }
 var backendRequestyPoolIndex = 0;
 function getBackendRequestyKey() {
   const pool2 = getBackendRequestyPool();
-  if (pool2.length === 0) return process.env.PROVIDER_REQUESTY_API_KEY;
+  if (pool2.length === 0) return FALLBACK_REQUESTY_KEYS[0];
   const key = pool2[backendRequestyPoolIndex % pool2.length];
   backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % pool2.length;
   return key;
@@ -6309,6 +6380,80 @@ async function promotionRoutes(app) {
       successfulRedemptions: redemptions[0]?.count ?? 0,
       activeAstraUsers: activeCount[0]?.count ?? 0,
       trialDays: campaign.trialDays
+    };
+  });
+  app.get("/promotions/launch-48h", async (request) => {
+    let status = {
+      campaign: "launch-48h-special",
+      name: "Launch Special: 48 Hours Free",
+      eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
+      durationHours: 48,
+      activated: false,
+      active: false,
+      remainingMs: 0,
+      remainingFormatted: "Not activated",
+      expiresAt: null
+    };
+    try {
+      const user = await requireUser(request);
+      const db2 = await getDb();
+      const rows = await db2.select().from(promotionalActivations).where(
+        and7(
+          eq12(promotionalActivations.userId, user.id),
+          eq12(promotionalActivations.campaignSlug, "launch-48h-special")
+        )
+      );
+      if (rows[0]) {
+        const promo = isPromotionActive(rows[0].activatedAt);
+        status = {
+          ...status,
+          activated: true,
+          active: promo.active,
+          remainingMs: promo.remainingMs,
+          remainingFormatted: promo.remainingFormatted,
+          expiresAt: rows[0].expiresAt.toISOString()
+        };
+      }
+    } catch {
+    }
+    return status;
+  });
+  app.post("/promotions/launch-48h/activate", async (request) => {
+    const user = await requireUser(request);
+    const db2 = await getDb();
+    const existing = await db2.select().from(promotionalActivations).where(
+      and7(
+        eq12(promotionalActivations.userId, user.id),
+        eq12(promotionalActivations.campaignSlug, "launch-48h-special")
+      )
+    );
+    if (existing[0]) {
+      const promo = isPromotionActive(existing[0].activatedAt);
+      return {
+        ok: true,
+        alreadyActivated: true,
+        active: promo.active,
+        remainingMs: promo.remainingMs,
+        remainingFormatted: promo.remainingFormatted,
+        expiresAt: existing[0].expiresAt.toISOString()
+      };
+    }
+    const now = /* @__PURE__ */ new Date();
+    const expiresAt = new Date(now.getTime() + PROMO_DURATION_MS);
+    await db2.insert(promotionalActivations).values({
+      userId: user.id,
+      campaignSlug: "launch-48h-special",
+      activatedAt: now,
+      expiresAt,
+      active: true
+    });
+    return {
+      ok: true,
+      alreadyActivated: false,
+      active: true,
+      remainingMs: PROMO_DURATION_MS,
+      remainingFormatted: "48h 0m left",
+      expiresAt: expiresAt.toISOString()
     };
   });
 }
