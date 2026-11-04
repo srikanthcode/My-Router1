@@ -358,19 +358,25 @@ export function getBackendGatewayKey(): string | undefined {
   return key;
 }
 
+const FALLBACK_REQUESTY_KEYS = [
+  "rqsty-sk-eZDZIylOTvmLRd0c2tVrNAAqHeawYeRZrVSJYOrOlW3zFeakaX8fdeiO4MOkD69L8AbUQ1zJpSRkIvUmiquvaPuEl1zU7eiIq61MN75n/gU=",
+  "rqsty-sk-Rwqk+k5bTmyQzu0m0YW7ES32tRYd7lx1QapSNITPF5dXjiPpduVEPT1Cw4h1Wo5xBkysmfRQD4VIwKCbQsbFj1uc+tXBSpzVe27DA2S6ZQ0=",
+];
+
 function getBackendRequestyPool(): string[] {
   const envVal = process.env.PROVIDER_REQUESTY_API_KEY || "";
-  if (!envVal.trim()) return [];
-  return envVal
+  if (!envVal.trim()) return FALLBACK_REQUESTY_KEYS;
+  const parsed = envVal
     .split(/[\s,;\n]+/)
     .map((k) => k.trim())
     .filter(Boolean);
+  return parsed.length > 0 ? parsed : FALLBACK_REQUESTY_KEYS;
 }
 
 let backendRequestyPoolIndex = 0;
 export function getBackendRequestyKey(): string | undefined {
   const pool = getBackendRequestyPool();
-  if (pool.length === 0) return process.env.PROVIDER_REQUESTY_API_KEY;
+  if (pool.length === 0) return FALLBACK_REQUESTY_KEYS[0];
   const key = pool[backendRequestyPoolIndex % pool.length];
   backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % pool.length;
   return key;
