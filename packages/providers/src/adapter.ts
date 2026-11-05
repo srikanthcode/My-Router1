@@ -53,6 +53,7 @@ export interface AdapterChatParams {
   stop?: string[];
   tools?: unknown[];
   toolChoice?: unknown;
+  parallelToolCalls?: boolean;
   responseFormat?: unknown;
   seed?: number;
   raw?: ChatCompletionRequest;

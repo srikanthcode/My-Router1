@@ -578,7 +578,9 @@ export async function* streamChat(
           usageSource = value.usageSource;
         }
         if (value.type === "done") finishReason = value.finishReason;
-        if (value.type === "delta" && !started) started = true;
+        if ((value.type === "delta" || value.type === "tool_call_delta" || value.type === "reasoning_delta") && !started) {
+          started = true;
+        }
         onMeta?.(value);
         yield value;
       }

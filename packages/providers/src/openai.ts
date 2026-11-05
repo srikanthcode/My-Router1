@@ -45,6 +45,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     if (params.stop !== undefined) body.stop = params.stop;
     if (params.tools !== undefined) body.tools = params.tools;
     if (params.toolChoice !== undefined) body.tool_choice = params.toolChoice;
+    if (params.parallelToolCalls !== undefined) body.parallel_tool_calls = params.parallelToolCalls;
     if (params.responseFormat !== undefined) body.response_format = params.responseFormat;
     if (params.seed !== undefined) body.seed = params.seed;
     return body;

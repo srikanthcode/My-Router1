@@ -39,21 +39,97 @@ export class AnthropicAdapter implements ProviderAdapter {
   /** Convert OpenAI-style messages into Anthropic's system/messages shape. */
   private splitMessages(messages: ChatMessage[]): { system?: string; messages: unknown[] } {
     let system: string | undefined;
-    const out: unknown[] = [];
+    const rawOut: Array<{ role: string; content: unknown }> = [];
+
     for (const m of messages) {
       if (m.role === "system" || m.role === "developer") {
         const text = typeof m.content === "string" ? m.content : "";
         system = system ? `${system}\n\n${text}` : text;
         continue;
       }
-      const text =
-        typeof m.content === "string"
-          ? m.content
-          : Array.isArray(m.content)
-            ? m.content.map((p) => p.text ?? "").join("")
-            : "";
-      out.push({ role: m.role === "assistant" ? "assistant" : "user", content: text });
+
+      if (m.role === "tool") {
+        const toolUseId = (m as any).tool_call_id || "call_unknown";
+        const contentStr = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? {});
+        rawOut.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: toolUseId,
+              content: contentStr,
+            },
+          ],
+        });
+        continue;
+      }
+
+      if (m.role === "assistant") {
+        const toolCalls = (m as any).tool_calls;
+        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+          const blocks: unknown[] = [];
+          const text = typeof m.content === "string" ? m.content.trim() : "";
+          if (text) {
+            blocks.push({ type: "text", text });
+          }
+          for (const tc of toolCalls) {
+            let inputObj: Record<string, unknown> = {};
+            try {
+              inputObj = typeof tc.function?.arguments === "string"
+                ? JSON.parse(tc.function.arguments)
+                : (tc.function?.arguments || {});
+            } catch {
+              inputObj = {};
+            }
+            blocks.push({
+              type: "tool_use",
+              id: tc.id || "toolu_unknown",
+              name: tc.function?.name || "tool",
+              input: inputObj,
+            });
+          }
+          rawOut.push({ role: "assistant", content: blocks });
+          continue;
+        }
+
+        const text =
+          typeof m.content === "string"
+            ? m.content
+            : Array.isArray(m.content)
+              ? m.content.map((p) => (typeof p === "string" ? p : p.text ?? "")).join("")
+              : "";
+        rawOut.push({ role: "assistant", content: text });
+        continue;
+      }
+
+      // User messages
+      if (Array.isArray(m.content)) {
+        rawOut.push({ role: "user", content: m.content });
+      } else {
+        const text = typeof m.content === "string" ? m.content : "";
+        rawOut.push({ role: "user", content: text });
+      }
     }
+
+    // Merge consecutive messages with the same role (e.g. multiple tool results in user role)
+    const out: Array<{ role: string; content: unknown }> = [];
+    for (const msg of rawOut) {
+      const prev = out[out.length - 1];
+      if (prev && prev.role === msg.role) {
+        if (Array.isArray(prev.content) && Array.isArray(msg.content)) {
+          prev.content = [...prev.content, ...msg.content];
+        } else if (Array.isArray(prev.content) && typeof msg.content === "string") {
+          prev.content = [...prev.content, { type: "text", text: msg.content }];
+        } else if (typeof prev.content === "string" && Array.isArray(msg.content)) {
+          prev.content = [{ type: "text", text: prev.content }, ...msg.content];
+        } else if (typeof prev.content === "string" && typeof msg.content === "string") {
+          prev.content = `${prev.content}\n\n${msg.content}`;
+        }
+      } else {
+        out.push({ ...msg });
+      }
+    }
+
     return { system, messages: out };
   }
 
@@ -69,6 +145,25 @@ export class AnthropicAdapter implements ProviderAdapter {
     if (params.temperature !== undefined) body.temperature = params.temperature;
     if (params.topP !== undefined) body.top_p = params.topP;
     if (params.stop !== undefined) body.stop_sequences = params.stop;
+
+    if (Array.isArray(params.tools) && params.tools.length > 0) {
+      body.tools = params.tools.map((t: any) => ({
+        name: t.function?.name || t.name,
+        description: t.function?.description || t.description || "",
+        input_schema: t.function?.parameters || t.input_schema || { type: "object", properties: {} },
+      }));
+
+      if (params.toolChoice) {
+        if (params.toolChoice === "auto") {
+          body.tool_choice = { type: "auto" };
+        } else if (params.toolChoice === "required") {
+          body.tool_choice = { type: "any" };
+        } else if (typeof params.toolChoice === "object" && (params.toolChoice as any).function?.name) {
+          body.tool_choice = { type: "tool", name: (params.toolChoice as any).function.name };
+        }
+      }
+    }
+
     return body;
   }
 
@@ -174,10 +269,28 @@ export class AnthropicAdapter implements ProviderAdapter {
           const msg = event.message as { usage?: { input_tokens?: number } } | undefined;
           inputTokens = msg?.usage?.input_tokens ?? 0;
           if (typeof msg?.usage?.input_tokens === "number") sawUsage = true;
+        } else if (type === "content_block_start") {
+          const block = event.content_block as { type?: string; id?: string; name?: string } | undefined;
+          if (block?.type === "tool_use") {
+            yield {
+              type: "tool_call_delta",
+              index: typeof event.index === "number" ? event.index : 0,
+              id: block.id,
+              name: block.name,
+              arguments: "",
+            };
+          }
         } else if (type === "content_block_delta") {
-          const delta = event.delta as { type?: string; text?: string; thinking?: string } | undefined;
+          const delta = event.delta as { type?: string; text?: string; thinking?: string; partial_json?: string } | undefined;
           if (delta?.type === "text_delta" && delta.text) yield { type: "delta", text: delta.text };
           if (delta?.type === "thinking_delta" && delta.thinking) yield { type: "reasoning_delta", text: delta.thinking };
+          if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+            yield {
+              type: "tool_call_delta",
+              index: typeof event.index === "number" ? event.index : 0,
+              arguments: delta.partial_json,
+            };
+          }
         } else if (type === "message_delta") {
           const delta = event.delta as { stop_reason?: string } | undefined;
           if (delta?.stop_reason) finishReason = delta.stop_reason === "tool_use" ? "tool_calls" : "stop";

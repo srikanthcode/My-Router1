@@ -27,6 +27,7 @@ const bodySchema = z.looseObject({
   stop: z.union([z.string(), z.array(z.string())]).optional(),
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
+  parallel_tool_calls: z.boolean().optional(),
   response_format: z.unknown().optional(),
   seed: z.number().optional(),
 });
@@ -292,6 +293,7 @@ export async function chatRoutes(app: FastifyInstance) {
       stop: Array.isArray(body.stop) ? body.stop : body.stop ? [body.stop] : undefined,
       tools: body.tools,
       toolChoice: body.tool_choice,
+      parallelToolCalls: (body as any).parallel_tool_calls,
       responseFormat: body.response_format,
       seed: body.seed,
       raw: body as never,
