@@ -68,4 +68,23 @@ describe("Agent Autonomous Coding & Deflection Interceptor", () => {
     expect(cleaned.tool_calls).toBeDefined();
     expect((cleaned.tool_calls as any[])[0].function.name).toBe("list_files");
   });
+
+  it("forces list_files tool call if model only completed thinking without executing tools", () => {
+    const processor = new StreamChunkProcessor();
+    // Simulate streaming where only reasoning_content arrived
+    processor.processDelta(
+      {
+        reasoning_content:
+          "The user wants me to find all bugs. I need to first understand the codebase. Let me explore the directory. I should list files.",
+      },
+      "DeepSeek V4.1 Flash",
+      "deepseek"
+    );
+
+    const forced = processor.getFinalForcedToolCallIfNeeded();
+    expect(forced).not.toBeNull();
+    expect(Array.isArray(forced)).toBe(true);
+    expect((forced as any[])[0].function.name).toBe("list_files");
+  });
 });
+
