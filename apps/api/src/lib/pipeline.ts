@@ -155,6 +155,8 @@ export interface ModelContext {
   tier: PricingTierRow | null;
   caps: typeof modelCapabilities.$inferSelect | null;
   limits: typeof modelLimits.$inferSelect | null;
+  pricingStatus?: string;
+  canonicalModelId?: string | null;
 }
 
 export async function loadModelContext(slug: string): Promise<ModelContext | null> {
@@ -181,6 +183,14 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
         .leftJoin(modelLimits, eq(modelLimits.modelId, models.id))
         .where(eq(models.slug, "deepseek-v4.1-flash-1017"));
       const baseRow = fallbackRows[0];
+
+      const inPriceUsd = profile.customerPricingUsd?.inputPerMillion ?? 0.20;
+      const outPriceUsd = profile.customerPricingUsd?.outputPerMillion ?? 0.80;
+      const cachedPriceUsd = profile.customerPricingUsd?.cachedInputPerMillion;
+      const inputPaise = Math.ceil(inPriceUsd * 80 * 100);
+      const outputPaise = Math.ceil(outPriceUsd * 80 * 100);
+      const cachedPaise = cachedPriceUsd !== undefined ? Math.ceil(cachedPriceUsd * 80 * 100) : 0;
+
       return {
         model: {
           id: `profile-${profile.id}`,
@@ -190,6 +200,8 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
           providerId: baseRow?.model.providerId ?? null,
           type: "chat",
           status: "active" as const,
+          pricingStatus: profile.pricingStatus ?? "approved",
+          canonicalModelId: profile.canonicalModelId ?? profile.id,
           isFree: profile.isFree,
           contextWindow: profile.contextWindow,
           maxOutputTokens: profile.maxOutputTokens,
@@ -198,16 +210,16 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
           rating: 98,
           pricingTier: null,
           metadata: { category: profile.category },
-          benchmarks: {},
+          benchmarks: (profile.benchmarks ?? {}) as unknown as Record<string, unknown>,
           createdAt: new Date(),
           updatedAt: new Date(),
         },
         pricing: {
           id: `pricing-${profile.id}`,
           modelId: `profile-${profile.id}`,
-          inputPerMillion: 0,
-          outputPerMillion: 0,
-          cachedInputPerMillion: 0,
+          inputPerMillion: inputPaise,
+          outputPerMillion: outputPaise,
+          cachedInputPerMillion: cachedPaise,
           currency: "INR",
         },
         tier: null,
@@ -231,6 +243,8 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
           concurrency: 5,
           queuePriority: 1,
         },
+        pricingStatus: profile.pricingStatus ?? "approved",
+        canonicalModelId: profile.canonicalModelId ?? profile.id,
       };
     }
     // If not found in catalog, route gracefully to primary gateway model while maintaining requested name persona
@@ -248,9 +262,19 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
       tier: r.tier,
       caps: r.caps,
       limits: r.limits,
+      pricingStatus: (r.model as any).pricingStatus ?? "approved",
+      canonicalModelId: (r.model as any).canonicalModelId ?? r.model.slug,
     };
   }
-  return { model: r.model, pricing: r.pricing, tier: r.tier, caps: r.caps, limits: r.limits };
+  return {
+    model: r.model,
+    pricing: r.pricing,
+    tier: r.tier,
+    caps: r.caps,
+    limits: r.limits,
+    pricingStatus: (r.model as any).pricingStatus ?? "approved",
+    canonicalModelId: (r.model as any).canonicalModelId ?? r.model.slug,
+  };
 }
 
 /** Hydrate routing candidates for a model from DB + latest health. */

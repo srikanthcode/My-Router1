@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { astraCampaigns, astraEntitlements, auditLogs, getDb, giftCodeRedemptions, giftCodes, notifications, promotionalActivations, users } from "@pro/database";
-import { ApiError, formatMoney, randomCode, PROMO_DURATION_MS, isPromotionActive, PROMOTIONAL_48H_MODELS } from "@pro/shared";
+import { ApiError, formatMoney, randomCode, PROMO_DURATION_MS, isPromotionActive, PROMOTIONAL_48H_MODELS, resolvePromotionalCanonicalId, isStrictlyPromotionalEligible, checkPromotionStatus } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
 import { getFlag } from "../lib/settings.js";
 
@@ -157,17 +157,31 @@ export async function promotionRoutes(app: FastifyInstance) {
   });
 
   // ── 48-Hour Promotional Launch Special (§Phase 4) ──
-  app.get("/promotions/launch-48h", async (request) => {
+  const getPromoStatusHandler = async (request: any) => {
+    const q = (request.query || {}) as { modelId?: string };
+    const queryModel = q.modelId?.trim();
+    const isModelEligible = queryModel ? isStrictlyPromotionalEligible(queryModel) : true;
+
     let status = {
       campaign: "launch-48h-special",
       name: "Launch Special: 48 Hours Free",
       eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
       durationHours: 48,
+      modelId: queryModel ?? null,
+      isModelEligible,
       activated: false,
       active: false,
+      activatedAt: null as string | null,
+      expiresAt: null as string | null,
       remainingMs: 0,
       remainingFormatted: "Not activated",
-      expiresAt: null as string | null,
+      quota: {
+        maxRequestsPerDay: 50,
+        requestsConsumed: 0,
+        maxTokensPerDay: 500000,
+        tokensConsumed: 0,
+        quotaExceeded: false,
+      },
     };
 
     try {
@@ -183,14 +197,24 @@ export async function promotionRoutes(app: FastifyInstance) {
           )
         );
       if (rows[0]) {
-        const promo = isPromotionActive(rows[0].activatedAt);
+        const promoCalc = checkPromotionStatus(rows[0].activatedAt);
+        const quotaExceeded = rows[0].requestCount >= 50 || rows[0].tokensConsumed >= 500000;
+
         status = {
           ...status,
           activated: true,
-          active: promo.active,
-          remainingMs: promo.remainingMs,
-          remainingFormatted: promo.remainingFormatted,
+          active: promoCalc.active && !quotaExceeded,
+          activatedAt: rows[0].activatedAt.toISOString(),
           expiresAt: rows[0].expiresAt.toISOString(),
+          remainingMs: promoCalc.remainingMs,
+          remainingFormatted: promoCalc.remainingFormatted,
+          quota: {
+            maxRequestsPerDay: 50,
+            requestsConsumed: rows[0].requestCount,
+            maxTokensPerDay: 500000,
+            tokensConsumed: rows[0].tokensConsumed,
+            quotaExceeded,
+          },
         };
       }
     } catch {
@@ -198,10 +222,23 @@ export async function promotionRoutes(app: FastifyInstance) {
     }
 
     return status;
-  });
+  };
 
-  app.post("/promotions/launch-48h/activate", async (request) => {
+  const activatePromoHandler = async (request: any) => {
     const user = await requireUser(request);
+    const body = (request.body || {}) as { canonicalModelId?: string; modelId?: string };
+    const modelToActivate = body.canonicalModelId || body.modelId;
+
+    if (modelToActivate) {
+      const canonical = resolvePromotionalCanonicalId(modelToActivate);
+      if (!canonical) {
+        throw new ApiError(
+          "not_eligible",
+          `Model '${modelToActivate}' is not eligible for the 48-hour free promotion. Only DeepSeek V4.1 Flash and Qwen3.8-27B qualify.`
+        );
+      }
+    }
+
     const db = await getDb();
 
     // Check if user already activated
@@ -216,14 +253,25 @@ export async function promotionRoutes(app: FastifyInstance) {
       );
 
     if (existing[0]) {
-      const promo = isPromotionActive(existing[0].activatedAt);
+      const promoCalc = checkPromotionStatus(existing[0].activatedAt);
+      const quotaExceeded = existing[0].requestCount >= 50 || existing[0].tokensConsumed >= 500000;
+
       return {
         ok: true,
         alreadyActivated: true,
-        active: promo.active,
-        remainingMs: promo.remainingMs,
-        remainingFormatted: promo.remainingFormatted,
+        active: promoCalc.active && !quotaExceeded,
+        activatedAt: existing[0].activatedAt.toISOString(),
         expiresAt: existing[0].expiresAt.toISOString(),
+        remainingMs: promoCalc.remainingMs,
+        remainingFormatted: promoCalc.remainingFormatted,
+        eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
+        quota: {
+          maxRequestsPerDay: 50,
+          requestsConsumed: existing[0].requestCount,
+          maxTokensPerDay: 500000,
+          tokensConsumed: existing[0].tokensConsumed,
+          quotaExceeded,
+        },
       };
     }
 
@@ -235,6 +283,8 @@ export async function promotionRoutes(app: FastifyInstance) {
       campaignSlug: "launch-48h-special",
       activatedAt: now,
       expiresAt,
+      requestCount: 0,
+      tokensConsumed: 0,
       active: true,
     });
 
@@ -242,10 +292,26 @@ export async function promotionRoutes(app: FastifyInstance) {
       ok: true,
       alreadyActivated: false,
       active: true,
+      activatedAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
       remainingMs: PROMO_DURATION_MS,
       remainingFormatted: "48h 0m left",
-      expiresAt: expiresAt.toISOString(),
+      eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
+      quota: {
+        maxRequestsPerDay: 50,
+        requestsConsumed: 0,
+        maxTokensPerDay: 500000,
+        tokensConsumed: 0,
+        quotaExceeded: false,
+      },
     };
-  });
+  };
 
+  app.get("/promotions/launch-48h", getPromoStatusHandler);
+  app.get("/promotions/status", getPromoStatusHandler);
+  app.get("/api/promotions/status", getPromoStatusHandler);
+
+  app.post("/promotions/launch-48h/activate", activatePromoHandler);
+  app.post("/promotions/activate", activatePromoHandler);
+  app.post("/api/promotions/activate", activatePromoHandler);
 }

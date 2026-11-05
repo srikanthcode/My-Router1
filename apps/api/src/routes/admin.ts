@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
-import { astraCampaigns, astraEntitlements, auditLogs, creditPackages, featureFlags, giftCodeRedemptions, giftCodes, getDb, modelCapabilities, modelLimits, modelPricing, modelProviders, models, notifications, paymentWebhooks, payments, plans, pricingTiers, providerCredentials, providers, providerHealth, requests, systemSettings, users, wallets, walletTransactions, requestAttempts } from "@pro/database";
-import { ApiError, encryptSecret, formatMoney, randomCode } from "@pro/shared";
-import { requireRole } from "../lib/auth.js";
+import { astraCampaigns, astraEntitlements, auditLogs, creditPackages, featureFlags, giftCodeRedemptions, giftCodes, getDb, modelCapabilities, modelLimits, modelPricing, modelProviders, models, notifications, paymentWebhooks, payments, plans, pricingTiers, providerCredentials, providers, providerHealth, requests, systemSettings, users, wallets, walletTransactions, requestAttempts, pricingAuditLogs, pricingSyncLogs, providerCosts, pricingVersions, exchangeRates } from "@pro/database";
+import { ApiError, encryptSecret, formatMoney, randomCode, calculateModelPricing, calculateTokenPrice, DEFAULT_USD_TO_INR_DISPLAY_RATE, isStrictlyPromotionalEligible } from "@pro/shared";
+import { requireRole, requireUser } from "../lib/auth.js";
 import { creditWallet } from "../lib/wallet.js";
 import { getAdapter } from "../lib/pipeline.js";
 import { getNumber, loadSettings } from "../lib/settings.js";
@@ -462,6 +462,332 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get("/admin/routing-metrics", async (request) => {
     await requireRole(request, ["admin", "support"]);
     return IntelligentModelRouter.getMetrics();
+  });
+
+  // ── Centralized Pricing Manager Endpoints (§Phase 2, §Phase 3) ──
+  const getAdminPricingHandler = async (request: any) => {
+    await requireRole(request, ["admin", "support"]);
+    const all = ModelProfileRegistry.getAll();
+    const displayRate = DEFAULT_USD_TO_INR_DISPLAY_RATE;
+
+    const items = all.map((m) => {
+      const isPromo = isStrictlyPromotionalEligible(m.id);
+      const inputUsd = m.customerPricingUsd?.inputPerMillion ?? 0;
+      const outputUsd = m.customerPricingUsd?.outputPerMillion ?? 0;
+      const upstreamInput = m.upstreamCostUsd?.inputPerMillion ?? 0;
+      const upstreamOutput = m.upstreamCostUsd?.outputPerMillion ?? 0;
+
+      const inMargin = inputUsd > 0 ? ((inputUsd - upstreamInput) / inputUsd) * 100 : 0;
+      const outMargin = outputUsd > 0 ? ((outputUsd - upstreamOutput) / outputUsd) * 100 : 0;
+      const prov = m.provider || (m.routingPolicy?.preferredProvider ?? m.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+
+      return {
+        modelId: m.id,
+        canonicalModelId: m.canonicalModelId ?? m.id,
+        name: m.name,
+        provider: prov,
+        category: m.category,
+        pricingStatus: m.pricingStatus ?? "approved",
+        isPromotional: isPromo,
+        promoDurationHours: isPromo ? 48 : 0,
+        operationalReservePercent: 10,
+        targetGrossMarginPercent: 30,
+        upstreamCostUsd: {
+          inputPerMillion: upstreamInput,
+          outputPerMillion: upstreamOutput,
+          cachedInputPerMillion: m.upstreamCostUsd?.cachedInputPerMillion ?? null,
+        },
+        customerPricingUsd: {
+          inputPerMillion: inputUsd,
+          outputPerMillion: outputUsd,
+          cachedInputPerMillion: m.customerPricingUsd?.cachedInputPerMillion ?? null,
+        },
+        customerPricingInrPaise: {
+          inputPaisePer1M: Math.ceil(inputUsd * displayRate * 100),
+          outputPaisePer1M: Math.ceil(outputUsd * displayRate * 100),
+        },
+        realizedMarginPercent: {
+          input: Number(inMargin.toFixed(2)),
+          output: Number(outMargin.toFixed(2)),
+        },
+      };
+    });
+
+    const approvedCount = items.filter((i) => i.pricingStatus === "approved").length;
+    const pendingCount = items.filter((i) => i.pricingStatus === "pricing_pending").length;
+    const promoCount = items.filter((i) => i.isPromotional).length;
+
+    return {
+      summary: {
+        totalModels: items.length,
+        approvedCount,
+        pendingCount,
+        promotionalCount: promoCount,
+        defaultOperationalReserve: 0.10,
+        defaultTargetGrossMargin: 0.30,
+        displayExchangeRate: displayRate,
+      },
+      items,
+    };
+  };
+
+  app.get("/admin/pricing", getAdminPricingHandler);
+  app.get("/api/admin/pricing", getAdminPricingHandler);
+
+  const patchModelPricingHandler = async (request: any) => {
+    const admin = await requireRole(request, ["admin"]);
+    const { modelId } = request.params as { modelId: string };
+    const body = z.object({
+      pricingStatus: z.enum(["approved", "pricing_pending", "disabled"]).optional(),
+      operationalReserve: z.number().min(0).max(1).optional(),
+      targetGrossMargin: z.number().min(0.01).max(0.95).optional(),
+      manualInputOverrideUsd: z.number().min(0).optional(),
+      manualOutputOverrideUsd: z.number().min(0).optional(),
+      reason: z.string().default("Admin updated model pricing"),
+    }).parse(request.body);
+
+    const model = ModelProfileRegistry.get(modelId);
+    if (!model) throw new ApiError("not_found", `Model '${modelId}' not found.`);
+
+    const oldPricing = {
+      pricingStatus: model.pricingStatus,
+      customerPricingUsd: model.customerPricingUsd,
+      upstreamCostUsd: model.upstreamCostUsd,
+    };
+
+    const calc = calculateModelPricing(
+      {
+        inputUsdPer1M: body.manualInputOverrideUsd ?? model.upstreamCostUsd?.inputPerMillion ?? 0.20,
+        outputUsdPer1M: body.manualOutputOverrideUsd ?? model.upstreamCostUsd?.outputPerMillion ?? 0.80,
+      },
+      {
+        operationalReserve: body.operationalReserve ?? 0.10,
+        targetGrossMargin: body.targetGrossMargin ?? 0.30,
+        manualPriceOverrideUsd: body.manualInputOverrideUsd,
+      }
+    );
+
+    const newStatus = body.pricingStatus ?? calc.pricingStatus;
+
+    // Update in-memory registry
+    model.pricingStatus = newStatus as any;
+    model.customerPricingUsd = {
+      inputPerMillion: body.manualInputOverrideUsd ?? calc.input.customerPriceUsdPer1M,
+      outputPerMillion: body.manualOutputOverrideUsd ?? calc.output.customerPriceUsdPer1M,
+    };
+
+    const db = await getDb();
+    // Audit log
+    await db.insert(pricingAuditLogs).values({
+      modelSlug: model.id,
+      actorUserId: admin.id,
+      action: "pricing.update",
+      oldPricing,
+      newPricing: {
+        pricingStatus: newStatus,
+        customerPricingUsd: model.customerPricingUsd,
+        targetGrossMargin: body.targetGrossMargin ?? 0.30,
+        operationalReserve: body.operationalReserve ?? 0.10,
+      },
+      reason: body.reason,
+    }).catch(() => {});
+
+    return {
+      ok: true,
+      modelId: model.id,
+      pricingStatus: newStatus,
+      customerPricingUsd: model.customerPricingUsd,
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  app.patch("/admin/pricing/:modelId", patchModelPricingHandler);
+  app.patch("/api/admin/pricing/:modelId", patchModelPricingHandler);
+
+  const bulkUpdatePricingHandler = async (request: any) => {
+    const admin = await requireRole(request, ["admin"]);
+    const body = z.object({
+      modelIds: z.array(z.string()).optional(),
+      category: z.string().optional(),
+      operationalReserve: z.number().min(0).max(1).optional(),
+      targetGrossMargin: z.number().min(0.01).max(0.95).optional(),
+      pricingStatus: z.enum(["approved", "pricing_pending", "disabled"]).optional(),
+      reason: z.string().default("Bulk admin pricing adjustment"),
+    }).parse(request.body);
+
+    const all = ModelProfileRegistry.getAll();
+    const targets = all.filter((m) => {
+      if (body.modelIds && body.modelIds.length > 0) return body.modelIds.includes(m.id);
+      if (body.category) return m.category === body.category;
+      return true;
+    });
+
+    const db = await getDb();
+    let updatedCount = 0;
+
+    for (const model of targets) {
+      const calc = calculateModelPricing(
+        {
+          inputUsdPer1M: model.upstreamCostUsd?.inputPerMillion ?? 0.20,
+          outputUsdPer1M: model.upstreamCostUsd?.outputPerMillion ?? 0.80,
+        },
+        {
+          operationalReserve: body.operationalReserve ?? 0.10,
+          targetGrossMargin: body.targetGrossMargin ?? 0.30,
+        }
+      );
+
+      const newStatus = body.pricingStatus ?? calc.pricingStatus;
+      model.pricingStatus = newStatus as any;
+      model.customerPricingUsd = {
+        inputPerMillion: calc.input.customerPriceUsdPer1M,
+        outputPerMillion: calc.output.customerPriceUsdPer1M,
+      };
+
+      updatedCount++;
+    }
+
+    await db.insert(pricingAuditLogs).values({
+      modelSlug: "BULK_UPDATE",
+      actorUserId: admin.id,
+      action: "pricing.bulk_update",
+      oldPricing: { targetCount: targets.length },
+      newPricing: {
+        updatedCount,
+        category: body.category ?? "all",
+        targetGrossMargin: body.targetGrossMargin,
+        operationalReserve: body.operationalReserve,
+        pricingStatus: body.pricingStatus,
+      },
+      reason: body.reason,
+    }).catch(() => {});
+
+    return {
+      ok: true,
+      updatedCount,
+      totalMatched: targets.length,
+      appliedConfig: {
+        operationalReserve: body.operationalReserve ?? 0.10,
+        targetGrossMargin: body.targetGrossMargin ?? 0.30,
+        pricingStatus: body.pricingStatus,
+      },
+    };
+  };
+
+  app.post("/admin/pricing/bulk-update", bulkUpdatePricingHandler);
+  app.post("/api/admin/pricing/bulk-update", bulkUpdatePricingHandler);
+
+  const syncPricingHandler = async (request: any) => {
+    const admin = await requireRole(request, ["admin"]);
+    const body = (request.body || {}) as { provider?: string };
+    const provider = body.provider || "all";
+
+    const all = ModelProfileRegistry.getAll();
+    let synced = 0;
+    for (const m of all) {
+      const prov = m.provider || (m.routingPolicy?.preferredProvider ?? m.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+      if (provider !== "all" && prov !== provider) continue;
+      if (m.upstreamCostUsd) {
+        const calc = calculateModelPricing(
+          {
+            inputUsdPer1M: m.upstreamCostUsd.inputPerMillion,
+            outputUsdPer1M: m.upstreamCostUsd.outputPerMillion,
+          },
+          { operationalReserve: 0.10, targetGrossMargin: 0.30 }
+        );
+        m.customerPricingUsd = {
+          inputPerMillion: calc.input.customerPriceUsdPer1M,
+          outputPerMillion: calc.output.customerPriceUsdPer1M,
+        };
+        m.pricingStatus = calc.pricingStatus as any;
+        synced++;
+      }
+    }
+
+    const db = await getDb();
+    await db.insert(pricingSyncLogs).values({
+      provider,
+      syncType: "manual_admin",
+      status: "completed",
+      modelsUpdated: synced,
+      errors: [],
+    }).catch(() => {});
+
+    return {
+      ok: true,
+      provider,
+      modelsSynced: synced,
+      timestamp: new Date().toISOString(),
+    };
+  };
+
+  app.post("/admin/pricing/sync", syncPricingHandler);
+  app.post("/api/admin/pricing/sync", syncPricingHandler);
+
+  const getAuditLogsHandler = async (request: any) => {
+    await requireRole(request, ["admin"]);
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(pricingAuditLogs)
+      .orderBy(desc(pricingAuditLogs.createdAt))
+      .limit(100);
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  };
+
+  app.get("/admin/pricing/audit-logs", getAuditLogsHandler);
+  app.get("/api/admin/pricing/audit-logs", getAuditLogsHandler);
+
+  // ── Billing Usage & Transactions Endpoints ──
+  app.get("/api/billing/usage", async (request) => {
+    const user = await requireUser(request);
+    const db = await getDb();
+    const rows = await db
+      .select({
+        id: requests.id,
+        modelId: requests.modelId,
+        isFree: requests.isFree,
+        status: requests.status,
+        inputTokens: requests.inputTokens,
+        outputTokens: requests.outputTokens,
+        totalTokens: requests.totalTokens,
+        costPaise: requests.costPaise,
+        createdAt: requests.createdAt,
+      })
+      .from(requests)
+      .where(user.role === "admin" ? undefined : eq(requests.userId, user.id))
+      .orderBy(desc(requests.createdAt))
+      .limit(200);
+
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
+  });
+
+  app.get("/api/billing/transactions", async (request) => {
+    const user = await requireUser(request);
+    const db = await getDb();
+    const rows = await db
+      .select()
+      .from(walletTransactions)
+      .where(user.role === "admin" ? undefined : eq(walletTransactions.userId, user.id))
+      .orderBy(desc(walletTransactions.createdAt))
+      .limit(200);
+
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString(),
+      })),
+    };
   });
 
   app.get("/admin/audit", async (request) => {

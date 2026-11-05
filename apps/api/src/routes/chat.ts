@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { desc, eq, sql } from "drizzle-orm";
-import { apiKeys, getDb, modelProviders, models, plans, providers, requestAttempts, requests, subscriptions } from "@pro/database";
-import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput } from "@pro/shared";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { apiKeys, getDb, modelProviders, models, plans, promotionalActivations, providers, requestAttempts, requests, subscriptions } from "@pro/database";
+import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput, resolvePromotionalCanonicalId } from "@pro/shared";
 import { estimateTokens } from "@pro/providers";
 import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine } from "@pro/routing";
 import { getActiveAstra } from "../lib/auth.js";
@@ -163,6 +163,18 @@ export async function chatRoutes(app: FastifyInstance) {
     if (!ctx) throw new ApiError("model_not_found", `Model '${body.model}' not found.`);
     if (ctx.model.status === "coming_soon") throw new ApiError("provider_unavailable", `'${ctx.model.name}' is coming soon and not yet available.`);
     if (ctx.model.status !== "active") throw new ApiError("model_not_found", `Model '${slug}' is not available.`);
+
+    // Pricing status lifecycle: models with pricing_pending block customer usage
+    const pricingStatus = ctx.pricingStatus || "approved";
+    if (pricingStatus === "pricing_pending") {
+      if (auth.user.role !== "admin") {
+        throw new ApiError(
+          "pricing_pending",
+          `Pricing pending administrative review for model '${ctx.model.name}'. Customer usage is locked until admin approval.`
+        );
+      }
+    }
+
     const effectivePricing = resolveEffectivePricing(ctx.model, ctx.pricing, ctx.tier, await getUsdToInrRate());
 
     // GPT Astra requires an active entitlement (§49)
@@ -184,7 +196,35 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const plan = await getUserPlan(auth.user.id);
     const fallbackEnabled = await getFlag("provider_fallback", true);
-    const isFree = ctx.model.isFree;
+
+    // Strict 48-Hour Promotional Policy: ONLY deepseek-v4.1-flash & qwen3.8-27b can ever be free
+    const canonicalPromoId = resolvePromotionalCanonicalId(slug);
+    let isPromotionalActive = false;
+    let activePromoActivationId: string | null = null;
+
+    if (canonicalPromoId !== null) {
+      const db = await getDb();
+      const promoRows = await db
+        .select()
+        .from(promotionalActivations)
+        .where(
+          and(
+            eq(promotionalActivations.userId, auth.user.id),
+            eq(promotionalActivations.campaignSlug, "launch-48h-special"),
+            eq(promotionalActivations.active, true),
+            gt(promotionalActivations.expiresAt, new Date())
+          )
+        );
+      const promo = promoRows[0];
+      // Promotional quota limit: 50 requests/day and 500,000 tokens/day per user
+      if (promo && promo.requestCount < 50 && promo.tokensConsumed < 500_000) {
+        isPromotionalActive = true;
+        activePromoActivationId = promo.id;
+      }
+    }
+
+    // Free if marked isFree in catalog OR eligible promotional model with active promo
+    const isFree = Boolean(ctx.model.isFree || isPromotionalActive);
     const stream = body.stream === true;
     let queueWaitMs = 0;
     let acquired = false;
@@ -305,6 +345,19 @@ export async function chatRoutes(app: FastifyInstance) {
         await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
         hasReservation = false;
       }
+
+      if (activePromoActivationId && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
+        const totalToks = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
+        await db
+          .update(promotionalActivations)
+          .set({
+            requestCount: sql`${promotionalActivations.requestCount} + 1`,
+            tokensConsumed: sql`${promotionalActivations.tokensConsumed} + ${totalToks}`,
+          })
+          .where(eq(promotionalActivations.id, activePromoActivationId))
+          .catch(() => {});
+      }
+
       await db.update(requests).set({
         status: params.status ?? (params.errorCode ? "error" : "success"),
         httpStatus: params.httpStatus ?? (params.errorCode ? 502 : 200),

@@ -12,6 +12,7 @@ export type ErrorCode =
   | "model_not_found"
   | "provider_unavailable"
   | "insufficient_balance"
+  | "pricing_pending"
   | "rate_limit_exceeded"
   | "free_quota_exceeded"
   | "queue_unavailable"
@@ -38,6 +39,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   model_not_found: 404,
   provider_unavailable: 503,
   insufficient_balance: 402,
+  pricing_pending: 422,
   rate_limit_exceeded: 429,
   free_quota_exceeded: 429,
   queue_unavailable: 503,

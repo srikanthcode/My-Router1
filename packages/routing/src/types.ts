@@ -64,9 +64,18 @@ export interface RoutingPolicy {
   preferredProvider?: string;
 }
 
+export interface ModelBenchmarkScore {
+  name: string;
+  score: number;
+  source: string;
+  evaluationDate: string;
+}
+
 export interface FrontendModelProfile {
   id: string;
+  canonicalModelId?: string;
   name: string;
+  provider?: string;
   category: ModelCategory;
   categoryLabel: string;
   description: string;
@@ -75,12 +84,24 @@ export interface FrontendModelProfile {
   maxOutputTokens: number;
   pricingTier: string;
   isFree: boolean;
+  pricingStatus?: "approved" | "pricing_pending" | "disabled";
+  customerPricingUsd?: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cachedInputPerMillion?: number;
+  };
+  upstreamCostUsd?: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cachedInputPerMillion?: number;
+  };
   capabilities: CapabilityProfile;
   behavior: ProfileBehavior;
   routingPolicy: RoutingPolicy;
   rank: number;
   popularity: number;
   rating: number;
+  benchmarks?: ModelBenchmarkScore[];
   tags: string[];
 }
 

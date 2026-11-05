@@ -30,6 +30,10 @@ function makeCaps(overrides: Partial<CapabilityProfile> = {}): CapabilityProfile
 /**
  * Backend Model Registry (§2).
  * Source of truth for verified live models and their underlying providers.
+ * Real upstream costs are recorded in integer paise per million tokens (based on USD upstream cost * ₹80/USD).
+ * ONLY TWO canonical model backends are marked isFree: true for the 48-hour launch special:
+ * 1. prorouter/deepseek-v4.1-flash
+ * 2. groq/qwen3.8-27b
  */
 export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
   // ── 1. GPT OSS Models ──
@@ -49,8 +53,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 64, output: 192 },
   },
   "groq/gpt-oss-20b": {
     id: "groq/gpt-oss-20b",
@@ -68,8 +72,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 64, output: 192 },
   },
   "groq/gpt-oss-120b": {
     id: "groq/gpt-oss-120b",
@@ -89,8 +93,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 240, output: 960 },
   },
 
   // ── 2. NVIDIA Nemotron Models ──
@@ -114,8 +118,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 560, output: 1680 },
   },
   "openrouter/nemotron-3-ultra-550b-a55b": {
     id: "openrouter/nemotron-3-ultra-550b-a55b",
@@ -137,8 +141,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 560, output: 1680 },
   },
   "requesty/nemotron-3-nano-omni-30b-a3b-reasoning": {
     id: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -158,8 +162,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 120, output: 360 },
   },
   "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning": {
     id: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -179,8 +183,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 120, output: 360 },
   },
   "requesty/nemotron-3.5-lightning-30b-a3b": {
     id: "requesty/nemotron-3.5-lightning-30b-a3b",
@@ -197,8 +201,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 80, output: 240 },
   },
   "openrouter/nemotron-3.5-lightning": {
     id: "openrouter/nemotron-3.5-lightning",
@@ -215,8 +219,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 80, output: 240 },
   },
   "openrouter/nemotron-3.5-super-vl": {
     id: "openrouter/nemotron-3.5-super-vl",
@@ -233,8 +237,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 160, output: 480 },
   },
 
   // ── 3. High-Performance Open Weights ──
@@ -255,8 +259,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: true, // Promotional canonical model
+    costPaisePerMillion: { input: 160, output: 640 },
   },
   "requesty/gemma-4-31b-it": {
     id: "requesty/gemma-4-31b-it",
@@ -274,8 +278,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 112, output: 336 },
   },
   "requesty/leanstral-1-5": {
     id: "requesty/leanstral-1-5",
@@ -292,8 +296,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 96, output: 288 },
   },
   "requesty/ling-3.1-flash": {
     id: "requesty/ling-3.1-flash",
@@ -309,8 +313,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 64, output: 192 },
   },
   "groq/allam-2-7b": {
     id: "groq/allam-2-7b",
@@ -327,8 +331,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: false,
+    costPaisePerMillion: { input: 40, output: 120 },
   },
 
   // ── 4. Primary Gateway Fallback Engine ──
@@ -360,8 +364,8 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 },
+    isFree: true, // Promotional canonical model
+    costPaisePerMillion: { input: 112, output: 224 },
   },
 };
 

@@ -22,6 +22,13 @@
       "when": 1793619000000,
       "tag": "0002_wallet_reservations",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1793890000000,
+      "tag": "0003_marketplace_pricing_engine",
+      "breakpoints": true
     }
   ]
 }

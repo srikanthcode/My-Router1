@@ -16,6 +16,7 @@ export const providerStatusEnum = pgEnum("provider_status", ["active", "degraded
 export const modelStatusEnum = pgEnum("model_status", ["active", "coming_soon", "disabled", "archived"]);
 export const modelTypeEnum = pgEnum("model_type", ["chat", "completion", "embedding", "image", "audio"]);
 export const linkStatusEnum = pgEnum("link_status", ["active", "degraded", "disabled"]);
+export const pricingStatusEnum = pgEnum("pricing_status", ["approved", "pricing_pending", "disabled", "draft"]);
 
 export const providers = pgTable(
   "providers",
@@ -106,10 +107,12 @@ export const models = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
+    canonicalModelId: text("canonical_model_id"),
     description: text("description").notNull().default(""),
     providerId: uuid("provider_id").references(() => providers.id, { onDelete: "set null" }),
     type: modelTypeEnum("type").notNull().default("chat"),
     status: modelStatusEnum("status").notNull().default("active"),
+    pricingStatus: pricingStatusEnum("pricing_status").notNull().default("approved"),
     isFree: boolean("is_free").notNull().default(false),
     pricingTier: text("pricing_tier"),
     contextWindow: integer("context_window").notNull().default(128000),
@@ -117,7 +120,7 @@ export const models = pgTable(
     rank: integer("rank").notNull().default(100),
     popularity: integer("popularity").notNull().default(0),
     rating: integer("rating").notNull().default(0),
-    benchmarks: jsonb("benchmarks").$type<Record<string, number>>().notNull().default({}),
+    benchmarks: jsonb("benchmarks").$type<Record<string, unknown>>().notNull().default({}),
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
@@ -125,6 +128,7 @@ export const models = pgTable(
   (t) => [
     uniqueIndex("models_slug_uq").on(t.slug),
     index("models_status_idx").on(t.status),
+    index("models_pricing_status_idx").on(t.pricingStatus),
     index("models_rank_idx").on(t.rank),
     index("models_pricing_tier_idx").on(t.pricingTier),
   ],
@@ -207,4 +211,111 @@ export const routingRules = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
   },
   (t) => [index("routing_rules_priority_idx").on(t.priority)],
+);
+
+/** Model Aliases (§10). Maps incoming alias strings to canonical model IDs. */
+export const modelAliases = pgTable(
+  "model_aliases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    alias: text("alias").notNull(),
+    canonicalModelId: text("canonical_model_id").notNull(),
+    providerSlug: text("provider_slug"),
+    description: text("description").notNull().default(""),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("model_aliases_alias_uq").on(t.alias), index("model_aliases_canonical_idx").on(t.canonicalModelId)],
+);
+
+/** Upstream Provider Costs (§4). Verified cost per 1M tokens in USD cents. */
+export const providerCosts = pgTable(
+  "provider_costs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    providerId: uuid("provider_id")
+      .notNull()
+      .references(() => providers.id, { onDelete: "cascade" }),
+    providerModelId: text("provider_model_id").notNull(),
+    inputCostUsdCentsPerMillion: integer("input_cost_usd_cents_per_million").notNull(),
+    outputCostUsdCentsPerMillion: integer("output_cost_usd_cents_per_million").notNull(),
+    cachedInputCostUsdCentsPerMillion: integer("cached_input_cost_usd_cents_per_million"),
+    sourceUrl: text("source_url"),
+    sourceIdentifier: text("source_identifier"),
+    currency: text("currency").notNull().default("USD"),
+    verificationTimestamp: timestamp("verification_timestamp", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    verifiedBy: text("verified_by"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("provider_costs_prov_model_uq").on(t.providerId, t.providerModelId)],
+);
+
+/** Historical Model Pricing Versions (§10). Revisions are immutable. */
+export const pricingVersions = pgTable(
+  "pricing_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    modelId: uuid("model_id")
+      .notNull()
+      .references(() => models.id, { onDelete: "cascade" }),
+    version: integer("version").notNull().default(1),
+    inputUsdCentsPerMillion: integer("input_usd_cents_per_million").notNull(),
+    outputUsdCentsPerMillion: integer("output_usd_cents_per_million").notNull(),
+    cachedInputUsdCentsPerMillion: integer("cached_input_usd_cents_per_million"),
+    inputPaisePerMillion: integer("input_paise_per_million").notNull(),
+    outputPaisePerMillion: integer("output_paise_per_million").notNull(),
+    targetGrossMarginBp: integer("target_gross_margin_bp").notNull().default(3000), // 30%
+    operationalReserveBp: integer("operational_reserve_bp").notNull().default(1000), // 10%
+    active: boolean("active").notNull().default(true),
+    approvedBy: text("approved_by"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [index("pricing_versions_model_idx").on(t.modelId, t.version)],
+);
+
+/** Pricing Audit Logs (§9, §10). */
+export const pricingAuditLogs = pgTable(
+  "pricing_audit_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    modelSlug: text("model_slug").notNull(),
+    actorUserId: text("actor_user_id"),
+    action: text("action").notNull(),
+    oldPricing: jsonb("old_pricing").$type<Record<string, unknown>>(),
+    newPricing: jsonb("new_pricing").$type<Record<string, unknown>>().notNull(),
+    reason: text("reason").notNull().default("Admin pricing update"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [index("pricing_audit_logs_slug_idx").on(t.modelSlug, t.createdAt)],
+);
+
+/** Pricing Synchronization Logs (§9, §12). */
+export const pricingSyncLogs = pgTable(
+  "pricing_sync_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    provider: text("provider").notNull(),
+    syncType: text("sync_type").notNull().default("manual"),
+    status: text("status").notNull(),
+    modelsUpdated: integer("models_updated").notNull().default(0),
+    errors: jsonb("errors").$type<string[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [index("pricing_sync_logs_provider_idx").on(t.provider, t.createdAt)],
+);
+
+/** Configurable Exchange Rates (§7). */
+export const exchangeRates = pgTable(
+  "exchange_rates",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    baseCurrency: text("base_currency").notNull().default("USD"),
+    targetCurrency: text("target_currency").notNull().default("INR"),
+    rate: integer("rate").notNull(), // Rate * 100 e.g. 8800 for 88.00
+    isDisplayPolicy: boolean("is_display_policy").notNull().default(false),
+    source: text("source").notNull().default("admin"),
+    effectiveDate: timestamp("effective_date", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [index("exchange_rates_target_idx").on(t.targetCurrency, t.effectiveDate)],
 );
