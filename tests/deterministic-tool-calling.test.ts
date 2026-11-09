@@ -331,3 +331,4 @@ describe("Deterministic Tool Calling Round-Trip Acceptance Tests", () => {
     expect(toolResultBlock.content).toContain("8080");
   });
 });
+

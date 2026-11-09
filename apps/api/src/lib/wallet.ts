@@ -85,6 +85,71 @@ export interface DebitParams {
 }
 
 /**
+ * Debit usage inside an existing transaction. The wallet row is locked so the
+ * recorded deduction always matches the actual balance change, even under
+ * concurrent requests.
+ */
+async function debitWithinTx(
+  tx: any,
+  params: DebitParams,
+): Promise<{
+  balancePaise: number;
+  deductedPaise: number;
+  transactionId: string | null;
+  deduped: boolean;
+}> {
+  const amount = Math.max(0, Math.round(params.amountPaise));
+  if (amount === 0) {
+    const rows = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
+    return { balancePaise: rows[0]?.balancePaise ?? 0, deductedPaise: 0, transactionId: null, deduped: false };
+  }
+  if (params.idempotencyKey) {
+    const existing = await tx
+      .select()
+      .from(walletTransactions)
+      .where(eq(walletTransactions.idempotencyKey, params.idempotencyKey));
+    if (existing.length > 0) {
+      const w = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
+      return {
+        balancePaise: w[0]?.balancePaise ?? 0,
+        deductedPaise: Math.max(0, -existing[0].amountPaise),
+        transactionId: existing[0].id,
+        deduped: true,
+      };
+    }
+  }
+  await ensureWallet(tx, params.userId);
+  const locked = await tx
+    .select()
+    .from(wallets)
+    .where(eq(wallets.userId, params.userId))
+    .for("update");
+  const oldBalance: number = locked[0]?.balancePaise ?? 0;
+  const deducted = Math.min(amount, Math.max(0, oldBalance));
+  if (deducted === 0) {
+    return { balancePaise: oldBalance, deductedPaise: 0, transactionId: null, deduped: false };
+  }
+  const balance = oldBalance - deducted;
+  await tx
+    .update(wallets)
+    .set({ balancePaise: balance, updatedAt: new Date() })
+    .where(eq(wallets.userId, params.userId));
+  const [txRow] = await tx
+    .insert(walletTransactions)
+    .values({
+      userId: params.userId,
+      type: "usage",
+      amountPaise: -deducted,
+      balanceAfterPaise: balance,
+      reference: params.reference,
+      idempotencyKey: params.idempotencyKey,
+      metadata: { ...(params.metadata ?? {}), requested: amount, shortfall: amount - deducted },
+    })
+    .returning();
+  return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id, deduped: false };
+}
+
+/**
  * Debit usage from the wallet. Never overdraws: the balance is clamped at 0
  * and the ledger records the ACTUAL amount deducted.
  */
@@ -94,52 +159,8 @@ export async function debitWallet(params: DebitParams): Promise<{
   transactionId: string | null;
   deduped: boolean;
 }> {
-  const amount = Math.max(0, Math.round(params.amountPaise));
   const db = await getDb();
-  if (amount === 0) {
-    return { balancePaise: await getBalance(params.userId), deductedPaise: 0, transactionId: null, deduped: false };
-  }
-  const res = await db.transaction(async (tx: any) => {
-    if (params.idempotencyKey) {
-      const existing = await tx
-        .select()
-        .from(walletTransactions)
-        .where(eq(walletTransactions.idempotencyKey, params.idempotencyKey));
-      if (existing.length > 0) {
-        const w = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
-        return {
-          balancePaise: w[0]?.balancePaise ?? 0,
-          deductedPaise: Math.max(0, -existing[0].amountPaise),
-          transactionId: existing[0].id,
-          deduped: true,
-        };
-      }
-    }
-    await ensureWallet(tx, params.userId);
-    const before = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
-    const oldBalance: number = before[0]?.balancePaise ?? 0;
-    const deducted = Math.min(amount, Math.max(0, oldBalance));
-    const [row] = await tx
-      .update(wallets)
-      .set({ balancePaise: sql`GREATEST(${wallets.balancePaise} - ${amount}, 0)`, updatedAt: new Date() })
-      .where(eq(wallets.userId, params.userId))
-      .returning();
-    const balance = row.balancePaise;
-    if (deducted === 0) return { balancePaise: balance, deductedPaise: 0, transactionId: null, deduped: false };
-    const [txRow] = await tx
-      .insert(walletTransactions)
-      .values({
-        userId: params.userId,
-        type: "usage",
-        amountPaise: -deducted,
-        balanceAfterPaise: balance,
-        reference: params.reference,
-        idempotencyKey: params.idempotencyKey,
-        metadata: { ...(params.metadata ?? {}), requested: amount, shortfall: amount - deducted },
-      })
-      .returning();
-    return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id, deduped: false };
-  });
+  const res = await db.transaction((tx: any) => debitWithinTx(tx, params));
 
   if (!res.deduped && res.deductedPaise > 0) {
     eventHub.publish(params.userId, "wallet.balance.updated", {
@@ -215,8 +236,12 @@ export async function reserveBalance(params: {
 
   return db.transaction(async (tx: any) => {
     await ensureWallet(tx, params.userId);
-    const w = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
-    const balance = w[0]?.balancePaise ?? 0;
+    const locked = await tx
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, params.userId))
+      .for("update");
+    const balance = locked[0]?.balancePaise ?? 0;
 
     const activeRows = await tx
       .select({ amount: walletReservations.amountPaise })
@@ -247,11 +272,25 @@ export async function reserveBalance(params: {
         status: "active",
         expiresAt,
       })
-      .onConflictDoUpdate({
-        target: walletReservations.requestId,
-        set: { amountPaise: amount, status: "active", expiresAt, updatedAt: new Date() },
-      })
+      .onConflictDoNothing({ target: walletReservations.requestId })
       .returning();
+
+    if (!res) {
+      const [existing] = await tx
+        .select()
+        .from(walletReservations)
+        .where(eq(walletReservations.requestId, params.requestId));
+      if (!existing) {
+        throw new ApiError("invalid_request", "Could not create the wallet reservation.");
+      }
+      if (existing.userId !== params.userId) {
+        throw new ApiError("forbidden", "This reservation belongs to another account.");
+      }
+      if (existing.status !== "active") {
+        throw new ApiError("invalid_request", "This request id has already been settled or released.");
+      }
+      return { reservationId: existing.id, availablePaise: Math.max(0, available) };
+    }
 
     eventHub.publish(params.userId, "wallet.reservation.created", {
       requestId: params.requestId,
@@ -263,9 +302,15 @@ export async function reserveBalance(params: {
   });
 }
 
+function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; cause?: { code?: string } };
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
+
 /**
  * Settle a reservation upon LLM request completion.
- * Atomically marks the reservation settled, debits the actual cost, and releases any surplus.
+ * The reservation is locked and checked for ownership before any money moves;
+ * the ledger insert is unique-keyed so a retry can never debit twice.
  */
 export async function settleReservation(params: {
   userId: string;
@@ -273,61 +318,93 @@ export async function settleReservation(params: {
   actualAmountPaise: number;
   reference?: string;
   metadata?: Record<string, unknown>;
-}): Promise<{ balancePaise: number; deductedPaise: number; transactionId: string | null }> {
+}): Promise<{ balancePaise: number; deductedPaise: number; transactionId: string | null; deduped: boolean }> {
   const db = await getDb();
   const actual = Math.max(0, Math.round(params.actualAmountPaise));
+  const idempotencyKey = `usage:${params.requestId}`;
 
-  const result = await db.transaction(async (tx: any) => {
-    // 1. Mark reservation as settled
-    await tx
-      .update(walletReservations)
-      .set({
-        status: "settled",
-        settledPaise: actual,
-        updatedAt: new Date(),
-      })
-      .where(eq(walletReservations.requestId, params.requestId));
+  const settle = async () =>
+    db.transaction(async (tx: any) => {
+      const lockedReservations = await tx
+        .select()
+        .from(walletReservations)
+        .where(eq(walletReservations.requestId, params.requestId))
+        .for("update");
+      const reservation = lockedReservations[0];
+      if (reservation && reservation.userId !== params.userId) {
+        throw new ApiError("forbidden", "This reservation belongs to another account.");
+      }
 
-    // 2. Perform actual debit
-    const before = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
-    const oldBalance: number = before[0]?.balancePaise ?? 0;
-    const deducted = Math.min(actual, Math.max(0, oldBalance));
+      const existingRows = await tx
+        .select()
+        .from(walletTransactions)
+        .where(eq(walletTransactions.idempotencyKey, idempotencyKey));
+      const existing = existingRows[0];
+      const walletRows = await tx.select().from(wallets).where(eq(wallets.userId, params.userId));
+      const currentBalance: number = walletRows[0]?.balancePaise ?? 0;
 
-    const [row] = await tx
-      .update(wallets)
-      .set({ balancePaise: sql`GREATEST(${wallets.balancePaise} - ${actual}, 0)`, updatedAt: new Date() })
-      .where(eq(wallets.userId, params.userId))
-      .returning();
+      if (existing) {
+        if (reservation && reservation.status === "active") {
+          await tx
+            .update(walletReservations)
+            .set({ status: "settled", settledPaise: Math.max(0, -existing.amountPaise), updatedAt: new Date() })
+            .where(
+              and(
+                eq(walletReservations.requestId, params.requestId),
+                eq(walletReservations.userId, params.userId),
+                eq(walletReservations.status, "active"),
+              )
+            );
+        }
+        return {
+          balancePaise: currentBalance,
+          deductedPaise: Math.max(0, -existing.amountPaise),
+          transactionId: existing.id,
+          deduped: true,
+        };
+      }
 
-    const balance = row.balancePaise;
-    let txId: string | null = null;
+      const debit = await debitWithinTx(tx, {
+        userId: params.userId,
+        amountPaise: actual,
+        reference: params.reference ?? params.requestId,
+        idempotencyKey,
+        metadata: params.metadata,
+      });
 
-    if (deducted > 0) {
-      const [txRow] = await tx
-        .insert(walletTransactions)
-        .values({
-          userId: params.userId,
-          type: "usage",
-          amountPaise: -deducted,
-          balanceAfterPaise: balance,
-          reference: params.reference ?? params.requestId,
-          idempotencyKey: `usage:${params.requestId}`,
-          metadata: { ...(params.metadata ?? {}), requested: actual, shortfall: actual - deducted },
-        })
-        .onConflictDoNothing()
-        .returning();
-      txId = txRow?.id ?? null;
-    }
+      if (reservation && reservation.status === "active") {
+        await tx
+          .update(walletReservations)
+          .set({ status: "settled", settledPaise: actual, updatedAt: new Date() })
+          .where(
+            and(
+              eq(walletReservations.requestId, params.requestId),
+              eq(walletReservations.userId, params.userId),
+              eq(walletReservations.status, "active"),
+            )
+          );
+      }
 
-    return { balancePaise: balance, deductedPaise: deducted, transactionId: txId };
-  });
+      return debit;
+    });
 
-  // Broadcast real-time balance update
-  eventHub.publish(params.userId, "wallet.balance.updated", {
-    balancePaise: result.balancePaise,
-    balanceFormatted: formatMoney(result.balancePaise),
-    currency: "INR",
-  });
+  let result: Awaited<ReturnType<typeof settle>>;
+  try {
+    result = await settle();
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    // A concurrent settle won the ledger insert; the retry observes it and
+    // returns the already-recorded deduction without moving money again.
+    result = await settle();
+  }
+
+  if (!result.deduped && result.deductedPaise > 0) {
+    eventHub.publish(params.userId, "wallet.balance.updated", {
+      balancePaise: result.balancePaise,
+      balanceFormatted: formatMoney(result.balancePaise),
+      currency: "INR",
+    });
+  }
 
   return result;
 }
@@ -337,13 +414,25 @@ export async function settleReservation(params: {
  */
 export async function releaseReservation(params: { userId: string; requestId: string }): Promise<void> {
   const db = await getDb();
-  await db
-    .update(walletReservations)
-    .set({
-      status: "released",
-      updatedAt: new Date(),
-    })
-    .where(eq(walletReservations.requestId, params.requestId));
+  const released = await db.transaction(async (tx: any) => {
+    const rows = await tx
+      .update(walletReservations)
+      .set({
+        status: "released",
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(walletReservations.requestId, params.requestId),
+          eq(walletReservations.userId, params.userId),
+          eq(walletReservations.status, "active"),
+        )
+      )
+      .returning({ id: walletReservations.id });
+    return rows.length > 0;
+  });
+
+  if (!released) return;
 
   const available = await getAvailableBalance(params.userId);
   eventHub.publish(params.userId, "wallet.reservation.released", {

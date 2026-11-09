@@ -247,24 +247,8 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
         canonicalModelId: profile.canonicalModelId ?? profile.id,
       };
     }
-    // If not found in catalog, route gracefully to primary gateway model while maintaining requested name persona
-    const fallbackRows = await db.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models)
-      .leftJoin(modelPricing, eq(modelPricing.modelId, models.id))
-      .leftJoin(pricingTiers, eq(pricingTiers.slug, models.pricingTier))
-      .leftJoin(modelCapabilities, eq(modelCapabilities.modelId, models.id))
-      .leftJoin(modelLimits, eq(modelLimits.modelId, models.id))
-      .where(eq(models.slug, "deepseek-v4.1-flash-1017"));
-    r = fallbackRows[0];
-    if (!r) return null;
-    return {
-      model: { ...r.model, name: slug, slug },
-      pricing: r.pricing,
-      tier: r.tier,
-      caps: r.caps,
-      limits: r.limits,
-      pricingStatus: (r.model as any).pricingStatus ?? "approved",
-      canonicalModelId: (r.model as any).canonicalModelId ?? r.model.slug,
-    };
+    // Unknown models are rejected rather than silently routed to another model.
+    return null;
   }
   return {
     model: r.model,
@@ -382,25 +366,19 @@ export function getBackendGatewayKey(): string | undefined {
   return key;
 }
 
-const FALLBACK_REQUESTY_KEYS = [
-  "rqsty-sk-eZDZIylOTvmLRd0c2tVrNAAqHeawYeRZrVSJYOrOlW3zFeakaX8fdeiO4MOkD69L8AbUQ1zJpSRkIvUmiquvaPuEl1zU7eiIq61MN75n/gU=",
-  "rqsty-sk-Rwqk+k5bTmyQzu0m0YW7ES32tRYd7lx1QapSNITPF5dXjiPpduVEPT1Cw4h1Wo5xBkysmfRQD4VIwKCbQsbFj1uc+tXBSpzVe27DA2S6ZQ0=",
-];
-
 function getBackendRequestyPool(): string[] {
   const envVal = process.env.PROVIDER_REQUESTY_API_KEY || "";
-  if (!envVal.trim()) return FALLBACK_REQUESTY_KEYS;
-  const parsed = envVal
+  if (!envVal.trim()) return [];
+  return envVal
     .split(/[\s,;\n]+/)
     .map((k) => k.trim())
     .filter(Boolean);
-  return parsed.length > 0 ? parsed : FALLBACK_REQUESTY_KEYS;
 }
 
 let backendRequestyPoolIndex = 0;
 export function getBackendRequestyKey(): string | undefined {
   const pool = getBackendRequestyPool();
-  if (pool.length === 0) return FALLBACK_REQUESTY_KEYS[0];
+  if (pool.length === 0) return undefined;
   const key = pool[backendRequestyPoolIndex % pool.length];
   backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % pool.length;
   return key;
@@ -471,6 +449,20 @@ const ENV_KEY_MAP: Record<string, string | undefined> = {
   nabh: process.env.PROVIDER_NABH_API_KEY,
 };
 
+/** Slugs that always require a server-side credential. */
+const REQUIRES_API_KEY = new Set([
+  "prorouter-gateway",
+  "requesty",
+  "groq",
+  "openrouter",
+  "nabh",
+  "openai",
+  "anthropic",
+  "mistral",
+]);
+
+const credentialCursor = new Map<string, number>();
+
 /** Build an adapter with decrypted credentials (secrets never leave the server). */
 export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAdapter> {
   const db = await getDb();
@@ -478,20 +470,40 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
   const providerRows = await db.select().from(providers).where(eq(providers.id, candidate.providerId));
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
-  let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : undefined;
-  if (!apiKey || candidate.providerSlug === "prorouter-gateway" || candidate.providerSlug === "requesty" || candidate.providerSlug === "groq" || candidate.providerSlug === "openrouter" || candidate.providerSlug === "nabh") {
-    if (candidate.providerSlug === "prorouter-gateway") {
-      apiKey = getBackendGatewayKey();
-    } else if (candidate.providerSlug === "requesty") {
-      apiKey = getBackendRequestyKey();
-    } else if (candidate.providerSlug === "groq") {
-      apiKey = getBackendGroqKey();
-    } else if (candidate.providerSlug === "openrouter") {
-      apiKey = getBackendOpenRouterKey();
-    } else {
-      apiKey = ENV_KEY_MAP[candidate.providerSlug];
+
+  let apiKey: string | undefined;
+  if (creds.length > 0) {
+    const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
+    credentialCursor.set(candidate.providerId, start + 1);
+    for (let offset = 0; offset < creds.length; offset++) {
+      const cred = creds[(start + offset) % creds.length];
+      try {
+        apiKey = decryptSecret(cred.ciphertext, cred.iv, cred.authTag ?? "");
+        if (apiKey) break;
+      } catch {
+        apiKey = undefined;
+      }
     }
   }
+
+  if (candidate.providerSlug === "prorouter-gateway") {
+    apiKey = getBackendGatewayKey() || apiKey;
+  } else if (candidate.providerSlug === "requesty") {
+    apiKey = getBackendRequestyKey() || apiKey;
+  } else if (candidate.providerSlug === "groq") {
+    apiKey = getBackendGroqKey() || apiKey;
+  } else if (candidate.providerSlug === "openrouter") {
+    apiKey = getBackendOpenRouterKey() || apiKey;
+  } else if (candidate.providerSlug === "nabh") {
+    apiKey = getBackendNabhKey() || apiKey;
+  } else if (!apiKey) {
+    apiKey = ENV_KEY_MAP[candidate.providerSlug];
+  }
+
+  if (!apiKey && REQUIRES_API_KEY.has(candidate.providerSlug)) {
+    throw new ProviderError(candidate.providerSlug, "no_credential", "No API key configured for this provider.", 503);
+  }
+
   return createAdapter(provider.adapterType, {
     providerSlug: candidate.providerSlug,
     endpointUrl: provider.endpointUrl,
@@ -507,29 +519,36 @@ export interface ExecutionResult {
   usage: Usage;
   usageSource: UsageSource;
   providerSlug: string;
+  providerId: string;
   providerModelId: string;
-  attempts: Array<{ providerSlug: string; status: string; httpStatus: number | null; latencyMs: number; error: string | null }>;
+  attempts: Array<{ providerId: string; providerSlug: string; status: string; httpStatus: number | null; latencyMs: number; error: string | null }>;
 }
 
 /** Non-streaming execution with provider fallback (§54). */
-export async function executeChat(decision: RouteDecision, params: AdapterChatParams): Promise<ExecutionResult> {
+export async function executeChat(decision: RouteDecision, params: AdapterChatParams, signal?: AbortSignal): Promise<ExecutionResult> {
   const chain = [decision.primary, ...decision.fallbackChain];
   const attempts: ExecutionResult["attempts"] = [];
   let lastError: ProviderError | null = null;
   for (let i = 0; i < chain.length; i++) {
     const candidate = chain[i];
+    if (signal?.aborted) {
+      throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+    }
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const result = await adapter.chat(params);
+      const result = await adapter.chat(params, signal);
       ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
-      attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { ...result, providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, attempts };
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
+      return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
     } catch (err) {
+      if (signal?.aborted) {
+        throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+      }
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
       lastError = pErr;
       ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
-      attempts.push({ providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
       const isLast = i === chain.length - 1;
       if (isLast || !pErr.retryable) break;
     }
@@ -539,6 +558,7 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
 
 export interface StreamOutcome {
   providerSlug: string;
+  providerId: string;
   providerModelId: string;
   usage: Usage;
   usageSource: UsageSource;
@@ -555,6 +575,7 @@ export async function* streamChat(
   decision: RouteDecision,
   params: AdapterChatParams,
   onMeta?: (e: StreamEvent) => void,
+  signal?: AbortSignal,
 ): AsyncGenerator<StreamEvent, StreamOutcome> {
   const chain = [decision.primary, ...decision.fallbackChain];
   const attempts: ExecutionResult["attempts"] = [];
@@ -566,10 +587,13 @@ export async function* streamChat(
 
   for (let i = 0; i < chain.length; i++) {
     const candidate = chain[i];
+    if (signal?.aborted) {
+      throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+    }
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const iterator = adapter.chatStream(params)[Symbol.asyncIterator]();
+      const iterator = adapter.chatStream(params, signal)[Symbol.asyncIterator]();
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
@@ -584,12 +608,15 @@ export async function* streamChat(
         onMeta?.(value);
         yield value;
       }
-      attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
+      return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
     } catch (err) {
+      if (signal?.aborted) {
+        throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+      }
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
       lastError = pErr;
-      attempts.push({ providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
       if (started || i === chain.length - 1 || !pErr.retryable) {
         yield { type: "done", finishReason: "error" };
         throw pErr;

@@ -344,7 +344,7 @@ export async function chatRoutes(app: FastifyInstance) {
           cost = debit.deductedPaise;
         }
       } else if (hasReservation) {
-        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => { });
         hasReservation = false;
       }
 
@@ -357,7 +357,7 @@ export async function chatRoutes(app: FastifyInstance) {
             tokensConsumed: sql`${promotionalActivations.tokensConsumed} + ${totalToks}`,
           })
           .where(eq(promotionalActivations.id, activePromoActivationId))
-          .catch(() => {});
+          .catch(() => { });
       }
 
       await db.update(requests).set({
@@ -412,11 +412,11 @@ export async function chatRoutes(app: FastifyInstance) {
           queueWaitMs = slot.queueWaitMs;
           slotServiceStart = Date.now();
         }
-        const result = await executeChat(decision, adapterParams);
-        for (const a of result.attempts) {
-          await db.insert(requestAttempts).values({ requestId, providerId: null, attempt: result.attempts.indexOf(a) + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
+        const result = await executeChat(decision, adapterParams, request.signal);
+        for (const [i, a] of result.attempts.entries()) {
+          await db.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
-        const cost = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: decision.primary.providerId, providerSlug: result.providerSlug, ttftMs: null });
+        const cost = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: result.providerId, providerSlug: result.providerSlug, ttftMs: null });
         reply.header("x-prorouter-usage-source", result.usageSource);
         const created = Math.floor(Date.now() / 1000);
         return reply.send({
@@ -424,11 +424,15 @@ export async function chatRoutes(app: FastifyInstance) {
           object: "chat.completion",
           created,
           model: body.model || slug,
-          choices: [{ index: 0, message: { role: "assistant", content: (() => {
-            const profile = ModelProfileRegistry.get(slug);
-            const base = sanitizeModelOutput(result.content, ctx.model.name);
-            return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
-          })(), tool_calls: result.toolCalls.length ? result.toolCalls : undefined }, finish_reason: result.finishReason }],
+          choices: [{
+            index: 0, message: {
+              role: "assistant", content: (() => {
+                const profile = ModelProfileRegistry.get(slug);
+                const base = sanitizeModelOutput(result.content, ctx.model.name);
+                return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+              })(), tool_calls: result.toolCalls.length ? result.toolCalls : undefined
+            }, finish_reason: result.finishReason
+          }],
           usage: result.usage,
           uno: {
             request_id: requestId,
@@ -483,10 +487,11 @@ export async function chatRoutes(app: FastifyInstance) {
       let contentSoFar = "";
       let finishReason = "stop";
       let providerSlug = decision.primary.providerSlug;
+      let outcomeProviderId: string | null = null;
 
       try {
         const outcome = await (async () => {
-          const iterator = streamChat(decision, adapterParams);
+          const iterator = streamChat(decision, adapterParams, undefined, request.signal);
           while (true) {
             const step = await iterator.next();
             if (step.done) return step.value;
@@ -516,16 +521,24 @@ export async function chatRoutes(app: FastifyInstance) {
           }
         })();
         providerSlug = outcome.providerSlug;
+        outcomeProviderId = outcome.providerId;
         usage = outcome.usage;
         usageSource = outcome.usageSource;
         finishReason = outcome.finishReason;
-        for (const a of outcome.attempts) {
-          await db.insert(requestAttempts).values({ requestId, attempt: outcome.attempts.indexOf(a) + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
+        for (const [i, a] of outcome.attempts.entries()) {
+          await db.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Provider error";
-        write({ error: { code: "provider_error", message, request_id: requestId } });
-        await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: err instanceof ApiError ? err.code : "provider_error", errorMessage: message, httpStatus: 502, status: "error" }).catch(() => undefined);
+        const aborted = request.signal.aborted;
+        const message = aborted
+          ? "Client disconnected"
+          : err instanceof ApiError
+            ? err.message
+            : "Upstream provider error.";
+        if (!aborted) {
+          write({ error: { code: "provider_error", message, request_id: requestId } });
+        }
+        await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: aborted ? "client_aborted" : err instanceof ApiError ? err.code : "provider_error", errorMessage: message, httpStatus: aborted ? 499 : 502, status: "error" }).catch(() => undefined);
         res.end();
         return;
       }
@@ -539,13 +552,16 @@ export async function chatRoutes(app: FastifyInstance) {
         };
         usageSource = "estimated";
       }
-      const cost = await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs });
+      const cost = await finalize({ usage, usageSource, providerId: outcomeProviderId ?? decision.primary.providerId, providerSlug, ttftMs });
       write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug, choices: [], usage, uno: { request_id: requestId, provider: providerSlug, cost_paise: cost, is_free: isFree, queue_wait_ms: queueWaitMs, route: decision.trace, usage_source: usageSource } });
       res.write("data: [DONE]\n\n");
       res.end();
       return;
     } catch (err) {
-      const apiErr = err instanceof ApiError ? err : err instanceof Error && (err as { code?: string }).code === "rate_limited" ? new ApiError("provider_error", err.message) : new ApiError("provider_error", (err as Error)?.message ?? "Provider error");
+      const aborted = request.signal.aborted;
+      const apiErr = err instanceof ApiError
+        ? err
+        : new ApiError("provider_error", aborted ? "Client disconnected" : "Upstream provider error.");
       if (sseStarted) {
         try {
           reply.raw.write(`data: ${JSON.stringify({ error: apiErr.toBody(requestId).error })}\n\n`);
@@ -561,7 +577,7 @@ export async function chatRoutes(app: FastifyInstance) {
       throw apiErr;
     } finally {
       if (hasReservation) {
-        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => { });
       }
       if (acquired) releaseSlot(acquiredKey, slotServiceStart ? Date.now() - slotServiceStart : 0);
     }

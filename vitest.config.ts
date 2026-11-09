@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./apps/web"),
+      "next/server": path.resolve(__dirname, "./apps/web/node_modules/next/server.js"),
     },
   },
   test: {

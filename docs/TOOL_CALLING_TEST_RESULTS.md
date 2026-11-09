@@ -103,3 +103,4 @@ This document records the official verification results for the Pro Router tool-
     `tool_calls: [{ id: "call-976e8447-eadb-4e5d-86f2-4d8f60af28c2", type: "function", function: { name: "read_file", arguments: "{\"path\":\"src/index.ts\"}" } }]`
     with `finish_reason: "tool_calls"`.
 - **Key Pool Health:** 11 of 12 keys verified active and operational; 1 inactive key removed and 401 auto-rotation implemented.
+

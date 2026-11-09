@@ -185,7 +185,14 @@ export class AnthropicAdapter implements ProviderAdapter {
       res.status === 429 ? "rate_limited" : res.status >= 500 ? "server_error" : "request_rejected",
       detail.slice(0, 500) || `Upstream returned HTTP ${res.status}`,
       res.status,
+      res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403,
     );
+  }
+
+  private static mapStopReason(reason: string | undefined): string {
+    if (reason === "tool_use") return "tool_calls";
+    if (reason === "max_tokens") return "length";
+    return "stop";
   }
 
   async chat(params: AdapterChatParams, signal?: AbortSignal) {
@@ -214,14 +221,15 @@ export class AnthropicAdapter implements ProviderAdapter {
           type: "function" as const,
           function: { name: b.name ?? "", arguments: JSON.stringify(b.input ?? {}) },
         }));
+      const estimated = estimateUsage({ messages: params.messages, completion: text });
       const usage: Usage = {
-        prompt_tokens: json.usage?.input_tokens ?? estimateUsage({ messages: params.messages, completion: text }).prompt_tokens,
-        completion_tokens: json.usage?.output_tokens ?? 0,
-        total_tokens: (json.usage?.input_tokens ?? 0) + (json.usage?.output_tokens ?? 0),
+        prompt_tokens: json.usage?.input_tokens ?? estimated.prompt_tokens,
+        completion_tokens: json.usage?.output_tokens ?? estimated.completion_tokens,
+        total_tokens: 0,
       };
       usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
       const usageSource: UsageSource = json.usage ? "upstream" : "estimated";
-      return { content: text, toolCalls, finishReason: json.stop_reason ?? "stop", usage, usageSource };
+      return { content: text, toolCalls, finishReason: AnthropicAdapter.mapStopReason(json.stop_reason), usage, usageSource };
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       const aborted = err instanceof Error && err.name === "AbortError";
@@ -250,6 +258,7 @@ export class AnthropicAdapter implements ProviderAdapter {
         body: JSON.stringify(this.buildBody({ ...params, stream: true })),
         signal: controller.signal,
       });
+      clearTimeout(timer);
       if (!res.ok) await this.fail(res);
       if (!res.body) throw new ProviderError(this.providerSlug, "empty_body", "Empty streaming response", 502);
       yield { type: "start" };
@@ -293,7 +302,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           }
         } else if (type === "message_delta") {
           const delta = event.delta as { stop_reason?: string } | undefined;
-          if (delta?.stop_reason) finishReason = delta.stop_reason === "tool_use" ? "tool_calls" : "stop";
+          if (delta?.stop_reason) finishReason = AnthropicAdapter.mapStopReason(delta.stop_reason);
           const usage = event.usage as { output_tokens?: number } | undefined;
           if (typeof usage?.output_tokens === "number") {
             outputTokens = usage.output_tokens;

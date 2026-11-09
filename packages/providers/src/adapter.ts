@@ -108,20 +108,29 @@ export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerato
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const drain = function* (flush: boolean): Generator<string> {
+    const lines = (buffer + (flush ? decoder.decode() : "")).split(/\r?\n/);
+    buffer = flush ? "" : lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (data) yield data;
+    }
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data) yield data;
-      }
+      yield* drain(false);
     }
+    yield* drain(true);
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      /* body already closed */
+    }
     reader.releaseLock();
   }
 }

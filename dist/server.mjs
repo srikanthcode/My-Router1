@@ -49,6 +49,7 @@ var ERROR_STATUS = {
   model_not_found: 404,
   provider_unavailable: 503,
   insufficient_balance: 402,
+  pricing_pending: 422,
   rate_limit_exceeded: 429,
   free_quota_exceeded: 429,
   queue_unavailable: 503,
@@ -432,10 +433,118 @@ function sanitizeModelOutput(text7, modelName) {
 }
 
 // packages/shared/src/pricing-engine.ts
+var DEFAULT_OPERATIONAL_RESERVE = 0.1;
+var DEFAULT_TARGET_GROSS_MARGIN = 0.3;
+var DEFAULT_MIN_SELLING_PRICE_USD = 0.05;
+var DEFAULT_MAX_APPROVED_MARGIN = 0.85;
+var DEFAULT_USD_TO_INR_DISPLAY_RATE = 80;
+function calculateTokenPrice(upstreamCostUsdPer1M, options = {}, usdToInrRate = DEFAULT_USD_TO_INR_DISPLAY_RATE) {
+  if (upstreamCostUsdPer1M === null || upstreamCostUsdPer1M === void 0 || upstreamCostUsdPer1M < 0 || isNaN(upstreamCostUsdPer1M)) {
+    return {
+      upstreamCostUsdPer1M: 0,
+      customerPriceUsdPer1M: 0,
+      customerPriceInrPaisePer1M: 0,
+      marginPercent: 0,
+      operationalReservePercent: (options.operationalReserve ?? DEFAULT_OPERATIONAL_RESERVE) * 100,
+      isOverride: false,
+      status: "pricing_pending"
+    };
+  }
+  if (options.manualPriceOverrideUsd !== void 0 && options.manualPriceOverrideUsd !== null && options.manualPriceOverrideUsd >= 0) {
+    const override = options.manualPriceOverrideUsd;
+    const margin = override > 0 ? (override - upstreamCostUsdPer1M) / override : 0;
+    const inrPaise2 = Math.ceil(override * usdToInrRate * 100);
+    return {
+      upstreamCostUsdPer1M,
+      customerPriceUsdPer1M: Number(override.toFixed(4)),
+      customerPriceInrPaisePer1M: inrPaise2,
+      marginPercent: Number((margin * 100).toFixed(2)),
+      operationalReservePercent: (options.operationalReserve ?? DEFAULT_OPERATIONAL_RESERVE) * 100,
+      isOverride: true,
+      status: "approved"
+    };
+  }
+  if (upstreamCostUsdPer1M === 0) {
+    return {
+      upstreamCostUsdPer1M: 0,
+      customerPriceUsdPer1M: 0,
+      customerPriceInrPaisePer1M: 0,
+      marginPercent: 0,
+      operationalReservePercent: (options.operationalReserve ?? DEFAULT_OPERATIONAL_RESERVE) * 100,
+      isOverride: false,
+      status: "pricing_pending"
+    };
+  }
+  const opReserve = Math.max(0, options.operationalReserve ?? DEFAULT_OPERATIONAL_RESERVE);
+  const targetMargin = Math.min(
+    options.maxApprovedMargin ?? DEFAULT_MAX_APPROVED_MARGIN,
+    Math.max(0.01, options.targetGrossMargin ?? DEFAULT_TARGET_GROSS_MARGIN)
+  );
+  const modelMarkup = options.modelMarkup ?? 0;
+  const providerMarkup = options.providerMarkup ?? 0;
+  const minFloor = options.minSellingPriceUsd ?? DEFAULT_MIN_SELLING_PRICE_USD;
+  const totalReserveAndMarkup = 1 + opReserve + modelMarkup + providerMarkup;
+  const costWithReserve = upstreamCostUsdPer1M * totalReserveAndMarkup;
+  const denominator = 1 - targetMargin;
+  const rawPrice = costWithReserve / denominator;
+  const finalPrice = Math.max(minFloor, rawPrice);
+  const realizedMargin = (finalPrice - upstreamCostUsdPer1M) / finalPrice;
+  const inrPaise = Math.ceil(finalPrice * usdToInrRate * 100);
+  return {
+    upstreamCostUsdPer1M: Number(upstreamCostUsdPer1M.toFixed(4)),
+    customerPriceUsdPer1M: Number(finalPrice.toFixed(4)),
+    customerPriceInrPaisePer1M: inrPaise,
+    marginPercent: Number((realizedMargin * 100).toFixed(2)),
+    operationalReservePercent: Number((opReserve * 100).toFixed(2)),
+    isOverride: false,
+    status: "approved"
+  };
+}
+function calculateModelPricing(costs, options = {}, usdToInrRate = DEFAULT_USD_TO_INR_DISPLAY_RATE) {
+  const input = calculateTokenPrice(costs.inputUsdPer1M, options, usdToInrRate);
+  const output = calculateTokenPrice(costs.outputUsdPer1M, options, usdToInrRate);
+  const cachedInput = costs.cachedInputUsdPer1M !== void 0 && costs.cachedInputUsdPer1M !== null ? calculateTokenPrice(costs.cachedInputUsdPer1M, options, usdToInrRate) : void 0;
+  const isPending = input.status === "pricing_pending" || output.status === "pricing_pending";
+  const pricingStatus = isPending ? "pricing_pending" : "approved";
+  return {
+    input,
+    output,
+    cachedInput,
+    pricingStatus,
+    isCommerciallyAvailable: !isPending
+  };
+}
+var PROMOTIONAL_CANONICAL_MODELS = [
+  "deepseek-v4.1-flash",
+  "qwen3.8-27b"
+];
+function resolvePromotionalCanonicalId(identifier) {
+  if (!identifier) return null;
+  const clean = identifier.trim().toLowerCase();
+  if (clean.includes("qwen-2.5-coder") || clean.includes("qwen2.5-coder") || clean.includes("deepseek-v4-pro") || clean.includes("deepseek-r1") || clean.includes("deepseek-v3")) {
+    return null;
+  }
+  if (clean === "deepseek-v4.1-flash" || clean === "deepseek-v4.1-flash-1017" || clean === "deepseek-ai/deepseek-v4.1-flash-1017" || clean === "deepseek-ai/deepseek-v4.1-flash" || clean === "prorouter/deepseek-v4.1-flash") {
+    return "deepseek-v4.1-flash";
+  }
+  if (clean === "qwen3.8-27b" || clean === "qwen-3.8-27b" || clean === "qwen/qwen3.8-27b" || clean === "groq/qwen3.8-27b") {
+    return "qwen3.8-27b";
+  }
+  return null;
+}
+function isStrictlyPromotionalEligible(identifier) {
+  return resolvePromotionalCanonicalId(identifier) !== null;
+}
 var PROMO_DURATION_MS = 48 * 60 * 60 * 1e3;
-function isPromotionActive(activatedAt) {
+function checkPromotionStatus(activatedAt) {
   if (!activatedAt) {
-    return { active: false, remainingMs: 0, remainingFormatted: "Not activated", expiresAt: null };
+    return {
+      active: false,
+      remainingMs: 0,
+      remainingFormatted: "Not activated",
+      expiresAt: null,
+      eligibleCanonicalModels: PROMOTIONAL_CANONICAL_MODELS
+    };
   }
   const start = new Date(activatedAt).getTime();
   const expires = start + PROMO_DURATION_MS;
@@ -448,7 +557,8 @@ function isPromotionActive(activatedAt) {
     active,
     remainingMs,
     remainingFormatted: active ? `${hours}h ${minutes}m left` : "Expired",
-    expiresAt: new Date(expires)
+    expiresAt: new Date(expires),
+    eligibleCanonicalModels: PROMOTIONAL_CANONICAL_MODELS
   };
 }
 
@@ -477,6 +587,7 @@ __export(schema_exports, {
   creditPackages: () => creditPackages,
   emailLog: () => emailLog,
   entitlementStatusEnum: () => entitlementStatusEnum,
+  exchangeRates: () => exchangeRates,
   featureFlags: () => featureFlags,
   freeUsage: () => freeUsage,
   giftCodeRedemptions: () => giftCodeRedemptions,
@@ -484,6 +595,7 @@ __export(schema_exports, {
   incidents: () => incidents,
   linkStatusEnum: () => linkStatusEnum,
   messages: () => messages,
+  modelAliases: () => modelAliases,
   modelCapabilities: () => modelCapabilities,
   modelLimits: () => modelLimits,
   modelPricing: () => modelPricing,
@@ -497,8 +609,13 @@ __export(schema_exports, {
   paymentWebhooks: () => paymentWebhooks,
   payments: () => payments,
   plans: () => plans,
+  pricingAuditLogs: () => pricingAuditLogs,
+  pricingStatusEnum: () => pricingStatusEnum,
+  pricingSyncLogs: () => pricingSyncLogs,
   pricingTiers: () => pricingTiers,
+  pricingVersions: () => pricingVersions,
   promotionalActivations: () => promotionalActivations,
+  providerCosts: () => providerCosts,
   providerCredentials: () => providerCredentials,
   providerHealth: () => providerHealth,
   providerStatusEnum: () => providerStatusEnum,
@@ -612,6 +729,7 @@ var providerStatusEnum = pgEnum2("provider_status", ["active", "degraded", "disa
 var modelStatusEnum = pgEnum2("model_status", ["active", "coming_soon", "disabled", "archived"]);
 var modelTypeEnum = pgEnum2("model_type", ["chat", "completion", "embedding", "image", "audio"]);
 var linkStatusEnum = pgEnum2("link_status", ["active", "degraded", "disabled"]);
+var pricingStatusEnum = pgEnum2("pricing_status", ["approved", "pricing_pending", "disabled", "draft"]);
 var providers = pgTable2(
   "providers",
   {
@@ -687,10 +805,12 @@ var models = pgTable2(
     id: uuid2("id").primaryKey().defaultRandom(),
     slug: text2("slug").notNull(),
     name: text2("name").notNull(),
+    canonicalModelId: text2("canonical_model_id"),
     description: text2("description").notNull().default(""),
     providerId: uuid2("provider_id").references(() => providers.id, { onDelete: "set null" }),
     type: modelTypeEnum("type").notNull().default("chat"),
     status: modelStatusEnum("status").notNull().default("active"),
+    pricingStatus: pricingStatusEnum("pricing_status").notNull().default("approved"),
     isFree: boolean2("is_free").notNull().default(false),
     pricingTier: text2("pricing_tier"),
     contextWindow: integer2("context_window").notNull().default(128e3),
@@ -706,6 +826,7 @@ var models = pgTable2(
   (t) => [
     uniqueIndex2("models_slug_uq").on(t.slug),
     index2("models_status_idx").on(t.status),
+    index2("models_pricing_status_idx").on(t.pricingStatus),
     index2("models_rank_idx").on(t.rank),
     index2("models_pricing_tier_idx").on(t.pricingTier)
   ]
@@ -770,6 +891,100 @@ var routingRules = pgTable2(
     createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
   (t) => [index2("routing_rules_priority_idx").on(t.priority)]
+);
+var modelAliases = pgTable2(
+  "model_aliases",
+  {
+    id: uuid2("id").primaryKey().defaultRandom(),
+    alias: text2("alias").notNull(),
+    canonicalModelId: text2("canonical_model_id").notNull(),
+    providerSlug: text2("provider_slug"),
+    description: text2("description").notNull().default(""),
+    active: boolean2("active").notNull().default(true),
+    createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [uniqueIndex2("model_aliases_alias_uq").on(t.alias), index2("model_aliases_canonical_idx").on(t.canonicalModelId)]
+);
+var providerCosts = pgTable2(
+  "provider_costs",
+  {
+    id: uuid2("id").primaryKey().defaultRandom(),
+    providerId: uuid2("provider_id").notNull().references(() => providers.id, { onDelete: "cascade" }),
+    providerModelId: text2("provider_model_id").notNull(),
+    inputCostUsdCentsPerMillion: integer2("input_cost_usd_cents_per_million").notNull(),
+    outputCostUsdCentsPerMillion: integer2("output_cost_usd_cents_per_million").notNull(),
+    cachedInputCostUsdCentsPerMillion: integer2("cached_input_cost_usd_cents_per_million"),
+    sourceUrl: text2("source_url"),
+    sourceIdentifier: text2("source_identifier"),
+    currency: text2("currency").notNull().default("USD"),
+    verificationTimestamp: timestamp2("verification_timestamp", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    verifiedBy: text2("verified_by"),
+    createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [uniqueIndex2("provider_costs_prov_model_uq").on(t.providerId, t.providerModelId)]
+);
+var pricingVersions = pgTable2(
+  "pricing_versions",
+  {
+    id: uuid2("id").primaryKey().defaultRandom(),
+    modelId: uuid2("model_id").notNull().references(() => models.id, { onDelete: "cascade" }),
+    version: integer2("version").notNull().default(1),
+    inputUsdCentsPerMillion: integer2("input_usd_cents_per_million").notNull(),
+    outputUsdCentsPerMillion: integer2("output_usd_cents_per_million").notNull(),
+    cachedInputUsdCentsPerMillion: integer2("cached_input_usd_cents_per_million"),
+    inputPaisePerMillion: integer2("input_paise_per_million").notNull(),
+    outputPaisePerMillion: integer2("output_paise_per_million").notNull(),
+    targetGrossMarginBp: integer2("target_gross_margin_bp").notNull().default(3e3),
+    // 30%
+    operationalReserveBp: integer2("operational_reserve_bp").notNull().default(1e3),
+    // 10%
+    active: boolean2("active").notNull().default(true),
+    approvedBy: text2("approved_by"),
+    createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [index2("pricing_versions_model_idx").on(t.modelId, t.version)]
+);
+var pricingAuditLogs = pgTable2(
+  "pricing_audit_logs",
+  {
+    id: uuid2("id").primaryKey().defaultRandom(),
+    modelSlug: text2("model_slug").notNull(),
+    actorUserId: text2("actor_user_id"),
+    action: text2("action").notNull(),
+    oldPricing: jsonb2("old_pricing").$type(),
+    newPricing: jsonb2("new_pricing").$type().notNull(),
+    reason: text2("reason").notNull().default("Admin pricing update"),
+    createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [index2("pricing_audit_logs_slug_idx").on(t.modelSlug, t.createdAt)]
+);
+var pricingSyncLogs = pgTable2(
+  "pricing_sync_logs",
+  {
+    id: uuid2("id").primaryKey().defaultRandom(),
+    provider: text2("provider").notNull(),
+    syncType: text2("sync_type").notNull().default("manual"),
+    status: text2("status").notNull(),
+    modelsUpdated: integer2("models_updated").notNull().default(0),
+    errors: jsonb2("errors").$type().notNull().default([]),
+    createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [index2("pricing_sync_logs_provider_idx").on(t.provider, t.createdAt)]
+);
+var exchangeRates = pgTable2(
+  "exchange_rates",
+  {
+    id: uuid2("id").primaryKey().defaultRandom(),
+    baseCurrency: text2("base_currency").notNull().default("USD"),
+    targetCurrency: text2("target_currency").notNull().default("INR"),
+    rate: integer2("rate").notNull(),
+    // Rate * 100 e.g. 8800 for 88.00
+    isDisplayPolicy: boolean2("is_display_policy").notNull().default(false),
+    source: text2("source").notNull().default("admin"),
+    effectiveDate: timestamp2("effective_date", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    createdAt: timestamp2("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [index2("exchange_rates_target_idx").on(t.targetCurrency, t.effectiveDate)]
 );
 
 // packages/database/src/schema/billing.ts
@@ -1405,7 +1620,10 @@ async function seedDatabase(closeAtEnd = false) {
     await db2.insert(table).values(values).onConflictDoNothing({ target: conflictTarget });
   }
   const settings2 = [
-    { key: "USD_TO_INR_RATE", value: Number(env.isProd ? 97 : process.env.USD_TO_INR_RATE || 97), description: "INR per 1 USD (admin-configurable)" },
+    { key: "USD_TO_INR_RATE", value: Number(env.isProd ? 97 : process.env.USD_TO_INR_RATE || 80), description: "INR per 1 USD (admin display policy rate)" },
+    { key: "USD_TO_INR_MARKET_RATE", value: 88, description: "True market INR per 1 USD exchange rate" },
+    { key: "OPERATIONAL_RESERVE_PERCENT", value: 10, description: "Pricing engine operational reserve percentage" },
+    { key: "TARGET_GROSS_MARGIN_PERCENT", value: 30, description: "Pricing engine target gross margin percentage" },
     { key: "PLATFORM_FEE_PERCENT", value: 0, description: "Optional platform fee applied to paid requests" },
     { key: "FREE_REQUESTS_PER_MINUTE", value: 1, description: "Default free-model requests per minute" },
     { key: "FREE_QUEUE_PRIORITY", value: 5, description: "Default queue priority for free-tier requests" },
@@ -1421,6 +1639,10 @@ async function seedDatabase(closeAtEnd = false) {
     { key: "BILL_ESTIMATED_USAGE", value: false, description: "Bill requests whose token counts were estimated locally instead of reported upstream" }
   ];
   for (const s of settings2) await upsert(systemSettings, s, systemSettings.key);
+  await db2.insert(exchangeRates).values([
+    { baseCurrency: "USD", targetCurrency: "INR", rate: 8800, isDisplayPolicy: false, source: "market" },
+    { baseCurrency: "USD", targetCurrency: "INR", rate: 8e3, isDisplayPolicy: true, source: "admin_display_policy" }
+  ]).onConflictDoNothing();
   const flags2 = [
     { key: "astra_promotion", enabled: true, description: "Astra 7-day promotion & redeem codes" },
     { key: "image_generation", enabled: false, description: "Image playground endpoints" },
@@ -1507,7 +1729,6 @@ async function seedDatabase(closeAtEnd = false) {
       region: "global",
       capabilities: ["chat", "tool_calls", "vision", "reasoning"],
       description: "Primary model gateway."
-      // internal only — no upstream host/key shown in the UI
     },
     { slug: "openrouter", name: "OpenRouter", endpointUrl: "https://openrouter.ai/api/v1", adapterType: "openai", priority: 10, region: "global", capabilities: ["chat", "tool_calls", "vision"], description: "Aggregated multi-model gateway." },
     { slug: "openai", name: "OpenAI", endpointUrl: "https://api.openai.com/v1", adapterType: "openai", priority: 20, region: "us", capabilities: ["chat", "tool_calls", "vision", "embeddings"], description: "OpenAI platform API." },
@@ -1529,9 +1750,6 @@ async function seedDatabase(closeAtEnd = false) {
   ];
   for (const p of providerSeeds) {
     await upsert(providers, { ...p, status: "unknown" }, providers.slug);
-  }
-  if (true) {
-    await db2.update(providers).set({ endpointUrl: process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1", status: "active" }).where(eq(providers.slug, "prorouter-gateway"));
   }
   for (const slug2 of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh"]) {
     await db2.update(providers).set({ status: "active" }).where(and(eq(providers.slug, slug2), eq(providers.status, "unknown")));
@@ -1559,54 +1777,412 @@ async function seedDatabase(closeAtEnd = false) {
       set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true }
     });
   }
+  const verifiedUpstreamCosts = [
+    { provider: "prorouter-gateway", modelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", inCents: 14, outCents: 28, source: "TokenJuice verified gateway" },
+    { provider: "groq", modelId: "qwen/qwen3.8-27b", inCents: 20, outCents: 80, source: "Groq official pricing" },
+    { provider: "groq", modelId: "openai/gpt-oss-120b", inCents: 30, outCents: 120, source: "Groq official pricing" },
+    { provider: "groq", modelId: "openai/gpt-oss-20b", inCents: 8, outCents: 24, source: "Groq official pricing" },
+    { provider: "groq", modelId: "allam-2-7b", inCents: 5, outCents: 15, source: "Groq official pricing" },
+    { provider: "requesty", modelId: "mistral/leanstral-1-5", inCents: 12, outCents: 36, source: "Requesty verified router" },
+    { provider: "requesty", modelId: "novita/ling-3.1-flash", inCents: 8, outCents: 24, source: "Requesty verified router" },
+    { provider: "requesty", modelId: "google/gemma-4-31b-it", inCents: 14, outCents: 42, source: "Requesty verified router" },
+    { provider: "requesty", modelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", inCents: 15, outCents: 45, source: "Requesty verified router" },
+    { provider: "requesty", modelId: "nvidia/nemotron-3.5-lightning-30b-a3b", inCents: 10, outCents: 30, source: "Requesty verified router" },
+    { provider: "requesty", modelId: "nvidia/nemotron-3-ultra-550b-a55b", inCents: 70, outCents: 210, source: "Requesty verified router" },
+    { provider: "openrouter", modelId: "nvidia/nemotron-3.5-super-vl:free", inCents: 20, outCents: 60, source: "OpenRouter verified gateway" },
+    { provider: "nabh", modelId: "gpt-oss-20b", inCents: 8, outCents: 24, source: "Nabh Cloud verified gateway" }
+  ];
+  for (const c of verifiedUpstreamCosts) {
+    const prov = providerBySlug.get(c.provider);
+    if (!prov) continue;
+    await db2.insert(providerCosts).values({
+      providerId: prov.id,
+      providerModelId: c.modelId,
+      inputCostUsdCentsPerMillion: c.inCents,
+      outputCostUsdCentsPerMillion: c.outCents,
+      cachedInputCostUsdCentsPerMillion: Math.round(c.inCents / 2),
+      sourceIdentifier: c.source,
+      currency: "USD",
+      verifiedBy: "system_audit"
+    }).onConflictDoNothing();
+  }
   const catalog = [
-    { slug: "deepseek-v4.1-flash-1017", name: "DeepSeek-V4.1-Flash-1017", description: "DeepSeek V4.1 Flash \u2014 state-of-the-art fast reasoning, coding, and multilingual intelligence.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128e3, input: 0, output: 0, rank: 1, popularity: 9900, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", description: "DeepSeek V4.1 Flash \u2014 high-speed reasoning and code synthesis.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128e3, input: 0, output: 0, rank: 2, popularity: 9880, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities running on Groq LPU.", provider: "groq", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 4, popularity: 9850, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
-    { slug: "qwen3.8-27b", name: "Qwen3.8-27B", description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities.", provider: "groq", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 3, popularity: 9850, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
-    { slug: "glm-5.3", name: "GLM-5.3", description: "Zhipu GLM-5.3 \u2014 flagship bilingual reasoning, analytical thinking, and tool execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 128e3, input: 0, output: 0, rank: 4, popularity: 9800, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "kimi-k3", name: "Kimi K3", description: "Moonshot Kimi K3 \u2014 ultra long-context frontier model with high-speed reasoning and deep comprehension.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 5, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "mimo-v2.6-pro", name: "MiMo-V2.6-Pro", description: "Xiaomi MiMo V2.6 Pro \u2014 flagship multimodal reasoning model for advanced synthesis and coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 6, popularity: 9750, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash", description: "MiniMax M3.1 Flash \u2014 fast multimodal model with reliable tool calling and low latency.", provider: "prorouter-gateway", isFree: true, contextWindow: 1e6, maxOutputTokens: 131072, input: 0, output: 0, rank: 7, popularity: 9700, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "qwen3-coder-next", name: "Qwen3-Coder-Next", description: "Alibaba Qwen3 Coder Next \u2014 specialized coding model for repository synthesis and multi-file debugging.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 8, popularity: 9780, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "deepseek-v4-pro-0813", name: "DeepSeek-V4-Pro-0813", description: "DeepSeek V4 Pro \u2014 high-throughput frontier reasoning and deep architectural coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 262144, maxOutputTokens: 128e3, input: 0, output: 0, rank: 9, popularity: 9720, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "kimi-k2.7-code", name: "Kimi K2.7 Code", description: "Moonshot Kimi K2.7 Code \u2014 specialized code intelligence and agentic workflow automation.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 10, popularity: 9680, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "devstral-24b", name: "Devstral 24B", description: "Mistral Devstral 24B \u2014 developer-tuned open weights optimized for software engineering workflows.", provider: "prorouter-gateway", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 11, popularity: 9650, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "claude-sonnet", name: "Claude Sonnet", description: "Anthropic Claude Sonnet \u2014 balanced intelligence, high coding precision, and nuanced creative writing.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 12, popularity: 9950, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "claude-opus", name: "Claude Opus", description: "Anthropic Claude Opus \u2014 deep analysis, nuanced reasoning, and complex task decomposition.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 13, popularity: 9930, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "gemini-pro", name: "Gemini Pro", description: "Google Gemini Pro \u2014 powerful multimodal model with vast context window and world knowledge.", provider: "prorouter-gateway", isFree: true, contextWindow: 1e6, maxOutputTokens: 64e3, input: 0, output: 0, rank: 14, popularity: 9910, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "grok", name: "Grok", description: "xAI Grok \u2014 direct, truthful AI with real-time insight and witty demeanor.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 64e3, input: 0, output: 0, rank: 15, popularity: 9890, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "mistral-large", name: "Mistral Large", description: "Mistral Large \u2014 flagship model for complex multilingual reasoning and precise instruction following.", provider: "prorouter-gateway", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 16, popularity: 9810, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "glm-5.3-flash", name: "GLM-5.3-Flash", description: "Zhipu GLM 5.3 Flash \u2014 fast multilingual reasoning with high-speed tool execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 128e3, input: 0, output: 0, rank: 17, popularity: 9790, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol", description: "OpenAI GPT-6.1 Sol \u2014 frontier cloud model optimized for high-speed reasoning and synthesis.", provider: "prorouter-gateway", isFree: true, contextWindow: 256e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 18, popularity: 9970, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "gpt-6.1-terra", name: "GPT-6.1 Terra", description: "OpenAI GPT-6.1 Terra \u2014 flagship multimodal intelligence with deep scientific knowledge.", provider: "prorouter-gateway", isFree: true, contextWindow: 256e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 19, popularity: 9960, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "claude-opus-5", name: "Claude Opus 5", description: "Anthropic Claude Opus 5 \u2014 next-generation frontier intelligence for research and coding.", provider: "prorouter-gateway", isFree: true, contextWindow: 25e4, maxOutputTokens: 64e3, input: 0, output: 0, rank: 20, popularity: 9990, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "mimo-v2.6-flash", name: "MiMo-V2.6-Flash", description: "Xiaomi MiMo Flash \u2014 quick responses with solid reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 1048576, maxOutputTokens: 131072, input: 0, output: 0, rank: 21, popularity: 9760, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "gpt-6-luna", name: "GPT-6 Luna", description: "OpenAI GPT-6 Luna \u2014 low-latency next-gen assistant for rapid task execution.", provider: "prorouter-gateway", isFree: true, contextWindow: 256e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 22, popularity: 9940, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "beam", name: "Beam", description: "Fast general-purpose model for everyday chat and drafting.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 23, popularity: 9050, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", description: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning.", provider: "openrouter", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 24, popularity: 8800, reasoning: true, vision: true, toolCalls: true, links: [{ provider: "openrouter", providerModelId: "nvidia/nemotron-3.5-super-vl:free", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", description: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work.", provider: "openrouter", isFree: true, contextWindow: 128e3, maxOutputTokens: 64e3, input: 0, output: 0, rank: 25, popularity: 8700, reasoning: true, toolCalls: true, links: [{ provider: "openrouter", providerModelId: "nvidia/nemotron-3.5-lightning:free", priority: 10 }, { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "longcat-2.5-preview", name: "LongCat 2.5 Preview", description: "Meituan LongCat 2.5 \u2014 long-context preview with strong multilingual reasoning.", provider: "prorouter-gateway", isFree: true, contextWindow: 2e5, maxOutputTokens: 64e3, input: 0, output: 0, rank: 26, popularity: 8600, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "jev-1.13", name: "Jev 1.13", description: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality.", provider: "prorouter-gateway", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 27, popularity: 8200, reasoning: true, toolCalls: true, links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "leanstral-1-5", name: "Leanstral 1.5", description: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context for lean execution and structured synthesis.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 28, popularity: 9600, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "mistral/leanstral-1-5", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "ling-3.1-flash", name: "Ling 3.1 Flash", description: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed, summarization, and task routing.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 32768, input: 0, output: 0, rank: 29, popularity: 9580, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "novita/ling-3.1-flash", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3-nano-omni-30b-a3b-reasoning", name: "Nemotron 3 Nano Omni 30B Reasoning", description: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving with 131K context.", provider: "requesty", isFree: true, contextWindow: 131072, maxOutputTokens: 20480, input: 0, output: 0, rank: 30, popularity: 9700, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3.5-lightning-30b-a3b", name: "Nemotron 3.5 Lightning 30B A3B", description: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window for high-throughput workflows.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 31, popularity: 9800, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3.5-lightning:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra 550B A55B", description: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context for frontier science, law, and complex systems architecture.", provider: "requesty", isFree: true, contextWindow: 1048576, maxOutputTokens: 65536, input: 0, output: 0, rank: 32, popularity: 9880, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } },
-    { slug: "gpt-oss-120b", name: "GPT OSS 120B", description: "OpenAI open-weight 120B parameter MoE reasoning architecture with high throughput on Groq LPU.", provider: "groq", isFree: true, contextWindow: 131072, maxOutputTokens: 32768, input: 0, output: 0, rank: 35, popularity: 9800, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
-    { slug: "allam-2-7b", name: "Allam 2 7B", description: "SDAIA high-performance bilingual Arabic & English foundational language model.", provider: "groq", isFree: true, contextWindow: 4096, maxOutputTokens: 2048, input: 0, output: 0, rank: 36, popularity: 9100, reasoning: false, toolCalls: false, structured: true, links: [{ provider: "groq", providerModelId: "allam-2-7b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 20, perHour: 200, perDay: 2e3 } },
-    { slug: "gpt-oss-20b", name: "GPT OSS 20B", description: "Open-weight 20B parameter reasoning and chat model with high speed and chain-of-thought capabilities.", provider: "nabh", isFree: true, contextWindow: 131072, maxOutputTokens: 16384, input: 0, output: 0, rank: 34, popularity: 9750, reasoning: true, toolCalls: true, structured: true, links: [{ provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 }, { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 } },
-    { slug: "gemma-4-31b-it", name: "Gemma 4 31B IT", description: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context, sharp instruction following, and multilingual mastery.", provider: "requesty", isFree: true, contextWindow: 262144, maxOutputTokens: 8192, input: 0, output: 0, rank: 33, popularity: 9820, reasoning: true, vision: true, toolCalls: true, structured: true, links: [{ provider: "requesty", providerModelId: "google/gemma-4-31b-it", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }], freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 } }
+    {
+      slug: "deepseek-v4.1-flash-1017",
+      canonicalId: "deepseek-v4.1-flash",
+      name: "DeepSeek-V4.1-Flash-1017",
+      description: "DeepSeek V4.1 Flash \u2014 state-of-the-art fast reasoning, coding, and multilingual intelligence.",
+      provider: "prorouter-gateway",
+      isFree: true,
+      // Promotional canonical model
+      contextWindow: 262144,
+      maxOutputTokens: 128e3,
+      input: 1760,
+      output: 3520,
+      rank: 1,
+      popularity: 9900,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 }
+    },
+    {
+      slug: "deepseek-v4.1-flash",
+      canonicalId: "deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
+      description: "DeepSeek V4.1 Flash \u2014 high-speed reasoning and code synthesis.",
+      provider: "prorouter-gateway",
+      isFree: true,
+      // Promotional canonical model
+      contextWindow: 262144,
+      maxOutputTokens: 128e3,
+      input: 1760,
+      output: 3520,
+      rank: 2,
+      popularity: 9880,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 }
+    },
+    {
+      slug: "qwen/qwen3.8-27b",
+      canonicalId: "qwen3.8-27b",
+      name: "Qwen 3.8 27B",
+      description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities running on Groq LPU.",
+      provider: "groq",
+      isFree: true,
+      // Promotional canonical model
+      contextWindow: 131072,
+      maxOutputTokens: 64e3,
+      input: 2510,
+      output: 10060,
+      rank: 4,
+      popularity: 9850,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 }
+    },
+    {
+      slug: "qwen3.8-27b",
+      canonicalId: "qwen3.8-27b",
+      name: "Qwen3.8-27B",
+      description: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities.",
+      provider: "groq",
+      isFree: true,
+      // Promotional canonical model
+      contextWindow: 131072,
+      maxOutputTokens: 64e3,
+      input: 2510,
+      output: 10060,
+      rank: 3,
+      popularity: 9850,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 }
+    },
+    // ALL OTHER MODELS ARE STRICTLY PAID
+    {
+      slug: "claude-sonnet",
+      canonicalId: "claude-3-5-sonnet",
+      name: "Claude Sonnet",
+      description: "Anthropic Claude Sonnet \u2014 balanced intelligence, high coding precision, and nuanced creative writing.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 2e5,
+      maxOutputTokens: 64e3,
+      input: 37700,
+      output: 188600,
+      rank: 12,
+      popularity: 9950,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "claude-opus",
+      canonicalId: "claude-3-opus",
+      name: "Claude Opus",
+      description: "Anthropic Claude Opus \u2014 deep analysis, nuanced reasoning, and complex task decomposition.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 2e5,
+      maxOutputTokens: 64e3,
+      input: 62900,
+      output: 314300,
+      rank: 13,
+      popularity: 9930,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "gemini-pro",
+      canonicalId: "gemini-1.5-pro",
+      name: "Gemini Pro",
+      description: "Google Gemini Pro \u2014 powerful multimodal model with vast context window and world knowledge.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 1e6,
+      maxOutputTokens: 64e3,
+      input: 1900,
+      output: 7500,
+      rank: 14,
+      popularity: 9910,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "grok",
+      canonicalId: "grok-2",
+      name: "Grok",
+      description: "xAI Grok \u2014 direct, truthful AI with real-time insight and witty demeanor.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 131072,
+      maxOutputTokens: 64e3,
+      input: 6300,
+      output: 25100,
+      rank: 15,
+      popularity: 9890,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "mistral-large",
+      canonicalId: "mistral-large-2407",
+      name: "Mistral Large",
+      description: "Mistral Large \u2014 flagship model for complex multilingual reasoning and precise instruction following.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 128e3,
+      maxOutputTokens: 64e3,
+      input: 25100,
+      output: 75400,
+      rank: 16,
+      popularity: 9810,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "glm-5.3",
+      canonicalId: "glm-5.3",
+      name: "GLM-5.3",
+      description: "Zhipu GLM-5.3 \u2014 flagship bilingual reasoning, analytical thinking, and tool execution.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 2e5,
+      maxOutputTokens: 128e3,
+      input: 7540,
+      output: 22630,
+      rank: 5,
+      popularity: 9800,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "kimi-k3",
+      canonicalId: "kimi-k3",
+      name: "Kimi K3",
+      description: "Moonshot Kimi K3 \u2014 ultra long-context frontier model with high-speed reasoning and deep comprehension.",
+      provider: "prorouter-gateway",
+      isFree: false,
+      contextWindow: 2e5,
+      maxOutputTokens: 64e3,
+      input: 10060,
+      output: 30170,
+      rank: 6,
+      popularity: 9820,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+    },
+    {
+      slug: "gpt-oss-120b",
+      canonicalId: "gpt-oss-120b",
+      name: "GPT OSS 120B",
+      description: "OpenAI open-weight 120B parameter MoE reasoning architecture with high throughput on Groq LPU.",
+      provider: "groq",
+      isFree: false,
+      contextWindow: 131072,
+      maxOutputTokens: 32768,
+      input: 3770,
+      output: 15090,
+      rank: 35,
+      popularity: 9800,
+      reasoning: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    },
+    {
+      slug: "gpt-oss-20b",
+      canonicalId: "gpt-oss-20b",
+      name: "GPT OSS 20B",
+      description: "Open-weight 20B parameter reasoning and chat model with high speed and chain-of-thought capabilities.",
+      provider: "nabh",
+      isFree: false,
+      contextWindow: 131072,
+      maxOutputTokens: 16384,
+      input: 1010,
+      output: 3020,
+      rank: 34,
+      popularity: 9750,
+      reasoning: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 }, { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    },
+    {
+      slug: "nemotron-3-ultra-550b-a55b",
+      canonicalId: "nemotron-3-ultra-550b",
+      name: "Nemotron 3 Ultra 550B A55B",
+      description: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context.",
+      provider: "requesty",
+      isFree: false,
+      contextWindow: 1048576,
+      maxOutputTokens: 65536,
+      input: 8800,
+      output: 26400,
+      rank: 32,
+      popularity: 9880,
+      reasoning: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3-ultra-550b-a55b:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    },
+    {
+      slug: "nemotron-3-nano-omni-30b-a3b-reasoning",
+      canonicalId: "nemotron-3-nano-omni-30b",
+      name: "Nemotron 3 Nano Omni 30B Reasoning",
+      description: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving with 131K context.",
+      provider: "requesty",
+      isFree: false,
+      contextWindow: 131072,
+      maxOutputTokens: 20480,
+      input: 1890,
+      output: 5660,
+      rank: 30,
+      popularity: 9700,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "requesty", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", priority: 10 }, { provider: "openrouter", providerModelId: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    },
+    {
+      slug: "gemma-4-31b-it",
+      canonicalId: "gemma-4-31b-it",
+      name: "Gemma 4 31B IT",
+      description: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context.",
+      provider: "requesty",
+      isFree: false,
+      contextWindow: 262144,
+      maxOutputTokens: 8192,
+      input: 1760,
+      output: 5280,
+      rank: 33,
+      popularity: 9820,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "requesty", providerModelId: "google/gemma-4-31b-it", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    },
+    {
+      slug: "leanstral-1-5",
+      canonicalId: "leanstral-1-5",
+      name: "Leanstral 1.5",
+      description: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context.",
+      provider: "requesty",
+      isFree: false,
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      input: 1510,
+      output: 4530,
+      rank: 28,
+      popularity: 9600,
+      reasoning: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "requesty", providerModelId: "mistral/leanstral-1-5", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    },
+    {
+      slug: "ling-3.1-flash",
+      canonicalId: "ling-3.1-flash",
+      name: "Ling 3.1 Flash",
+      description: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed.",
+      provider: "requesty",
+      isFree: false,
+      contextWindow: 262144,
+      maxOutputTokens: 32768,
+      input: 1010,
+      output: 3020,
+      rank: 29,
+      popularity: 9580,
+      reasoning: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [{ provider: "requesty", providerModelId: "novita/ling-3.1-flash", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+    }
   ];
   for (const m of catalog) {
     const providerRow = providerBySlug.get(m.provider);
     const [inserted] = await db2.insert(models).values({
       slug: m.slug,
       name: m.name,
+      canonicalModelId: m.canonicalId,
       description: m.description,
       providerId: providerRow?.id ?? null,
       type: "chat",
       status: m.status ?? "active",
+      pricingStatus: m.pricingStatus ?? "approved",
       isFree: m.isFree,
       contextWindow: m.contextWindow,
       maxOutputTokens: m.maxOutputTokens,
@@ -1623,6 +2199,19 @@ async function seedDatabase(closeAtEnd = false) {
       cachedInputPerMillion: m.isFree ? 0 : Math.round(m.input / 2),
       currency: "INR"
     }).onConflictDoNothing({ target: modelPricing.modelId });
+    await db2.insert(pricingVersions).values({
+      modelId: existing.id,
+      version: 1,
+      inputUsdCentsPerMillion: Math.round(m.input / 80),
+      outputUsdCentsPerMillion: Math.round(m.output / 80),
+      cachedInputUsdCentsPerMillion: Math.round(m.input / 160),
+      inputPaisePerMillion: m.input,
+      outputPaisePerMillion: m.output,
+      targetGrossMarginBp: 3e3,
+      operationalReserveBp: 1e3,
+      active: true,
+      approvedBy: "system_seed"
+    }).onConflictDoNothing();
     await db2.insert(modelCapabilities).values({
       modelId: existing.id,
       modalities: m.vision ? ["text", "image"] : ["text"],
@@ -1667,12 +2256,15 @@ async function seedDatabase(closeAtEnd = false) {
     for (const alias of PRO_ALIASES) {
       const [inserted] = await db2.insert(models).values({
         slug: alias.slug,
+        canonicalModelId: "deepseek-v4.1-flash",
         name: alias.name,
         description: alias.description,
         providerId: aliasProvider.id,
         type: "chat",
         status: "active",
+        pricingStatus: "approved",
         isFree: false,
+        // Strict policy: Pro aliases are paid
         pricingTier: alias.pricingTier,
         contextWindow: PRO_ALIAS_CONTEXT_WINDOW,
         maxOutputTokens: PRO_ALIAS_MAX_OUTPUT_TOKENS,
@@ -1682,6 +2274,13 @@ async function seedDatabase(closeAtEnd = false) {
       }).onConflictDoNothing({ target: models.slug }).returning();
       const existing = inserted ?? (await db2.select().from(models).where(eq(models.slug, alias.slug)))[0];
       if (!existing) continue;
+      await db2.insert(modelAliases).values({
+        alias: alias.slug,
+        canonicalModelId: "deepseek-v4.1-flash",
+        providerSlug: PRO_ALIAS_PROVIDER_SLUG,
+        description: alias.description,
+        active: true
+      }).onConflictDoNothing();
       await db2.insert(modelCapabilities).values({
         modelId: existing.id,
         modalities: ["text", "image"],
@@ -2063,43 +2662,47 @@ async function creditWallet(params) {
   }
   return res;
 }
-async function debitWallet(params) {
+async function debitWithinTx(tx, params) {
   const amount = Math.max(0, Math.round(params.amountPaise));
-  const db2 = await getDb();
   if (amount === 0) {
-    return { balancePaise: await getBalance(params.userId), deductedPaise: 0, transactionId: null, deduped: false };
+    const rows = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
+    return { balancePaise: rows[0]?.balancePaise ?? 0, deductedPaise: 0, transactionId: null, deduped: false };
   }
-  const res = await db2.transaction(async (tx) => {
-    if (params.idempotencyKey) {
-      const existing = await tx.select().from(walletTransactions).where(eq3(walletTransactions.idempotencyKey, params.idempotencyKey));
-      if (existing.length > 0) {
-        const w = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
-        return {
-          balancePaise: w[0]?.balancePaise ?? 0,
-          deductedPaise: Math.max(0, -existing[0].amountPaise),
-          transactionId: existing[0].id,
-          deduped: true
-        };
-      }
+  if (params.idempotencyKey) {
+    const existing = await tx.select().from(walletTransactions).where(eq3(walletTransactions.idempotencyKey, params.idempotencyKey));
+    if (existing.length > 0) {
+      const w = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
+      return {
+        balancePaise: w[0]?.balancePaise ?? 0,
+        deductedPaise: Math.max(0, -existing[0].amountPaise),
+        transactionId: existing[0].id,
+        deduped: true
+      };
     }
-    await ensureWallet(tx, params.userId);
-    const before = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
-    const oldBalance = before[0]?.balancePaise ?? 0;
-    const deducted = Math.min(amount, Math.max(0, oldBalance));
-    const [row] = await tx.update(wallets).set({ balancePaise: sql`GREATEST(${wallets.balancePaise} - ${amount}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(wallets.userId, params.userId)).returning();
-    const balance = row.balancePaise;
-    if (deducted === 0) return { balancePaise: balance, deductedPaise: 0, transactionId: null, deduped: false };
-    const [txRow] = await tx.insert(walletTransactions).values({
-      userId: params.userId,
-      type: "usage",
-      amountPaise: -deducted,
-      balanceAfterPaise: balance,
-      reference: params.reference,
-      idempotencyKey: params.idempotencyKey,
-      metadata: { ...params.metadata ?? {}, requested: amount, shortfall: amount - deducted }
-    }).returning();
-    return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id, deduped: false };
-  });
+  }
+  await ensureWallet(tx, params.userId);
+  const locked = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId)).for("update");
+  const oldBalance = locked[0]?.balancePaise ?? 0;
+  const deducted = Math.min(amount, Math.max(0, oldBalance));
+  if (deducted === 0) {
+    return { balancePaise: oldBalance, deductedPaise: 0, transactionId: null, deduped: false };
+  }
+  const balance = oldBalance - deducted;
+  await tx.update(wallets).set({ balancePaise: balance, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(wallets.userId, params.userId));
+  const [txRow] = await tx.insert(walletTransactions).values({
+    userId: params.userId,
+    type: "usage",
+    amountPaise: -deducted,
+    balanceAfterPaise: balance,
+    reference: params.reference,
+    idempotencyKey: params.idempotencyKey,
+    metadata: { ...params.metadata ?? {}, requested: amount, shortfall: amount - deducted }
+  }).returning();
+  return { balancePaise: balance, deductedPaise: deducted, transactionId: txRow.id, deduped: false };
+}
+async function debitWallet(params) {
+  const db2 = await getDb();
+  const res = await db2.transaction((tx) => debitWithinTx(tx, params));
   if (!res.deduped && res.deductedPaise > 0) {
     eventHub.publish(params.userId, "wallet.balance.updated", {
       balancePaise: res.balancePaise,
@@ -2140,8 +2743,8 @@ async function reserveBalance(params) {
   const expiresAt = new Date(Date.now() + timeoutMs);
   return db2.transaction(async (tx) => {
     await ensureWallet(tx, params.userId);
-    const w = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
-    const balance = w[0]?.balancePaise ?? 0;
+    const locked = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId)).for("update");
+    const balance = locked[0]?.balancePaise ?? 0;
     const activeRows = await tx.select({ amount: walletReservations.amountPaise }).from(walletReservations).where(
       and3(
         eq3(walletReservations.userId, params.userId),
@@ -2163,10 +2766,20 @@ async function reserveBalance(params) {
       amountPaise: amount,
       status: "active",
       expiresAt
-    }).onConflictDoUpdate({
-      target: walletReservations.requestId,
-      set: { amountPaise: amount, status: "active", expiresAt, updatedAt: /* @__PURE__ */ new Date() }
-    }).returning();
+    }).onConflictDoNothing({ target: walletReservations.requestId }).returning();
+    if (!res) {
+      const [existing] = await tx.select().from(walletReservations).where(eq3(walletReservations.requestId, params.requestId));
+      if (!existing) {
+        throw new ApiError("invalid_request", "Could not create the wallet reservation.");
+      }
+      if (existing.userId !== params.userId) {
+        throw new ApiError("forbidden", "This reservation belongs to another account.");
+      }
+      if (existing.status !== "active") {
+        throw new ApiError("invalid_request", "This request id has already been settled or released.");
+      }
+      return { reservationId: existing.id, availablePaise: Math.max(0, available) };
+    }
     eventHub.publish(params.userId, "wallet.reservation.created", {
       requestId: params.requestId,
       reservedPaise: amount,
@@ -2175,48 +2788,91 @@ async function reserveBalance(params) {
     return { reservationId: res.id, availablePaise: available - amount };
   });
 }
+function isUniqueViolation(err) {
+  const e = err;
+  return e?.code === "23505" || e?.cause?.code === "23505";
+}
 async function settleReservation(params) {
   const db2 = await getDb();
   const actual = Math.max(0, Math.round(params.actualAmountPaise));
-  const result = await db2.transaction(async (tx) => {
-    await tx.update(walletReservations).set({
-      status: "settled",
-      settledPaise: actual,
-      updatedAt: /* @__PURE__ */ new Date()
-    }).where(eq3(walletReservations.requestId, params.requestId));
-    const before = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
-    const oldBalance = before[0]?.balancePaise ?? 0;
-    const deducted = Math.min(actual, Math.max(0, oldBalance));
-    const [row] = await tx.update(wallets).set({ balancePaise: sql`GREATEST(${wallets.balancePaise} - ${actual}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(wallets.userId, params.userId)).returning();
-    const balance = row.balancePaise;
-    let txId = null;
-    if (deducted > 0) {
-      const [txRow] = await tx.insert(walletTransactions).values({
-        userId: params.userId,
-        type: "usage",
-        amountPaise: -deducted,
-        balanceAfterPaise: balance,
-        reference: params.reference ?? params.requestId,
-        idempotencyKey: `usage:${params.requestId}`,
-        metadata: { ...params.metadata ?? {}, requested: actual, shortfall: actual - deducted }
-      }).onConflictDoNothing().returning();
-      txId = txRow?.id ?? null;
+  const idempotencyKey = `usage:${params.requestId}`;
+  const settle = async () => db2.transaction(async (tx) => {
+    const lockedReservations = await tx.select().from(walletReservations).where(eq3(walletReservations.requestId, params.requestId)).for("update");
+    const reservation = lockedReservations[0];
+    if (reservation && reservation.userId !== params.userId) {
+      throw new ApiError("forbidden", "This reservation belongs to another account.");
     }
-    return { balancePaise: balance, deductedPaise: deducted, transactionId: txId };
+    const existingRows = await tx.select().from(walletTransactions).where(eq3(walletTransactions.idempotencyKey, idempotencyKey));
+    const existing = existingRows[0];
+    const walletRows = await tx.select().from(wallets).where(eq3(wallets.userId, params.userId));
+    const currentBalance = walletRows[0]?.balancePaise ?? 0;
+    if (existing) {
+      if (reservation && reservation.status === "active") {
+        await tx.update(walletReservations).set({ status: "settled", settledPaise: Math.max(0, -existing.amountPaise), updatedAt: /* @__PURE__ */ new Date() }).where(
+          and3(
+            eq3(walletReservations.requestId, params.requestId),
+            eq3(walletReservations.userId, params.userId),
+            eq3(walletReservations.status, "active")
+          )
+        );
+      }
+      return {
+        balancePaise: currentBalance,
+        deductedPaise: Math.max(0, -existing.amountPaise),
+        transactionId: existing.id,
+        deduped: true
+      };
+    }
+    const debit = await debitWithinTx(tx, {
+      userId: params.userId,
+      amountPaise: actual,
+      reference: params.reference ?? params.requestId,
+      idempotencyKey,
+      metadata: params.metadata
+    });
+    if (reservation && reservation.status === "active") {
+      await tx.update(walletReservations).set({ status: "settled", settledPaise: actual, updatedAt: /* @__PURE__ */ new Date() }).where(
+        and3(
+          eq3(walletReservations.requestId, params.requestId),
+          eq3(walletReservations.userId, params.userId),
+          eq3(walletReservations.status, "active")
+        )
+      );
+    }
+    return debit;
   });
-  eventHub.publish(params.userId, "wallet.balance.updated", {
-    balancePaise: result.balancePaise,
-    balanceFormatted: formatMoney(result.balancePaise),
-    currency: "INR"
-  });
+  let result;
+  try {
+    result = await settle();
+  } catch (err) {
+    if (!isUniqueViolation(err)) throw err;
+    result = await settle();
+  }
+  if (!result.deduped && result.deductedPaise > 0) {
+    eventHub.publish(params.userId, "wallet.balance.updated", {
+      balancePaise: result.balancePaise,
+      balanceFormatted: formatMoney(result.balancePaise),
+      currency: "INR"
+    });
+  }
   return result;
 }
 async function releaseReservation(params) {
   const db2 = await getDb();
-  await db2.update(walletReservations).set({
-    status: "released",
-    updatedAt: /* @__PURE__ */ new Date()
-  }).where(eq3(walletReservations.requestId, params.requestId));
+  const released = await db2.transaction(async (tx) => {
+    const rows = await tx.update(walletReservations).set({
+      status: "released",
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(
+      and3(
+        eq3(walletReservations.requestId, params.requestId),
+        eq3(walletReservations.userId, params.userId),
+        eq3(walletReservations.status, "active")
+      )
+    ).returning({ id: walletReservations.id });
+    return rows.length > 0;
+  });
+  if (!released) return;
   const available = await getAvailableBalance(params.userId);
   eventHub.publish(params.userId, "wallet.reservation.released", {
     requestId: params.requestId,
@@ -2426,9 +3082,6 @@ async function keyRoutes(app) {
   });
 }
 
-// apps/api/src/routes/catalog.ts
-import { z as z3 } from "zod";
-
 // apps/api/src/lib/catalog.ts
 import { desc as desc3, eq as eq7, gte, or, sql as sql2 } from "drizzle-orm";
 
@@ -2511,8 +3164,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 64, output: 192 }
   },
   "groq/gpt-oss-20b": {
     id: "groq/gpt-oss-20b",
@@ -2530,8 +3183,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 64, output: 192 }
   },
   "groq/gpt-oss-120b": {
     id: "groq/gpt-oss-120b",
@@ -2551,8 +3204,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 240, output: 960 }
   },
   // ── 2. NVIDIA Nemotron Models ──
   "requesty/nemotron-3-ultra-550b-a55b": {
@@ -2575,8 +3228,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 560, output: 1680 }
   },
   "openrouter/nemotron-3-ultra-550b-a55b": {
     id: "openrouter/nemotron-3-ultra-550b-a55b",
@@ -2598,8 +3251,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 560, output: 1680 }
   },
   "requesty/nemotron-3-nano-omni-30b-a3b-reasoning": {
     id: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -2619,8 +3272,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 120, output: 360 }
   },
   "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning": {
     id: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -2640,8 +3293,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 120, output: 360 }
   },
   "requesty/nemotron-3.5-lightning-30b-a3b": {
     id: "requesty/nemotron-3.5-lightning-30b-a3b",
@@ -2658,8 +3311,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 80, output: 240 }
   },
   "openrouter/nemotron-3.5-lightning": {
     id: "openrouter/nemotron-3.5-lightning",
@@ -2676,8 +3329,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 80, output: 240 }
   },
   "openrouter/nemotron-3.5-super-vl": {
     id: "openrouter/nemotron-3.5-super-vl",
@@ -2694,8 +3347,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 160, output: 480 }
   },
   // ── 3. High-Performance Open Weights ──
   "groq/qwen3.8-27b": {
@@ -2716,7 +3369,8 @@ var VERIFIED_BACKEND_MODELS = {
     verified: true,
     healthStatus: "active",
     isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    // Promotional canonical model
+    costPaisePerMillion: { input: 160, output: 640 }
   },
   "requesty/gemma-4-31b-it": {
     id: "requesty/gemma-4-31b-it",
@@ -2734,8 +3388,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 112, output: 336 }
   },
   "requesty/leanstral-1-5": {
     id: "requesty/leanstral-1-5",
@@ -2752,8 +3406,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 96, output: 288 }
   },
   "requesty/ling-3.1-flash": {
     id: "requesty/ling-3.1-flash",
@@ -2769,8 +3423,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 64, output: 192 }
   },
   "groq/allam-2-7b": {
     id: "groq/allam-2-7b",
@@ -2787,8 +3441,8 @@ var VERIFIED_BACKEND_MODELS = {
     }),
     verified: true,
     healthStatus: "active",
-    isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    isFree: false,
+    costPaisePerMillion: { input: 40, output: 120 }
   },
   // ── 4. Primary Gateway Fallback Engine ──
   "prorouter/deepseek-v4.1-flash": {
@@ -2820,7 +3474,8 @@ var VERIFIED_BACKEND_MODELS = {
     verified: true,
     healthStatus: "active",
     isFree: true,
-    costPaisePerMillion: { input: 0, output: 0 }
+    // Promotional canonical model
+    costPaisePerMillion: { input: 112, output: 224 }
   }
 };
 var BackendModelRegistry = class {
@@ -2873,6 +3528,22 @@ function caps(overrides = {}) {
     ...overrides
   };
 }
+function computePrice(inCost, outCost) {
+  const inCalc = calculateTokenPrice(inCost, { operationalReserve: 0.1, targetGrossMargin: 0.3 });
+  const outCalc = calculateTokenPrice(outCost, { operationalReserve: 0.1, targetGrossMargin: 0.3 });
+  return {
+    upstream: {
+      inputPerMillion: inCost,
+      outputPerMillion: outCost,
+      cachedInputPerMillion: Number((inCost * 0.5).toFixed(4))
+    },
+    customer: {
+      inputPerMillion: inCalc.customerPriceUsdPer1M,
+      outputPerMillion: outCalc.customerPriceUsdPer1M,
+      cachedInputPerMillion: Number((inCalc.customerPriceUsdPer1M * 0.5).toFixed(4))
+    }
+  };
+}
 function generateProfiles() {
   const list = [];
   const seenIds = /* @__PURE__ */ new Set();
@@ -2884,42 +3555,307 @@ function generateProfiles() {
     list.push(profile);
   }
   const legacyIdentities = [
-    { id: "claude-sonnet", name: "Claude Sonnet", category: "coding", desc: "Anthropic Claude Sonnet \u2014 balanced intelligence, high coding precision, and nuanced creative writing." },
-    { id: "claude-opus", name: "Claude Opus", category: "reasoning", desc: "Anthropic Claude Opus \u2014 deep analysis, nuanced reasoning, and complex task decomposition." },
-    { id: "claude-opus-5", name: "Claude Opus 5", category: "reasoning", desc: "Anthropic Claude Opus 5 \u2014 next-generation frontier intelligence for research and coding." },
-    { id: "gemini-pro", name: "Gemini Pro", category: "general", desc: "Google Gemini Pro \u2014 powerful multimodal model with vast context window and world knowledge." },
-    { id: "grok", name: "Grok", category: "general", desc: "xAI Grok \u2014 direct, truthful AI with real-time insight and witty demeanor." },
-    { id: "mistral-large", name: "Mistral Large", category: "reasoning", desc: "Mistral Large \u2014 flagship model for complex multilingual reasoning and precise instruction following." },
-    { id: "devstral-24b", name: "Devstral 24B", category: "coding", desc: "Mistral Devstral 24B \u2014 developer-tuned open weights optimized for software engineering workflows." },
-    { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", category: "reasoning", desc: "OpenAI GPT-6.1 Sol \u2014 frontier cloud model optimized for high-speed reasoning and synthesis." },
-    { id: "gpt-6.1-terra", name: "GPT-6.1 Terra", category: "research", desc: "OpenAI GPT-6.1 Terra \u2014 flagship multimodal intelligence with deep scientific knowledge." },
-    { id: "gpt-6-luna", name: "GPT-6 Luna", category: "fast", desc: "OpenAI GPT-6 Luna \u2014 low-latency next-gen assistant for rapid task execution." },
-    { id: "kimi-k3", name: "Kimi K3", category: "long_context", desc: "Moonshot Kimi K3 \u2014 ultra long-context frontier model with high-speed reasoning and deep comprehension." },
-    { id: "kimi-k2.7-code", name: "Kimi K2.7 Code", category: "coding", desc: "Moonshot Kimi K2.7 Code \u2014 specialized code intelligence and agentic workflow automation." },
-    { id: "glm-5.3", name: "GLM-5.3", category: "reasoning", desc: "Zhipu GLM-5.3 \u2014 flagship bilingual reasoning, analytical thinking, and tool execution." },
-    { id: "glm-5.3-flash", name: "GLM-5.3-Flash", category: "fast", desc: "Zhipu GLM 5.3 Flash \u2014 fast multilingual reasoning with high-speed tool execution." },
-    { id: "mimo-v2.6-pro", name: "MiMo-V2.6-Pro", category: "reasoning", desc: "Xiaomi MiMo V2.6 Pro \u2014 flagship multimodal reasoning model for advanced synthesis and coding." },
-    { id: "mimo-v2.6-flash", name: "MiMo-V2.6-Flash", category: "fast", desc: "Xiaomi MiMo Flash \u2014 quick responses with solid reasoning." },
-    { id: "minimax-m3.1-flash", name: "MiniMax M3.1 Flash", category: "fast", desc: "MiniMax M3.1 Flash \u2014 fast multimodal model with reliable tool calling and low latency." },
-    { id: "qwen3-coder-next", name: "Qwen3-Coder-Next", category: "coding", desc: "Alibaba Qwen3 Coder Next \u2014 specialized coding model for repository synthesis and multi-file debugging." },
-    { id: "deepseek-v4-pro-0813", name: "DeepSeek-V4-Pro-0813", category: "coding", desc: "DeepSeek V4 Pro \u2014 high-throughput frontier reasoning and deep architectural coding." },
-    { id: "beam", name: "Beam", category: "general", desc: "Fast general-purpose model for everyday chat and drafting." },
-    { id: "longcat-2.5-preview", name: "LongCat 2.5 Preview", category: "long_context", desc: "Meituan LongCat 2.5 \u2014 long-context preview with strong multilingual reasoning." },
-    { id: "jev-1.13", name: "Jev 1.13", category: "general", desc: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality." }
+    {
+      id: "claude-sonnet",
+      canonicalId: "claude-3-5-sonnet",
+      name: "Claude Sonnet",
+      category: "coding",
+      desc: "Anthropic Claude Sonnet \u2014 balanced intelligence, high coding precision, and nuanced creative writing.",
+      tier: "expert",
+      context: 262144,
+      maxOut: 64e3,
+      upstreamIn: 3,
+      upstreamOut: 15,
+      benchmarks: [
+        { name: "MMLU", score: 88.7, source: "Anthropic Technical Report", evaluationDate: "2024-10-22" },
+        { name: "HumanEval", score: 92, source: "Anthropic Evaluation", evaluationDate: "2024-10-22" }
+      ]
+    },
+    {
+      id: "claude-opus",
+      canonicalId: "claude-3-opus",
+      name: "Claude Opus",
+      category: "reasoning",
+      desc: "Anthropic Claude Opus \u2014 deep analysis, nuanced reasoning, and complex task decomposition.",
+      tier: "ultra",
+      context: 262144,
+      maxOut: 64e3,
+      upstreamIn: 5,
+      upstreamOut: 25,
+      benchmarks: [
+        { name: "MMLU", score: 88.2, source: "Anthropic Benchmark", evaluationDate: "2024-03-04" },
+        { name: "HumanEval", score: 84.9, source: "Anthropic Benchmark", evaluationDate: "2024-03-04" }
+      ]
+    },
+    {
+      id: "claude-opus-5",
+      canonicalId: "claude-opus-5",
+      name: "Claude Opus 5",
+      category: "reasoning",
+      desc: "Anthropic Claude Opus 5 \u2014 next-generation frontier intelligence for research and coding.",
+      tier: "max",
+      context: 25e4,
+      maxOut: 64e3,
+      upstreamIn: 6,
+      upstreamOut: 30
+    },
+    {
+      id: "gemini-pro",
+      canonicalId: "gemini-1.5-pro",
+      name: "Gemini Pro",
+      category: "general",
+      desc: "Google Gemini Pro \u2014 powerful multimodal model with vast context window and world knowledge.",
+      tier: "standard",
+      context: 1048576,
+      maxOut: 64e3,
+      upstreamIn: 1.25,
+      upstreamOut: 5,
+      benchmarks: [
+        { name: "MMLU", score: 85.9, source: "Google DeepMind Report", evaluationDate: "2024-08-15" }
+      ]
+    },
+    {
+      id: "grok",
+      canonicalId: "grok-2",
+      name: "Grok",
+      category: "general",
+      desc: "xAI Grok \u2014 direct, truthful AI with real-time insight and witty demeanor.",
+      tier: "standard",
+      context: 131072,
+      maxOut: 64e3,
+      upstreamIn: 2,
+      upstreamOut: 10
+    },
+    {
+      id: "mistral-large",
+      canonicalId: "mistral-large-2407",
+      name: "Mistral Large",
+      category: "reasoning",
+      desc: "Mistral Large \u2014 flagship model for complex multilingual reasoning and precise instruction following.",
+      tier: "expert",
+      context: 128e3,
+      maxOut: 64e3,
+      upstreamIn: 2,
+      upstreamOut: 6,
+      benchmarks: [
+        { name: "MMLU", score: 84, source: "Mistral AI Report", evaluationDate: "2024-07-24" }
+      ]
+    },
+    {
+      id: "devstral-24b",
+      canonicalId: "devstral-24b",
+      name: "Devstral 24B",
+      category: "coding",
+      desc: "Mistral Devstral 24B \u2014 developer-tuned open weights optimized for software engineering workflows.",
+      tier: "code",
+      context: 128e3,
+      maxOut: 64e3,
+      upstreamIn: 0.3,
+      upstreamOut: 0.9,
+      benchmarks: [
+        { name: "HumanEval", score: 79.2, source: "Mistral Benchmark", evaluationDate: "2024-09-10" }
+      ]
+    },
+    {
+      id: "gpt-6.1-sol",
+      canonicalId: "gpt-6.1-sol",
+      name: "GPT-6.1 Sol",
+      category: "reasoning",
+      desc: "OpenAI GPT-6.1 Sol \u2014 frontier cloud model optimized for high-speed reasoning and synthesis.",
+      tier: "ultra",
+      context: 256e3,
+      maxOut: 64e3,
+      upstreamIn: 2.5,
+      upstreamOut: 10
+    },
+    {
+      id: "gpt-6.1-terra",
+      canonicalId: "gpt-6.1-terra",
+      name: "GPT-6.1 Terra",
+      category: "research",
+      desc: "OpenAI GPT-6.1 Terra \u2014 flagship multimodal intelligence with deep scientific knowledge.",
+      tier: "max",
+      context: 256e3,
+      maxOut: 64e3,
+      upstreamIn: 3.5,
+      upstreamOut: 14
+    },
+    {
+      id: "gpt-6-luna",
+      canonicalId: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      category: "fast",
+      desc: "OpenAI GPT-6 Luna \u2014 low-latency next-gen assistant for rapid task execution.",
+      tier: "flash",
+      context: 256e3,
+      maxOut: 64e3,
+      upstreamIn: 0.4,
+      upstreamOut: 1.6
+    },
+    {
+      id: "kimi-k3",
+      canonicalId: "kimi-k3",
+      name: "Kimi K3",
+      category: "long_context",
+      desc: "Moonshot Kimi K3 \u2014 ultra long-context frontier model with high-speed reasoning and deep comprehension.",
+      tier: "standard",
+      context: 2e5,
+      maxOut: 64e3,
+      upstreamIn: 0.8,
+      upstreamOut: 2.4
+    },
+    {
+      id: "kimi-k2.7-code",
+      canonicalId: "kimi-k2.7-code",
+      name: "Kimi K2.7 Code",
+      category: "coding",
+      desc: "Moonshot Kimi K2.7 Code \u2014 specialized code intelligence and agentic workflow automation.",
+      tier: "code",
+      context: 2e5,
+      maxOut: 64e3,
+      upstreamIn: 0.7,
+      upstreamOut: 2.1
+    },
+    {
+      id: "glm-5.3",
+      canonicalId: "glm-5.3",
+      name: "GLM-5.3",
+      category: "reasoning",
+      desc: "Zhipu GLM-5.3 \u2014 flagship bilingual reasoning, analytical thinking, and tool execution.",
+      tier: "reason",
+      context: 2e5,
+      maxOut: 128e3,
+      upstreamIn: 0.6,
+      upstreamOut: 1.8
+    },
+    {
+      id: "glm-5.3-flash",
+      canonicalId: "glm-5.3-flash",
+      name: "GLM-5.3-Flash",
+      category: "fast",
+      desc: "Zhipu GLM 5.3 Flash \u2014 fast multilingual reasoning with high-speed tool execution.",
+      tier: "flash",
+      context: 2e5,
+      maxOut: 128e3,
+      upstreamIn: 0.15,
+      upstreamOut: 0.45
+    },
+    {
+      id: "mimo-v2.6-pro",
+      canonicalId: "mimo-v2.6-pro",
+      name: "MiMo-V2.6-Pro",
+      category: "reasoning",
+      desc: "Xiaomi MiMo V2.6 Pro \u2014 flagship multimodal reasoning model for advanced synthesis and coding.",
+      tier: "expert",
+      context: 1048576,
+      maxOut: 131072,
+      upstreamIn: 0.9,
+      upstreamOut: 2.7
+    },
+    {
+      id: "mimo-v2.6-flash",
+      canonicalId: "mimo-v2.6-flash",
+      name: "MiMo-V2.6-Flash",
+      category: "fast",
+      desc: "Xiaomi MiMo Flash \u2014 quick responses with solid reasoning.",
+      tier: "lite",
+      context: 1048576,
+      maxOut: 131072,
+      upstreamIn: 0.1,
+      upstreamOut: 0.3
+    },
+    {
+      id: "minimax-m3.1-flash",
+      canonicalId: "minimax-m3.1-flash",
+      name: "MiniMax M3.1 Flash",
+      category: "fast",
+      desc: "MiniMax M3.1 Flash \u2014 fast multimodal model with reliable tool calling and low latency.",
+      tier: "flash",
+      context: 1e6,
+      maxOut: 131072,
+      upstreamIn: 0.15,
+      upstreamOut: 0.45
+    },
+    {
+      id: "qwen3-coder-next",
+      canonicalId: "qwen3-coder-next",
+      name: "Qwen3-Coder-Next",
+      category: "coding",
+      desc: "Alibaba Qwen3 Coder Next \u2014 specialized coding model for repository synthesis and multi-file debugging.",
+      tier: "code",
+      context: 131072,
+      maxOut: 64e3,
+      upstreamIn: 0.5,
+      upstreamOut: 1.5
+    },
+    {
+      id: "deepseek-v4-pro-0813",
+      canonicalId: "deepseek-v4-pro-0813",
+      name: "DeepSeek-V4-Pro-0813",
+      category: "coding",
+      desc: "DeepSeek V4 Pro \u2014 high-throughput frontier reasoning and deep architectural coding.",
+      tier: "expert",
+      context: 262144,
+      maxOut: 128e3,
+      upstreamIn: 0.8,
+      upstreamOut: 2.4
+    },
+    {
+      id: "beam",
+      canonicalId: "beam-v1",
+      name: "Beam",
+      category: "general",
+      desc: "Fast general-purpose model for everyday chat and drafting.",
+      tier: "lite",
+      context: 2e5,
+      maxOut: 64e3,
+      upstreamIn: 0.1,
+      upstreamOut: 0.3
+    },
+    {
+      id: "longcat-2.5-preview",
+      canonicalId: "longcat-2.5-preview",
+      name: "LongCat 2.5 Preview",
+      category: "long_context",
+      desc: "Meituan LongCat 2.5 \u2014 long-context preview with strong multilingual reasoning.",
+      tier: "standard",
+      context: 2e5,
+      maxOut: 64e3,
+      upstreamIn: 0.4,
+      upstreamOut: 1.2
+    },
+    {
+      id: "jev-1.13",
+      canonicalId: "jev-1.13",
+      name: "Jev 1.13",
+      category: "general",
+      desc: "Jev 1.13 \u2014 general-purpose assistant with balanced speed and quality.",
+      tier: "lite",
+      context: 131072,
+      maxOut: 32768,
+      upstreamIn: 0.1,
+      upstreamOut: 0.3
+    }
   ];
   for (let i = 0; i < legacyIdentities.length; i++) {
     const item = legacyIdentities[i];
+    const pricing = computePrice(item.upstreamIn, item.upstreamOut);
     add({
       id: item.id,
+      canonicalModelId: item.canonicalId,
       name: item.name,
       category: item.category,
       categoryLabel: formatCategoryLabel(item.category),
       description: item.desc,
       status: "production",
-      contextWindow: 262144,
-      maxOutputTokens: 64e3,
-      pricingTier: "standard",
-      isFree: true,
+      contextWindow: item.context,
+      maxOutputTokens: item.maxOut,
+      pricingTier: item.tier,
+      isFree: false,
+      // Strict policy: Legacy models are strictly paid
+      pricingStatus: "approved",
+      upstreamCostUsd: pricing.upstream,
+      customerPricingUsd: pricing.customer,
       capabilities: caps({
         reasoning: "supported",
         coding: item.category === "coding" ? "supported" : "unknown",
@@ -2945,39 +3881,248 @@ function generateProfiles() {
       rank: 10 + i,
       popularity: 9900 - i * 15,
       rating: 98,
-      tags: ["legacy", item.category, "pro"]
+      benchmarks: item.benchmarks || [],
+      tags: ["legacy", item.category, "pro", "paid"]
     });
   }
   const verifiedLive = [
-    { id: "gpt-oss-20b", name: "GPT OSS 20B", cat: "reasoning", primary: "nabh/gpt-oss-20b", sec: "groq/gpt-oss-20b", desc: "Open-weight 20B parameter reasoning and chat model with high speed and chain-of-thought capabilities." },
-    { id: "gpt-oss-120b", name: "GPT OSS 120B", cat: "reasoning", primary: "groq/gpt-oss-120b", sec: "prorouter/deepseek-v4.1-flash", desc: "OpenAI open-weight 120B parameter MoE reasoning architecture running on Groq LPU." },
-    { id: "qwen/qwen3.8-27b", name: "Qwen 3.8 27B", cat: "coding", primary: "groq/qwen3.8-27b", sec: "prorouter/deepseek-v4.1-flash", desc: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities." },
-    { id: "qwen3.8-27b", name: "Qwen3.8-27B (Standard)", cat: "coding", primary: "groq/qwen3.8-27b", sec: "prorouter/deepseek-v4.1-flash", desc: "Alibaba Qwen3.8 27B standard model alias running on high-speed inference." },
-    { id: "nemotron-3-ultra-550b-a55b", name: "Nemotron 3 Ultra 550B A55B", cat: "reasoning", primary: "requesty/nemotron-3-ultra-550b-a55b", sec: "openrouter/nemotron-3-ultra-550b-a55b", desc: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context." },
-    { id: "nemotron-3-nano-omni-30b-a3b-reasoning", name: "Nemotron 3 Nano Omni 30B Reasoning", cat: "vision", primary: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning", sec: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning", desc: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving." },
-    { id: "nemotron-3.5-lightning-30b-a3b", name: "Nemotron 3.5 Lightning 30B A3B", cat: "fast", primary: "requesty/nemotron-3.5-lightning-30b-a3b", sec: "openrouter/nemotron-3.5-lightning", desc: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window." },
-    { id: "nemotron-3.5-lightning", name: "Nemotron 3.5 Lightning", cat: "fast", primary: "openrouter/nemotron-3.5-lightning", sec: "requesty/nemotron-3.5-lightning-30b-a3b", desc: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work." },
-    { id: "nemotron-3.5-super-vl", name: "Nemotron 3.5 Super VL", cat: "vision", primary: "openrouter/nemotron-3.5-super-vl", sec: "prorouter/deepseek-v4.1-flash", desc: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning." },
-    { id: "gemma-4-31b-it", name: "Gemma 4 31B IT", cat: "multilingual", primary: "requesty/gemma-4-31b-it", sec: "prorouter/deepseek-v4.1-flash", desc: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context." },
-    { id: "leanstral-1-5", name: "Leanstral 1.5", cat: "reasoning", primary: "requesty/leanstral-1-5", sec: "prorouter/deepseek-v4.1-flash", desc: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context." },
-    { id: "ling-3.1-flash", name: "Ling 3.1 Flash", cat: "fast", primary: "requesty/ling-3.1-flash", sec: "prorouter/deepseek-v4.1-flash", desc: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed." },
-    { id: "allam-2-7b", name: "Allam 2 7B", cat: "multilingual", primary: "groq/allam-2-7b", sec: "prorouter/deepseek-v4.1-flash", desc: "SDAIA high-performance bilingual Arabic & English foundational language model." },
-    { id: "deepseek-v4.1-flash-1017", name: "DeepSeek-V4.1-Flash-1017", cat: "coding", primary: "prorouter/deepseek-v4.1-flash", sec: "prorouter/deepseek-v4.1-flash", desc: "DeepSeek V4.1 Flash checkpoint 1017 \u2014 latest frontier open-weight reasoning model." },
-    { id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", cat: "coding", primary: "prorouter/deepseek-v4.1-flash", sec: "prorouter/deepseek-v4.1-flash", desc: "DeepSeek V4.1 Flash \u2014 state-of-the-art high-speed reasoning, coding, and multilingual intelligence." }
+    {
+      id: "deepseek-v4.1-flash",
+      canonicalId: "deepseek-v4.1-flash",
+      name: "DeepSeek V4.1 Flash",
+      cat: "coding",
+      primary: "prorouter/deepseek-v4.1-flash",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "DeepSeek V4.1 Flash \u2014 state-of-the-art high-speed reasoning, coding, and multilingual intelligence. Eligible for 48H launch free access.",
+      context: 262144,
+      maxOut: 128e3,
+      upstreamIn: 0.14,
+      upstreamOut: 0.28,
+      benchmarks: [
+        { name: "MMLU", score: 88.5, source: "DeepSeek AI Technical Report", evaluationDate: "2024-10-17" },
+        { name: "HumanEval", score: 89.2, source: "DeepSeek AI Benchmark", evaluationDate: "2024-10-17" }
+      ]
+    },
+    {
+      id: "deepseek-v4.1-flash-1017",
+      canonicalId: "deepseek-v4.1-flash",
+      name: "DeepSeek-V4.1-Flash-1017",
+      cat: "coding",
+      primary: "prorouter/deepseek-v4.1-flash",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "DeepSeek V4.1 Flash checkpoint 1017 \u2014 latest frontier open-weight reasoning model. Direct alias sharing 48H launch free entitlement.",
+      context: 262144,
+      maxOut: 128e3,
+      upstreamIn: 0.14,
+      upstreamOut: 0.28,
+      benchmarks: [
+        { name: "MMLU", score: 88.5, source: "DeepSeek AI Technical Report", evaluationDate: "2024-10-17" }
+      ]
+    },
+    {
+      id: "qwen3.8-27b",
+      canonicalId: "qwen3.8-27b",
+      name: "Qwen3.8-27B",
+      cat: "coding",
+      primary: "groq/qwen3.8-27b",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "Alibaba Qwen3.8 27B \u2014 high-performance open-weight model with strong multilingual and reasoning abilities. Eligible for 48H launch free access.",
+      context: 131072,
+      maxOut: 64e3,
+      upstreamIn: 0.2,
+      upstreamOut: 0.8,
+      benchmarks: [
+        { name: "MMLU", score: 85.3, source: "Alibaba Cloud Benchmark", evaluationDate: "2024-09-20" },
+        { name: "HumanEval", score: 86.4, source: "Alibaba Cloud Benchmark", evaluationDate: "2024-09-20" }
+      ]
+    },
+    {
+      id: "qwen/qwen3.8-27b",
+      canonicalId: "qwen3.8-27b",
+      name: "Qwen 3.8 27B (Groq LPU)",
+      cat: "coding",
+      primary: "groq/qwen3.8-27b",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "Alibaba Qwen3.8 27B running on Groq LPU inference. Shares promotional entitlement with canonical Qwen3.8-27B.",
+      context: 131072,
+      maxOut: 64e3,
+      upstreamIn: 0.2,
+      upstreamOut: 0.8,
+      benchmarks: [
+        { name: "MMLU", score: 85.3, source: "Alibaba Cloud Benchmark", evaluationDate: "2024-09-20" }
+      ]
+    },
+    {
+      id: "gpt-oss-20b",
+      canonicalId: "gpt-oss-20b",
+      name: "GPT OSS 20B",
+      cat: "reasoning",
+      primary: "nabh/gpt-oss-20b",
+      sec: "groq/gpt-oss-20b",
+      desc: "Open-weight 20B parameter reasoning and chat model with high speed and chain-of-thought capabilities.",
+      context: 131072,
+      maxOut: 16384,
+      upstreamIn: 0.08,
+      upstreamOut: 0.24,
+      benchmarks: [{ name: "MMLU", score: 78.4, source: "Open Benchmark", evaluationDate: "2024-08-10" }]
+    },
+    {
+      id: "gpt-oss-120b",
+      canonicalId: "gpt-oss-120b",
+      name: "GPT OSS 120B",
+      cat: "reasoning",
+      primary: "groq/gpt-oss-120b",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "OpenAI open-weight 120B parameter MoE reasoning architecture running on Groq LPU.",
+      context: 131072,
+      maxOut: 32768,
+      upstreamIn: 0.3,
+      upstreamOut: 1.2,
+      benchmarks: [{ name: "MMLU", score: 86.1, source: "Independent Eval", evaluationDate: "2024-08-18" }]
+    },
+    {
+      id: "nemotron-3-ultra-550b-a55b",
+      canonicalId: "nemotron-3-ultra-550b",
+      name: "Nemotron 3 Ultra 550B A55B",
+      cat: "reasoning",
+      primary: "requesty/nemotron-3-ultra-550b-a55b",
+      sec: "openrouter/nemotron-3-ultra-550b-a55b",
+      desc: "NVIDIA Nemotron 3 Ultra 550B A55B \u2014 ultra-scale frontier reasoning engine with 1M context.",
+      context: 1048576,
+      maxOut: 65536,
+      upstreamIn: 0.7,
+      upstreamOut: 2.1,
+      benchmarks: [{ name: "MMLU", score: 89.4, source: "NVIDIA Technical Report", evaluationDate: "2024-10-15" }]
+    },
+    {
+      id: "nemotron-3-nano-omni-30b-a3b-reasoning",
+      canonicalId: "nemotron-3-nano-omni-30b",
+      name: "Nemotron 3 Nano Omni 30B Reasoning",
+      cat: "vision",
+      primary: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
+      sec: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning",
+      desc: "NVIDIA Nemotron 3 Nano Omni 30B \u2014 deep chain-of-thought reasoning and multimodal STEM problem-solving.",
+      context: 131072,
+      maxOut: 20480,
+      upstreamIn: 0.15,
+      upstreamOut: 0.45,
+      benchmarks: [{ name: "MMLU", score: 82.1, source: "NVIDIA Technical Report", evaluationDate: "2024-10-15" }]
+    },
+    {
+      id: "nemotron-3.5-lightning-30b-a3b",
+      canonicalId: "nemotron-3.5-lightning",
+      name: "Nemotron 3.5 Lightning 30B A3B",
+      cat: "fast",
+      primary: "requesty/nemotron-3.5-lightning-30b-a3b",
+      sec: "openrouter/nemotron-3.5-lightning",
+      desc: "NVIDIA Nemotron 3.5 Lightning 30B A3B \u2014 lightning-fast inference with an extraordinary 1M context window.",
+      context: 1048576,
+      maxOut: 65536,
+      upstreamIn: 0.1,
+      upstreamOut: 0.3
+    },
+    {
+      id: "nemotron-3.5-lightning",
+      canonicalId: "nemotron-3.5-lightning",
+      name: "Nemotron 3.5 Lightning",
+      cat: "fast",
+      primary: "openrouter/nemotron-3.5-lightning",
+      sec: "requesty/nemotron-3.5-lightning-30b-a3b",
+      desc: "NVIDIA Nemotron 3.5 Lightning \u2014 low-latency assistant for high-volume work.",
+      context: 1048576,
+      maxOut: 65536,
+      upstreamIn: 0.1,
+      upstreamOut: 0.3
+    },
+    {
+      id: "nemotron-3.5-super-vl",
+      canonicalId: "nemotron-3.5-super-vl",
+      name: "Nemotron 3.5 Super VL",
+      cat: "vision",
+      primary: "openrouter/nemotron-3.5-super-vl",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "NVIDIA Nemotron 3.5 Super \u2014 high-capacity vision-language reasoning.",
+      context: 128e3,
+      maxOut: 64e3,
+      upstreamIn: 0.2,
+      upstreamOut: 0.6
+    },
+    {
+      id: "gemma-4-31b-it",
+      canonicalId: "gemma-4-31b-it",
+      name: "Gemma 4 31B IT",
+      cat: "multilingual",
+      primary: "requesty/gemma-4-31b-it",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "Google Gemma 4 31B Instruction-Tuned \u2014 Google's latest open frontier architecture featuring 262K context.",
+      context: 262144,
+      maxOut: 8192,
+      upstreamIn: 0.14,
+      upstreamOut: 0.42,
+      benchmarks: [{ name: "MMLU", score: 83.2, source: "Google DeepMind Evaluation", evaluationDate: "2024-09-25" }]
+    },
+    {
+      id: "leanstral-1-5",
+      canonicalId: "leanstral-1-5",
+      name: "Leanstral 1.5",
+      cat: "reasoning",
+      primary: "requesty/leanstral-1-5",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "Mistral Leanstral 1.5 \u2014 high-efficiency reasoning model with massive 262K context.",
+      context: 262144,
+      maxOut: 32768,
+      upstreamIn: 0.12,
+      upstreamOut: 0.36,
+      benchmarks: [{ name: "MMLU", score: 81, source: "Mistral Evaluation", evaluationDate: "2024-08-30" }]
+    },
+    {
+      id: "ling-3.1-flash",
+      canonicalId: "ling-3.1-flash",
+      name: "Ling 3.1 Flash",
+      cat: "fast",
+      primary: "requesty/ling-3.1-flash",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "Novita Ling 3.1 Flash \u2014 ultra-responsive 262K context model for conversational speed.",
+      context: 262144,
+      maxOut: 32768,
+      upstreamIn: 0.08,
+      upstreamOut: 0.24,
+      benchmarks: [{ name: "MMLU", score: 79.8, source: "Novita AI Benchmark", evaluationDate: "2024-07-15" }]
+    },
+    {
+      id: "allam-2-7b",
+      canonicalId: "allam-2-7b",
+      name: "Allam 2 7B",
+      cat: "multilingual",
+      primary: "groq/allam-2-7b",
+      sec: "prorouter/deepseek-v4.1-flash",
+      desc: "SDAIA high-performance bilingual Arabic & English foundational language model.",
+      context: 4096,
+      maxOut: 2048,
+      upstreamIn: 0.05,
+      upstreamOut: 0.15
+    }
   ];
   for (let i = 0; i < verifiedLive.length; i++) {
     const item = verifiedLive[i];
+    const isPromo = resolvePromotionalCanonicalId(item.id) !== null;
+    const pricing = computePrice(item.upstreamIn, item.upstreamOut);
     add({
       id: item.id,
+      canonicalModelId: item.canonicalId,
       name: item.name,
       category: item.cat,
       categoryLabel: formatCategoryLabel(item.cat),
       description: item.desc,
       status: "production",
-      contextWindow: item.cat === "long_context" ? 1048576 : 131072,
-      maxOutputTokens: 32768,
-      pricingTier: "standard",
-      isFree: true,
+      contextWindow: item.context,
+      maxOutputTokens: item.maxOut,
+      pricingTier: item.cat === "fast" ? "flash" : "standard",
+      isFree: isPromo,
+      // Strictly true ONLY for the 2 canonical promo models
+      pricingStatus: "approved",
+      upstreamCostUsd: pricing.upstream,
+      customerPricingUsd: pricing.customer,
       capabilities: caps({
         reasoning: "supported",
         coding: item.cat === "coding" ? "supported" : "unknown",
@@ -3004,7 +4149,8 @@ function generateProfiles() {
       rank: 1 + i,
       popularity: 9950 - i * 10,
       rating: 99,
-      tags: ["verified", "live", item.cat]
+      benchmarks: item.benchmarks || [],
+      tags: ["verified", "live", item.cat, isPromo ? "promotional-48h" : "paid"]
     });
   }
   const categorySpecs = [
@@ -3013,6 +4159,9 @@ function generateProfiles() {
       category: "general",
       targetCount: 70,
       prefix: "gen",
+      tier: "standard",
+      upstreamIn: 0.15,
+      upstreamOut: 0.45,
       primaryBackend: "prorouter/deepseek-v4.1-flash",
       secondaryBackend: "groq/gpt-oss-120b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3033,6 +4182,9 @@ function generateProfiles() {
       category: "reasoning",
       targetCount: 65,
       prefix: "reason",
+      tier: "reason",
+      upstreamIn: 0.35,
+      upstreamOut: 1.05,
       primaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
       secondaryBackend: "groq/gpt-oss-120b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3053,6 +4205,9 @@ function generateProfiles() {
       category: "coding",
       targetCount: 85,
       prefix: "code",
+      tier: "code",
+      upstreamIn: 0.25,
+      upstreamOut: 0.75,
       primaryBackend: "groq/qwen3.8-27b",
       secondaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3074,6 +4229,9 @@ function generateProfiles() {
       category: "agentic",
       targetCount: 45,
       prefix: "agent",
+      tier: "code",
+      upstreamIn: 0.3,
+      upstreamOut: 0.9,
       primaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
       secondaryBackend: "groq/qwen3.8-27b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3092,6 +4250,9 @@ function generateProfiles() {
       category: "research",
       targetCount: 45,
       prefix: "research",
+      tier: "expert",
+      upstreamIn: 0.35,
+      upstreamOut: 1.05,
       primaryBackend: "requesty/leanstral-1-5",
       secondaryBackend: "groq/gpt-oss-120b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3110,6 +4271,9 @@ function generateProfiles() {
       category: "math_science",
       targetCount: 30,
       prefix: "math",
+      tier: "reason",
+      upstreamIn: 0.25,
+      upstreamOut: 0.75,
       primaryBackend: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
       secondaryBackend: "groq/gpt-oss-120b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3128,6 +4292,9 @@ function generateProfiles() {
       category: "multilingual",
       targetCount: 35,
       prefix: "lang",
+      tier: "standard",
+      upstreamIn: 0.15,
+      upstreamOut: 0.45,
       primaryBackend: "requesty/gemma-4-31b-it",
       secondaryBackend: "groq/qwen3.8-27b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3146,6 +4313,9 @@ function generateProfiles() {
       category: "vision",
       targetCount: 35,
       prefix: "vision",
+      tier: "standard",
+      upstreamIn: 0.25,
+      upstreamOut: 0.75,
       primaryBackend: "openrouter/nemotron-3.5-super-vl",
       secondaryBackend: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3164,6 +4334,9 @@ function generateProfiles() {
       category: "fast",
       targetCount: 30,
       prefix: "fast",
+      tier: "lite",
+      upstreamIn: 0.08,
+      upstreamOut: 0.24,
       primaryBackend: "requesty/ling-3.1-flash",
       secondaryBackend: "openrouter/nemotron-3.5-lightning",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3182,6 +4355,9 @@ function generateProfiles() {
       category: "long_context",
       targetCount: 25,
       prefix: "ctx",
+      tier: "ultra",
+      upstreamIn: 0.4,
+      upstreamOut: 1.2,
       primaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
       secondaryBackend: "requesty/leanstral-1-5",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3200,6 +4376,9 @@ function generateProfiles() {
       category: "creative",
       targetCount: 20,
       prefix: "creative",
+      tier: "standard",
+      upstreamIn: 0.2,
+      upstreamOut: 0.6,
       primaryBackend: "prorouter/deepseek-v4.1-flash",
       secondaryBackend: "requesty/gemma-4-31b-it",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3217,6 +4396,9 @@ function generateProfiles() {
       category: "business",
       targetCount: 15,
       prefix: "biz",
+      tier: "standard",
+      upstreamIn: 0.2,
+      upstreamOut: 0.6,
       primaryBackend: "groq/gpt-oss-120b",
       secondaryBackend: "requesty/nemotron-3-ultra-550b-a55b",
       finalFallback: "prorouter/deepseek-v4.1-flash",
@@ -3239,8 +4421,10 @@ function generateProfiles() {
       const cycle = Math.floor(i / subCount) + 1;
       const profileId = cycle === 1 ? `pr-${spec.prefix}-${sub.suffix}` : `pr-${spec.prefix}-${sub.suffix}-v${cycle}`;
       const profileName = cycle === 1 ? sub.title : `${sub.title} (Tier ${cycle})`;
+      const pricing = computePrice(spec.upstreamIn, spec.upstreamOut);
       add({
         id: profileId,
+        canonicalModelId: profileId,
         name: profileName,
         category: spec.category,
         categoryLabel: formatCategoryLabel(spec.category),
@@ -3248,8 +4432,12 @@ function generateProfiles() {
         status: "production",
         contextWindow: spec.category === "long_context" ? 1048576 : spec.category === "vision" ? 128e3 : 131072,
         maxOutputTokens: spec.category === "fast" ? 16384 : 32768,
-        pricingTier: spec.category === "fast" ? "lite" : spec.category === "coding" || spec.category === "reasoning" ? "code" : "standard",
-        isFree: true,
+        pricingTier: spec.tier,
+        isFree: false,
+        // Strict policy: All generated profiles are paid
+        pricingStatus: "approved",
+        upstreamCostUsd: pricing.upstream,
+        customerPricingUsd: pricing.customer,
         capabilities: caps({
           ...spec.specialCaps,
           ...sub.extraCaps || {}
@@ -3274,7 +4462,8 @@ function generateProfiles() {
         rank: globalRank++,
         popularity: 9e3 - globalRank % 1e3,
         rating: 96,
-        tags: [spec.category, "production", spec.prefix]
+        benchmarks: [],
+        tags: [spec.category, "production", spec.prefix, "paid"]
       });
     }
   }
@@ -3844,21 +5033,40 @@ var IntelligentModelRouter = class {
 // packages/routing/src/catalog-service.ts
 var ModelCatalogService = class {
   static query(opts = {}) {
-    const limit = Math.max(1, Math.min(200, opts.limit ?? 50));
+    const limit = Math.max(1, Math.min(600, opts.limit ?? 50));
     const offset = Math.max(0, opts.offset ?? 0);
-    let list = ModelProfileRegistry.getAll();
+    let list = [...ModelProfileRegistry.getAll()];
     if (opts.query) {
       const q = opts.query.toLowerCase().trim();
       list = list.filter(
-        (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q) || m.category.toLowerCase().includes(q) || m.tags.some((t) => t.toLowerCase().includes(q))
+        (m) => m.id.toLowerCase().includes(q) || m.name.toLowerCase().includes(q) || m.description.toLowerCase().includes(q) || m.category.toLowerCase().includes(q) || m.categoryLabel.toLowerCase().includes(q) || m.canonicalModelId && m.canonicalModelId.toLowerCase().includes(q) || m.routingPolicy.primaryBackend.toLowerCase().includes(q) || m.tags.some((t) => t.toLowerCase().includes(q))
       );
     }
     if (opts.category && opts.category !== "all") {
       const cat = opts.category.toLowerCase().trim();
-      list = list.filter((m) => m.category === cat);
+      if (cat === "budget") {
+        list = list.filter((m) => (m.customerPricingUsd?.inputPerMillion ?? 0) <= 0.3);
+      } else if (cat === "premium") {
+        list = list.filter((m) => (m.customerPricingUsd?.inputPerMillion ?? 0) >= 1);
+      } else if (cat === "multimodal") {
+        list = list.filter((m) => m.capabilities.vision === "supported" || m.category === "vision");
+      } else {
+        list = list.filter((m) => m.category === cat);
+      }
     }
-    if (opts.freeOnly) {
-      list = list.filter((m) => m.isFree);
+    if (opts.provider && opts.provider !== "all") {
+      const prov = opts.provider.toLowerCase().trim();
+      list = list.filter(
+        (m) => m.routingPolicy.primaryBackend.toLowerCase().startsWith(prov) || m.tags.some((t) => t.toLowerCase() === prov)
+      );
+    }
+    if (opts.promotionalOnly || opts.freeOnly) {
+      list = list.filter((m) => resolvePromotionalCanonicalId(m.id) !== null);
+    } else if (opts.paidOnly) {
+      list = list.filter((m) => resolvePromotionalCanonicalId(m.id) === null);
+    }
+    if (opts.pricingPendingOnly) {
+      list = list.filter((m) => m.pricingStatus === "pricing_pending");
     }
     const sort = opts.sort || "popularity";
     if (sort === "popularity") {
@@ -3867,6 +5075,24 @@ var ModelCatalogService = class {
       list.sort((a, b) => a.rank - b.rank);
     } else if (sort === "rating") {
       list.sort((a, b) => b.rating - a.rating);
+    } else if (sort === "score") {
+      list.sort((a, b) => {
+        const scoreA = a.benchmarks?.[0]?.score ?? 0;
+        const scoreB = b.benchmarks?.[0]?.score ?? 0;
+        return scoreB - scoreA;
+      });
+    } else if (sort === "lowest_input" || sort === "price_asc") {
+      list.sort(
+        (a, b) => (a.customerPricingUsd?.inputPerMillion ?? 0) - (b.customerPricingUsd?.inputPerMillion ?? 0)
+      );
+    } else if (sort === "lowest_output" || sort === "price_desc") {
+      list.sort(
+        (a, b) => (b.customerPricingUsd?.outputPerMillion ?? 0) - (a.customerPricingUsd?.outputPerMillion ?? 0)
+      );
+    } else if (sort === "highest_context") {
+      list.sort((a, b) => b.contextWindow - a.contextWindow);
+    } else if (sort === "alphabetical") {
+      list.sort((a, b) => a.name.localeCompare(b.name));
     }
     const total = list.length;
     const items = list.slice(offset, offset + limit);
@@ -3884,6 +5110,11 @@ var ModelCatalogService = class {
     return this.query({
       query: opts.q,
       category: opts.category,
+      provider: opts.provider,
+      freeOnly: opts.freeOnly,
+      paidOnly: opts.paidOnly,
+      promotionalOnly: opts.promotionalOnly,
+      pricingPendingOnly: opts.pricingPendingOnly,
       sort: opts.sort,
       limit: opts.pageSize,
       offset: opts.page && opts.pageSize ? (opts.page - 1) * opts.pageSize : 0
@@ -3895,6 +5126,9 @@ var ModelCatalogService = class {
       dist[p.category] = (dist[p.category] || 0) + 1;
     }
     return dist;
+  }
+  static get(id) {
+    return ModelProfileRegistry.get(id);
   }
   static getById(id) {
     return ModelProfileRegistry.get(id);
@@ -4343,45 +5577,226 @@ async function getProviderDetail(slug2) {
 }
 
 // apps/api/src/routes/catalog.ts
-var listQuery = z3.object({
-  q: z3.string().optional(),
-  provider: z3.string().optional(),
-  free: z3.string().optional(),
-  paid: z3.string().optional(),
-  category: z3.enum(["coding", "reasoning", "vision", "image", "audio", "tools"]).optional(),
-  min_context: z3.coerce.number().optional(),
-  sort: z3.enum(["rank", "popularity", "rating", "newest", "price_asc", "price_desc", "latency"]).optional(),
-  limit: z3.coerce.number().min(1).max(200).optional(),
-  offset: z3.coerce.number().min(0).optional()
-});
 function truthy(v) {
-  if (v === void 0) return void 0;
-  return v === "true" || v === "1";
+  return v === true || v === "true" || v === "1" || v === 1;
 }
 async function catalogRoutes(app) {
-  app.get("/catalog/profiles", async (request) => {
-    const q = request.query;
+  const listModelsHandler = async (request) => {
+    const q = request.query || {};
+    const page = q.page ? parseInt(String(q.page), 10) : 1;
+    const pageSize = q.pageSize ? parseInt(String(q.pageSize), 10) : q.limit ? parseInt(String(q.limit), 10) : 50;
     return ModelCatalogService.list({
       q: q.q,
       category: q.category,
+      provider: q.provider,
       tier: q.tier,
-      page: q.page ? parseInt(q.page, 10) : 1,
-      pageSize: q.pageSize ? parseInt(q.pageSize, 10) : 50,
+      promotionalOnly: truthy(q.promotionalOnly || q.free),
+      paidOnly: truthy(q.paidOnly || q.paid),
+      pricingPendingOnly: truthy(q.pricingPendingOnly || q.pending),
+      page,
+      pageSize,
       sort: q.sort || "popularity"
     });
-  });
+  };
+  app.get("/catalog/profiles", listModelsHandler);
+  app.get("/api/catalog/profiles", listModelsHandler);
   app.get("/models", async (request) => {
-    const q = listQuery.parse(request.query);
-    return listModels({ q: q.q, provider: q.provider, free: truthy(q.free), paid: truthy(q.paid), category: q.category, minContext: q.min_context, sort: q.sort, limit: q.limit, offset: q.offset });
+    const q = request.query || {};
+    return listModels({
+      q: q.q,
+      provider: q.provider,
+      free: q.free !== void 0 ? truthy(q.free) : void 0,
+      paid: q.paid !== void 0 ? truthy(q.paid) : void 0,
+      category: q.category,
+      minContext: q.min_context ? Number(q.min_context) : void 0,
+      sort: q.sort,
+      limit: q.limit ? Number(q.limit) : q.pageSize ? Number(q.pageSize) : void 0,
+      offset: q.offset ? Number(q.offset) : void 0
+    });
   });
-  app.get("/models/:slug", async (request, reply) => {
+  app.get("/api/models", async (request) => {
+    const q = request.query || {};
+    return listModels({
+      q: q.q,
+      provider: q.provider,
+      free: q.free !== void 0 ? truthy(q.free) : void 0,
+      paid: q.paid !== void 0 ? truthy(q.paid) : void 0,
+      category: q.category,
+      minContext: q.min_context ? Number(q.min_context) : void 0,
+      sort: q.sort,
+      limit: q.limit ? Number(q.limit) : q.pageSize ? Number(q.pageSize) : void 0,
+      offset: q.offset ? Number(q.offset) : void 0
+    });
+  });
+  const listProvidersHandler = async () => {
+    const all = ModelProfileRegistry.getAll();
+    const providerMap = /* @__PURE__ */ new Map();
+    for (const m of all) {
+      const p = m.provider || (m.routingPolicy?.preferredProvider ?? m.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+      const entry = providerMap.get(p) ?? { provider: p, modelCount: 0, verifiedCostCount: 0 };
+      entry.modelCount++;
+      if (m.upstreamCostUsd) entry.verifiedCostCount++;
+      providerMap.set(p, entry);
+    }
+    const dbProviders = await listProviders().catch(() => []);
+    return {
+      providers: Array.from(providerMap.values()).map((p) => {
+        const found = dbProviders.find((dp) => dp.slug === p.provider);
+        return {
+          slug: p.provider,
+          name: found?.name ?? p.provider.toUpperCase(),
+          modelCount: p.modelCount,
+          verifiedCostCount: p.verifiedCostCount,
+          status: found?.status ?? "active"
+        };
+      })
+    };
+  };
+  app.get("/api/models/providers", listProvidersHandler);
+  app.get("/providers", listProvidersHandler);
+  app.get("/api/providers", listProvidersHandler);
+  const listCategoriesHandler = async () => {
+    const all = ModelProfileRegistry.getAll();
+    const catMap = /* @__PURE__ */ new Map();
+    for (const m of all) {
+      const cat = m.category || "general";
+      const entry = catMap.get(cat) ?? { category: cat, count: 0, minInputUsd: 999 };
+      entry.count++;
+      if (m.customerPricingUsd?.inputPerMillion && m.customerPricingUsd.inputPerMillion < entry.minInputUsd) {
+        entry.minInputUsd = m.customerPricingUsd.inputPerMillion;
+      }
+      catMap.set(cat, entry);
+    }
+    return {
+      categories: Array.from(catMap.values()).map((c) => ({
+        slug: c.category,
+        count: c.count,
+        startingPriceUsd: c.minInputUsd < 999 ? c.minInputUsd : 0.05
+      }))
+    };
+  };
+  app.get("/api/models/categories", listCategoriesHandler);
+  app.get("/categories", listCategoriesHandler);
+  const listPricingTableHandler = async (request) => {
+    const q = request.query || {};
+    const res = ModelCatalogService.list({
+      q: q.q,
+      category: q.category,
+      provider: q.provider,
+      promotionalOnly: truthy(q.promotionalOnly),
+      paidOnly: truthy(q.paidOnly),
+      pricingPendingOnly: truthy(q.pricingPendingOnly),
+      page: 1,
+      pageSize: 600,
+      sort: q.sort || "rank"
+    });
+    const displayRate = DEFAULT_USD_TO_INR_DISPLAY_RATE;
+    const pricingItems = res.items.map((m) => {
+      const inputUsd = m.customerPricingUsd?.inputPerMillion ?? 0;
+      const outputUsd = m.customerPricingUsd?.outputPerMillion ?? 0;
+      const isPromo = isStrictlyPromotionalEligible(m.id);
+      const prov = m.provider || (m.routingPolicy?.preferredProvider ?? m.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+      return {
+        modelId: m.id,
+        name: m.name,
+        canonicalModelId: m.canonicalModelId ?? m.id,
+        provider: prov,
+        category: m.category,
+        pricingStatus: m.pricingStatus ?? "approved",
+        isPromotional: isPromo,
+        promoDurationHours: isPromo ? 48 : 0,
+        upstreamCostUsd: m.upstreamCostUsd ?? null,
+        customerPricingUsd: {
+          inputPerMillion: inputUsd,
+          outputPerMillion: outputUsd,
+          cachedInputPerMillion: m.customerPricingUsd?.cachedInputPerMillion ?? null
+        },
+        customerPricingInrPaise: {
+          inputPaisePer1M: Math.ceil(inputUsd * displayRate * 100),
+          outputPaisePer1M: Math.ceil(outputUsd * displayRate * 100),
+          cachedInputPaisePer1M: m.customerPricingUsd?.cachedInputPerMillion ? Math.ceil(m.customerPricingUsd.cachedInputPerMillion * displayRate * 100) : null
+        },
+        displayRate
+      };
+    });
+    return {
+      total: pricingItems.length,
+      pricingStatusSummary: {
+        approved: pricingItems.filter((p) => p.pricingStatus === "approved").length,
+        pricingPending: pricingItems.filter((p) => p.pricingStatus === "pricing_pending").length,
+        promotionalEligible: pricingItems.filter((p) => p.isPromotional).length
+      },
+      items: pricingItems
+    };
+  };
+  app.get("/api/models/pricing", listPricingTableHandler);
+  app.get("/pricing/models", listPricingTableHandler);
+  const getModelPricingDetailHandler = async (request, reply) => {
+    const { modelId, slug: slug2 } = request.params;
+    const id = (modelId || slug2 || "").trim();
+    const model = ModelCatalogService.get(id);
+    if (!model) throw new ApiError("model_not_found", `Model '${id}' not found.`);
+    const isPromo = isStrictlyPromotionalEligible(model.id);
+    const displayRate = DEFAULT_USD_TO_INR_DISPLAY_RATE;
+    const calc = calculateModelPricing(
+      {
+        inputUsdPer1M: model.upstreamCostUsd?.inputPerMillion ?? 0.2,
+        outputUsdPer1M: model.upstreamCostUsd?.outputPerMillion ?? 0.8,
+        cachedInputUsdPer1M: model.upstreamCostUsd?.cachedInputPerMillion
+      },
+      {
+        operationalReserve: 0.1,
+        targetGrossMargin: 0.3
+      },
+      displayRate
+    );
+    const prov = model.provider || (model.routingPolicy?.preferredProvider ?? model.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+    return reply.send({
+      modelId: model.id,
+      canonicalModelId: model.canonicalModelId ?? model.id,
+      name: model.name,
+      provider: prov,
+      category: model.category,
+      contextWindow: model.contextWindow,
+      pricingStatus: model.pricingStatus ?? calc.pricingStatus,
+      isPromotionalEligible: isPromo,
+      promotionalNotes: isPromo ? "Eligible for 48-Hour Free Launch Promotion. Free access applies for 48 hours following user activation up to daily promotional quota." : "Standard Paid Model. No free promotion.",
+      formula: "Customer Selling Price = (Upstream Cost * (1 + Operational Reserve)) / (1 - Target Gross Margin)",
+      parameters: {
+        operationalReserve: 0.1,
+        operationalReservePercent: "10%",
+        targetGrossMargin: 0.3,
+        targetGrossMarginPercent: "30%",
+        displayUsdToInrRate: displayRate
+      },
+      breakdown: {
+        input: calc.input,
+        output: calc.output,
+        cachedInput: calc.cachedInput ?? null
+      },
+      customerPricingUsd: model.customerPricingUsd
+    });
+  };
+  app.get("/api/models/:modelId/pricing", getModelPricingDetailHandler);
+  app.get("/models/:modelId/pricing", getModelPricingDetailHandler);
+  const getModelDetailHandler = async (request, reply) => {
+    const { slug: slug2, modelId } = request.params;
+    const id = (slug2 || modelId || "").trim();
+    const profile = ModelCatalogService.get(id);
+    if (profile) return reply.send(profile);
+    const detail = await getModelDetail(id);
+    if (!detail) throw new ApiError("model_not_found", `Model '${id}' not found.`);
+    return reply.send(detail);
+  };
+  app.get("/models/:slug", getModelDetailHandler);
+  app.get("/api/models/:slug", getModelDetailHandler);
+  app.get("/providers/:slug", async (request, reply) => {
     const { slug: slug2 } = request.params;
-    const detail = await getModelDetail(slug2);
-    if (!detail) throw new ApiError("model_not_found", `Model '${slug2}' not found.`);
+    const detail = await getProviderDetail(slug2);
+    if (!detail) throw new ApiError("not_found", `Provider '${slug2}' not found.`);
     return reply.send(detail);
   });
-  app.get("/providers", async () => listProviders());
-  app.get("/providers/:slug", async (request, reply) => {
+  app.get("/api/providers/:slug", async (request, reply) => {
     const { slug: slug2 } = request.params;
     const detail = await getProviderDetail(slug2);
     if (!detail) throw new ApiError("not_found", `Provider '${slug2}' not found.`);
@@ -4390,8 +5805,8 @@ async function catalogRoutes(app) {
 }
 
 // apps/api/src/routes/chat.ts
-import { z as z4 } from "zod";
-import { eq as eq10, sql as sql5 } from "drizzle-orm";
+import { z as z3 } from "zod";
+import { and as and7, eq as eq10, gt as gt3, sql as sql5 } from "drizzle-orm";
 
 // packages/providers/src/adapter.ts
 var ProviderError = class extends Error {
@@ -4428,20 +5843,28 @@ async function* parseSse(body) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const drain = function* (flush) {
+    const lines = (buffer + (flush ? decoder.decode() : "")).split(/\r?\n/);
+    buffer = flush ? "" : lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (data) yield data;
+    }
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data) yield data;
-      }
+      yield* drain(false);
     }
+    yield* drain(true);
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+    }
     reader.releaseLock();
   }
 }
@@ -4477,6 +5900,7 @@ var OpenAICompatibleAdapter = class {
     if (params.stop !== void 0) body.stop = params.stop;
     if (params.tools !== void 0) body.tools = params.tools;
     if (params.toolChoice !== void 0) body.tool_choice = params.toolChoice;
+    if (params.parallelToolCalls !== void 0) body.parallel_tool_calls = params.parallelToolCalls;
     if (params.responseFormat !== void 0) body.response_format = params.responseFormat;
     if (params.seed !== void 0) body.seed = params.seed;
     return body;
@@ -4556,6 +5980,7 @@ var OpenAICompatibleAdapter = class {
         body: JSON.stringify(this.buildBody({ ...params, stream: true })),
         signal: controller.signal
       });
+      clearTimeout(timer);
       if (!res.ok) await this.fail(res);
       if (!res.body) throw new ProviderError(this.providerSlug, "empty_body", "Empty streaming response", 502);
       yield { type: "start", upstreamRequestId: res.headers.get("x-request-id") ?? void 0 };
@@ -4685,7 +6110,7 @@ var FreemodelsAdapter = class extends OpenAICompatibleAdapter {
 
 // packages/providers/src/anthropic.ts
 var ANTHROPIC_VERSION = "2023-06-01";
-var AnthropicAdapter = class {
+var AnthropicAdapter = class _AnthropicAdapter {
   type = "anthropic";
   providerSlug;
   baseUrl;
@@ -4708,17 +6133,84 @@ var AnthropicAdapter = class {
   /** Convert OpenAI-style messages into Anthropic's system/messages shape. */
   splitMessages(messages2) {
     let system;
-    const out = [];
+    const rawOut = [];
     for (const m of messages2) {
       if (m.role === "system" || m.role === "developer") {
-        const text8 = typeof m.content === "string" ? m.content : "";
+        const text7 = typeof m.content === "string" ? m.content : "";
         system = system ? `${system}
 
-${text8}` : text8;
+${text7}` : text7;
         continue;
       }
-      const text7 = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((p) => p.text ?? "").join("") : "";
-      out.push({ role: m.role === "assistant" ? "assistant" : "user", content: text7 });
+      if (m.role === "tool") {
+        const toolUseId = m.tool_call_id || "call_unknown";
+        const contentStr = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? {});
+        rawOut.push({
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: toolUseId,
+              content: contentStr
+            }
+          ]
+        });
+        continue;
+      }
+      if (m.role === "assistant") {
+        const toolCalls = m.tool_calls;
+        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+          const blocks = [];
+          const text8 = typeof m.content === "string" ? m.content.trim() : "";
+          if (text8) {
+            blocks.push({ type: "text", text: text8 });
+          }
+          for (const tc of toolCalls) {
+            let inputObj = {};
+            try {
+              inputObj = typeof tc.function?.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function?.arguments || {};
+            } catch {
+              inputObj = {};
+            }
+            blocks.push({
+              type: "tool_use",
+              id: tc.id || "toolu_unknown",
+              name: tc.function?.name || "tool",
+              input: inputObj
+            });
+          }
+          rawOut.push({ role: "assistant", content: blocks });
+          continue;
+        }
+        const text7 = typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.map((p) => typeof p === "string" ? p : p.text ?? "").join("") : "";
+        rawOut.push({ role: "assistant", content: text7 });
+        continue;
+      }
+      if (Array.isArray(m.content)) {
+        rawOut.push({ role: "user", content: m.content });
+      } else {
+        const text7 = typeof m.content === "string" ? m.content : "";
+        rawOut.push({ role: "user", content: text7 });
+      }
+    }
+    const out = [];
+    for (const msg of rawOut) {
+      const prev = out[out.length - 1];
+      if (prev && prev.role === msg.role) {
+        if (Array.isArray(prev.content) && Array.isArray(msg.content)) {
+          prev.content = [...prev.content, ...msg.content];
+        } else if (Array.isArray(prev.content) && typeof msg.content === "string") {
+          prev.content = [...prev.content, { type: "text", text: msg.content }];
+        } else if (typeof prev.content === "string" && Array.isArray(msg.content)) {
+          prev.content = [{ type: "text", text: prev.content }, ...msg.content];
+        } else if (typeof prev.content === "string" && typeof msg.content === "string") {
+          prev.content = `${prev.content}
+
+${msg.content}`;
+        }
+      } else {
+        out.push({ ...msg });
+      }
     }
     return { system, messages: out };
   }
@@ -4734,6 +6226,22 @@ ${text8}` : text8;
     if (params.temperature !== void 0) body.temperature = params.temperature;
     if (params.topP !== void 0) body.top_p = params.topP;
     if (params.stop !== void 0) body.stop_sequences = params.stop;
+    if (Array.isArray(params.tools) && params.tools.length > 0) {
+      body.tools = params.tools.map((t) => ({
+        name: t.function?.name || t.name,
+        description: t.function?.description || t.description || "",
+        input_schema: t.function?.parameters || t.input_schema || { type: "object", properties: {} }
+      }));
+      if (params.toolChoice) {
+        if (params.toolChoice === "auto") {
+          body.tool_choice = { type: "auto" };
+        } else if (params.toolChoice === "required") {
+          body.tool_choice = { type: "any" };
+        } else if (typeof params.toolChoice === "object" && params.toolChoice.function?.name) {
+          body.tool_choice = { type: "tool", name: params.toolChoice.function.name };
+        }
+      }
+    }
     return body;
   }
   async fail(res) {
@@ -4752,8 +6260,14 @@ ${text8}` : text8;
       this.providerSlug,
       res.status === 429 ? "rate_limited" : res.status >= 500 ? "server_error" : "request_rejected",
       detail.slice(0, 500) || `Upstream returned HTTP ${res.status}`,
-      res.status
+      res.status,
+      res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403
     );
+  }
+  static mapStopReason(reason) {
+    if (reason === "tool_use") return "tool_calls";
+    if (reason === "max_tokens") return "length";
+    return "stop";
   }
   async chat(params, signal) {
     const controller = new AbortController();
@@ -4775,14 +6289,15 @@ ${text8}` : text8;
         type: "function",
         function: { name: b.name ?? "", arguments: JSON.stringify(b.input ?? {}) }
       }));
+      const estimated = estimateUsage({ messages: params.messages, completion: text7 });
       const usage = {
-        prompt_tokens: json.usage?.input_tokens ?? estimateUsage({ messages: params.messages, completion: text7 }).prompt_tokens,
-        completion_tokens: json.usage?.output_tokens ?? 0,
-        total_tokens: (json.usage?.input_tokens ?? 0) + (json.usage?.output_tokens ?? 0)
+        prompt_tokens: json.usage?.input_tokens ?? estimated.prompt_tokens,
+        completion_tokens: json.usage?.output_tokens ?? estimated.completion_tokens,
+        total_tokens: 0
       };
       usage.total_tokens = usage.prompt_tokens + usage.completion_tokens;
       const usageSource = json.usage ? "upstream" : "estimated";
-      return { content: text7, toolCalls, finishReason: json.stop_reason ?? "stop", usage, usageSource };
+      return { content: text7, toolCalls, finishReason: _AnthropicAdapter.mapStopReason(json.stop_reason), usage, usageSource };
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       const aborted = err instanceof Error && err.name === "AbortError";
@@ -4810,6 +6325,7 @@ ${text8}` : text8;
         body: JSON.stringify(this.buildBody({ ...params, stream: true })),
         signal: controller.signal
       });
+      clearTimeout(timer);
       if (!res.ok) await this.fail(res);
       if (!res.body) throw new ProviderError(this.providerSlug, "empty_body", "Empty streaming response", 502);
       yield { type: "start" };
@@ -4829,13 +6345,31 @@ ${text8}` : text8;
           const msg = event.message;
           inputTokens = msg?.usage?.input_tokens ?? 0;
           if (typeof msg?.usage?.input_tokens === "number") sawUsage = true;
+        } else if (type === "content_block_start") {
+          const block = event.content_block;
+          if (block?.type === "tool_use") {
+            yield {
+              type: "tool_call_delta",
+              index: typeof event.index === "number" ? event.index : 0,
+              id: block.id,
+              name: block.name,
+              arguments: ""
+            };
+          }
         } else if (type === "content_block_delta") {
           const delta = event.delta;
           if (delta?.type === "text_delta" && delta.text) yield { type: "delta", text: delta.text };
           if (delta?.type === "thinking_delta" && delta.thinking) yield { type: "reasoning_delta", text: delta.thinking };
+          if (delta?.type === "input_json_delta" && typeof delta.partial_json === "string") {
+            yield {
+              type: "tool_call_delta",
+              index: typeof event.index === "number" ? event.index : 0,
+              arguments: delta.partial_json
+            };
+          }
         } else if (type === "message_delta") {
           const delta = event.delta;
-          if (delta?.stop_reason) finishReason = delta.stop_reason === "tool_use" ? "tool_calls" : "stop";
+          if (delta?.stop_reason) finishReason = _AnthropicAdapter.mapStopReason(delta.stop_reason);
           const usage = event.usage;
           if (typeof usage?.output_tokens === "number") {
             outputTokens = usage.output_tokens;
@@ -5185,8 +6719,14 @@ async function loadModelContext(slug2) {
   if (!r) {
     const profile = ModelProfileRegistry.get(slug2) || ModelProfileRegistry.get(lowerSlug);
     if (profile) {
-      const fallbackRows2 = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(eq9(models.slug, "deepseek-v4.1-flash-1017"));
-      const baseRow = fallbackRows2[0];
+      const fallbackRows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(eq9(models.slug, "deepseek-v4.1-flash-1017"));
+      const baseRow = fallbackRows[0];
+      const inPriceUsd = profile.customerPricingUsd?.inputPerMillion ?? 0.2;
+      const outPriceUsd = profile.customerPricingUsd?.outputPerMillion ?? 0.8;
+      const cachedPriceUsd = profile.customerPricingUsd?.cachedInputPerMillion;
+      const inputPaise = Math.ceil(inPriceUsd * 80 * 100);
+      const outputPaise = Math.ceil(outPriceUsd * 80 * 100);
+      const cachedPaise = cachedPriceUsd !== void 0 ? Math.ceil(cachedPriceUsd * 80 * 100) : 0;
       return {
         model: {
           id: `profile-${profile.id}`,
@@ -5196,6 +6736,8 @@ async function loadModelContext(slug2) {
           providerId: baseRow?.model.providerId ?? null,
           type: "chat",
           status: "active",
+          pricingStatus: profile.pricingStatus ?? "approved",
+          canonicalModelId: profile.canonicalModelId ?? profile.id,
           isFree: profile.isFree,
           contextWindow: profile.contextWindow,
           maxOutputTokens: profile.maxOutputTokens,
@@ -5204,16 +6746,16 @@ async function loadModelContext(slug2) {
           rating: 98,
           pricingTier: null,
           metadata: { category: profile.category },
-          benchmarks: {},
+          benchmarks: profile.benchmarks ?? {},
           createdAt: /* @__PURE__ */ new Date(),
           updatedAt: /* @__PURE__ */ new Date()
         },
         pricing: {
           id: `pricing-${profile.id}`,
           modelId: `profile-${profile.id}`,
-          inputPerMillion: 0,
-          outputPerMillion: 0,
-          cachedInputPerMillion: 0,
+          inputPerMillion: inputPaise,
+          outputPerMillion: outputPaise,
+          cachedInputPerMillion: cachedPaise,
           currency: "INR"
         },
         tier: null,
@@ -5236,21 +6778,22 @@ async function loadModelContext(slug2) {
           perDay: 3e3,
           concurrency: 5,
           queuePriority: 1
-        }
+        },
+        pricingStatus: profile.pricingStatus ?? "approved",
+        canonicalModelId: profile.canonicalModelId ?? profile.id
       };
     }
-    const fallbackRows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(eq9(models.slug, "deepseek-v4.1-flash-1017"));
-    r = fallbackRows[0];
-    if (!r) return null;
-    return {
-      model: { ...r.model, name: slug2, slug: slug2 },
-      pricing: r.pricing,
-      tier: r.tier,
-      caps: r.caps,
-      limits: r.limits
-    };
+    return null;
   }
-  return { model: r.model, pricing: r.pricing, tier: r.tier, caps: r.caps, limits: r.limits };
+  return {
+    model: r.model,
+    pricing: r.pricing,
+    tier: r.tier,
+    caps: r.caps,
+    limits: r.limits,
+    pricingStatus: r.model.pricingStatus ?? "approved",
+    canonicalModelId: r.model.canonicalModelId ?? r.model.slug
+  };
 }
 async function hydrateCandidates(modelId, forcedProvider) {
   const db2 = await getDb();
@@ -5340,20 +6883,15 @@ function getBackendGatewayKey() {
   backendPoolIndex = (backendPoolIndex + 1) % pool2.length;
   return key;
 }
-var FALLBACK_REQUESTY_KEYS = [
-  "rqsty-sk-eZDZIylOTvmLRd0c2tVrNAAqHeawYeRZrVSJYOrOlW3zFeakaX8fdeiO4MOkD69L8AbUQ1zJpSRkIvUmiquvaPuEl1zU7eiIq61MN75n/gU=",
-  "rqsty-sk-Rwqk+k5bTmyQzu0m0YW7ES32tRYd7lx1QapSNITPF5dXjiPpduVEPT1Cw4h1Wo5xBkysmfRQD4VIwKCbQsbFj1uc+tXBSpzVe27DA2S6ZQ0="
-];
 function getBackendRequestyPool() {
   const envVal = process.env.PROVIDER_REQUESTY_API_KEY || "";
-  if (!envVal.trim()) return FALLBACK_REQUESTY_KEYS;
-  const parsed = envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
-  return parsed.length > 0 ? parsed : FALLBACK_REQUESTY_KEYS;
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
 }
 var backendRequestyPoolIndex = 0;
 function getBackendRequestyKey() {
   const pool2 = getBackendRequestyPool();
-  if (pool2.length === 0) return FALLBACK_REQUESTY_KEYS[0];
+  if (pool2.length === 0) return void 0;
   const key = pool2[backendRequestyPoolIndex % pool2.length];
   backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % pool2.length;
   return key;
@@ -5376,6 +6914,19 @@ function getBackendOpenRouterPool() {
   if (!envVal.trim()) return [];
   return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
 }
+function getBackendNabhPool() {
+  const envVal = process.env.PROVIDER_NABH_API_KEY || "";
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+}
+var backendNabhPoolIndex = 0;
+function getBackendNabhKey() {
+  const pool2 = getBackendNabhPool();
+  if (pool2.length === 0) return process.env.PROVIDER_NABH_API_KEY;
+  const key = pool2[backendNabhPoolIndex % pool2.length];
+  backendNabhPoolIndex = (backendNabhPoolIndex + 1) % pool2.length;
+  return key;
+}
 var backendOpenRouterPoolIndex = 0;
 function getBackendOpenRouterKey() {
   const pool2 = getBackendOpenRouterPool();
@@ -5394,25 +6945,52 @@ var ENV_KEY_MAP = {
   requesty: process.env.PROVIDER_REQUESTY_API_KEY,
   nabh: process.env.PROVIDER_NABH_API_KEY
 };
+var REQUIRES_API_KEY = /* @__PURE__ */ new Set([
+  "prorouter-gateway",
+  "requesty",
+  "groq",
+  "openrouter",
+  "nabh",
+  "openai",
+  "anthropic",
+  "mistral"
+]);
+var credentialCursor = /* @__PURE__ */ new Map();
 async function getAdapter(candidate) {
   const db2 = await getDb();
   const creds = await db2.select().from(providerCredentials).where(and6(eq9(providerCredentials.providerId, candidate.providerId), eq9(providerCredentials.active, true)));
   const providerRows = await db2.select().from(providers).where(eq9(providers.id, candidate.providerId));
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
-  let apiKey = creds[0] ? decryptSecret(creds[0].ciphertext, creds[0].iv, creds[0].authTag ?? "") : void 0;
-  if (!apiKey || candidate.providerSlug === "prorouter-gateway" || candidate.providerSlug === "requesty" || candidate.providerSlug === "groq" || candidate.providerSlug === "openrouter" || candidate.providerSlug === "nabh") {
-    if (candidate.providerSlug === "prorouter-gateway") {
-      apiKey = getBackendGatewayKey();
-    } else if (candidate.providerSlug === "requesty") {
-      apiKey = getBackendRequestyKey();
-    } else if (candidate.providerSlug === "groq") {
-      apiKey = getBackendGroqKey();
-    } else if (candidate.providerSlug === "openrouter") {
-      apiKey = getBackendOpenRouterKey();
-    } else {
-      apiKey = ENV_KEY_MAP[candidate.providerSlug];
+  let apiKey;
+  if (creds.length > 0) {
+    const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
+    credentialCursor.set(candidate.providerId, start + 1);
+    for (let offset = 0; offset < creds.length; offset++) {
+      const cred = creds[(start + offset) % creds.length];
+      try {
+        apiKey = decryptSecret(cred.ciphertext, cred.iv, cred.authTag ?? "");
+        if (apiKey) break;
+      } catch {
+        apiKey = void 0;
+      }
     }
+  }
+  if (candidate.providerSlug === "prorouter-gateway") {
+    apiKey = getBackendGatewayKey() || apiKey;
+  } else if (candidate.providerSlug === "requesty") {
+    apiKey = getBackendRequestyKey() || apiKey;
+  } else if (candidate.providerSlug === "groq") {
+    apiKey = getBackendGroqKey() || apiKey;
+  } else if (candidate.providerSlug === "openrouter") {
+    apiKey = getBackendOpenRouterKey() || apiKey;
+  } else if (candidate.providerSlug === "nabh") {
+    apiKey = getBackendNabhKey() || apiKey;
+  } else if (!apiKey) {
+    apiKey = ENV_KEY_MAP[candidate.providerSlug];
+  }
+  if (!apiKey && REQUIRES_API_KEY.has(candidate.providerSlug)) {
+    throw new ProviderError(candidate.providerSlug, "no_credential", "No API key configured for this provider.", 503);
   }
   return createAdapter(provider.adapterType, {
     providerSlug: candidate.providerSlug,
@@ -5421,31 +6999,37 @@ async function getAdapter(candidate) {
     timeoutMs: candidate.timeoutMs
   });
 }
-async function executeChat(decision, params) {
+async function executeChat(decision, params, signal) {
   const chain = [decision.primary, ...decision.fallbackChain];
   const attempts = [];
   let lastError = null;
   for (let i = 0; i < chain.length; i++) {
     const candidate = chain[i];
+    if (signal?.aborted) {
+      throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+    }
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const result = await adapter.chat(params);
+      const result = await adapter.chat(params, signal);
       ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
-      attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { ...result, providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, attempts };
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
+      return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
     } catch (err) {
+      if (signal?.aborted) {
+        throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+      }
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", err.message, 500);
       lastError = pErr;
       ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
-      attempts.push({ providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
       const isLast = i === chain.length - 1;
       if (isLast || !pErr.retryable) break;
     }
   }
   throw lastError ?? new ProviderError("unknown", "no_provider", "No provider available", 503);
 }
-async function* streamChat(decision, params, onMeta) {
+async function* streamChat(decision, params, onMeta, signal) {
   const chain = [decision.primary, ...decision.fallbackChain];
   const attempts = [];
   let lastError = null;
@@ -5455,10 +7039,13 @@ async function* streamChat(decision, params, onMeta) {
   let started = false;
   for (let i = 0; i < chain.length; i++) {
     const candidate = chain[i];
+    if (signal?.aborted) {
+      throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+    }
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const iterator = adapter.chatStream(params)[Symbol.asyncIterator]();
+      const iterator = adapter.chatStream(params, signal)[Symbol.asyncIterator]();
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
@@ -5467,16 +7054,21 @@ async function* streamChat(decision, params, onMeta) {
           usageSource = value.usageSource;
         }
         if (value.type === "done") finishReason = value.finishReason;
-        if (value.type === "delta" && !started) started = true;
+        if ((value.type === "delta" || value.type === "tool_call_delta" || value.type === "reasoning_delta") && !started) {
+          started = true;
+        }
         onMeta?.(value);
         yield value;
       }
-      attempts.push({ providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { providerSlug: candidate.providerSlug, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
+      return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
     } catch (err) {
+      if (signal?.aborted) {
+        throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+      }
       const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", err.message, 500);
       lastError = pErr;
-      attempts.push({ providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
+      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
       if (started || i === chain.length - 1 || !pErr.retryable) {
         yield { type: "done", finishReason: "error" };
         throw pErr;
@@ -5519,19 +7111,20 @@ function extractHints(messages2) {
 
 // apps/api/src/routes/chat.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
-var bodySchema = z4.looseObject({
-  model: z4.string().min(1),
-  messages: z4.array(z4.looseObject({ role: z4.string() })).min(1).max(500),
-  stream: z4.boolean().optional(),
-  temperature: z4.number().min(0).max(2).optional(),
-  top_p: z4.number().min(0).max(1).optional(),
-  max_tokens: z4.number().int().positive().optional(),
-  max_completion_tokens: z4.number().int().positive().optional(),
-  stop: z4.union([z4.string(), z4.array(z4.string())]).optional(),
-  tools: z4.array(z4.unknown()).optional(),
-  tool_choice: z4.unknown().optional(),
-  response_format: z4.unknown().optional(),
-  seed: z4.number().optional()
+var bodySchema = z3.looseObject({
+  model: z3.string().min(1),
+  messages: z3.array(z3.looseObject({ role: z3.string() })).min(1).max(500),
+  stream: z3.boolean().optional(),
+  temperature: z3.number().min(0).max(2).optional(),
+  top_p: z3.number().min(0).max(1).optional(),
+  max_tokens: z3.number().int().positive().optional(),
+  max_completion_tokens: z3.number().int().positive().optional(),
+  stop: z3.union([z3.string(), z3.array(z3.string())]).optional(),
+  tools: z3.array(z3.unknown()).optional(),
+  tool_choice: z3.unknown().optional(),
+  parallel_tool_calls: z3.boolean().optional(),
+  response_format: z3.unknown().optional(),
+  seed: z3.number().optional()
 });
 async function getUserPlan(userId) {
   const db2 = await getDb();
@@ -5645,6 +7238,15 @@ async function chatRoutes(app) {
     if (!ctx) throw new ApiError("model_not_found", `Model '${body.model}' not found.`);
     if (ctx.model.status === "coming_soon") throw new ApiError("provider_unavailable", `'${ctx.model.name}' is coming soon and not yet available.`);
     if (ctx.model.status !== "active") throw new ApiError("model_not_found", `Model '${slug2}' is not available.`);
+    const pricingStatus = ctx.pricingStatus || "approved";
+    if (pricingStatus === "pricing_pending") {
+      if (auth.user.role !== "admin") {
+        throw new ApiError(
+          "pricing_pending",
+          `Pricing pending administrative review for model '${ctx.model.name}'. Customer usage is locked until admin approval.`
+        );
+      }
+    }
     const effectivePricing = resolveEffectivePricing(ctx.model, ctx.pricing, ctx.tier, await getUsdToInrRate());
     const requiresAstra = slug2 === "uno-gpt-astra" || ctx.model.metadata?.requiresAstra === true;
     if (requiresAstra && await getFlag("astra_promotion", true)) {
@@ -5660,7 +7262,26 @@ async function chatRoutes(app) {
     }
     const plan = await getUserPlan(auth.user.id);
     const fallbackEnabled = await getFlag("provider_fallback", true);
-    const isFree = ctx.model.isFree;
+    const canonicalPromoId = resolvePromotionalCanonicalId(slug2);
+    let isPromotionalActive = false;
+    let activePromoActivationId = null;
+    if (canonicalPromoId !== null) {
+      const db3 = await getDb();
+      const promoRows = await db3.select().from(promotionalActivations).where(
+        and7(
+          eq10(promotionalActivations.userId, auth.user.id),
+          eq10(promotionalActivations.campaignSlug, "launch-48h-special"),
+          eq10(promotionalActivations.active, true),
+          gt3(promotionalActivations.expiresAt, /* @__PURE__ */ new Date())
+        )
+      );
+      const promo = promoRows[0];
+      if (promo && promo.requestCount < 50 && promo.tokensConsumed < 5e5) {
+        isPromotionalActive = true;
+        activePromoActivationId = promo.id;
+      }
+    }
+    const isFree = Boolean(ctx.model.isFree || isPromotionalActive);
     const stream = body.stream === true;
     let queueWaitMs = 0;
     let acquired = false;
@@ -5721,6 +7342,7 @@ async function chatRoutes(app) {
       stop: Array.isArray(body.stop) ? body.stop : body.stop ? [body.stop] : void 0,
       tools: body.tools,
       toolChoice: body.tool_choice,
+      parallelToolCalls: body.parallel_tool_calls,
       responseFormat: body.response_format,
       seed: body.seed,
       raw: body
@@ -5772,6 +7394,14 @@ async function chatRoutes(app) {
         });
         hasReservation = false;
       }
+      if (activePromoActivationId && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
+        const totalToks = usage.total_tokens || usage.prompt_tokens + usage.completion_tokens;
+        await db2.update(promotionalActivations).set({
+          requestCount: sql5`${promotionalActivations.requestCount} + 1`,
+          tokensConsumed: sql5`${promotionalActivations.tokensConsumed} + ${totalToks}`
+        }).where(eq10(promotionalActivations.id, activePromoActivationId)).catch(() => {
+        });
+      }
       await db2.update(requests).set({
         status: params.status ?? (params.errorCode ? "error" : "success"),
         httpStatus: params.httpStatus ?? (params.errorCode ? 502 : 200),
@@ -5820,11 +7450,11 @@ async function chatRoutes(app) {
           queueWaitMs = slot.queueWaitMs;
           slotServiceStart = Date.now();
         }
-        const result = await executeChat(decision, adapterParams);
-        for (const a of result.attempts) {
-          await db2.insert(requestAttempts).values({ requestId, providerId: null, attempt: result.attempts.indexOf(a) + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
+        const result = await executeChat(decision, adapterParams, request.signal);
+        for (const [i, a] of result.attempts.entries()) {
+          await db2.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
-        const cost2 = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: decision.primary.providerId, providerSlug: result.providerSlug, ttftMs: null });
+        const cost2 = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: result.providerId, providerSlug: result.providerSlug, ttftMs: null });
         reply.header("x-prorouter-usage-source", result.usageSource);
         const created2 = Math.floor(Date.now() / 1e3);
         return reply.send({
@@ -5832,11 +7462,19 @@ async function chatRoutes(app) {
           object: "chat.completion",
           created: created2,
           model: body.model || slug2,
-          choices: [{ index: 0, message: { role: "assistant", content: (() => {
-            const profile = ModelProfileRegistry.get(slug2);
-            const base = sanitizeModelOutput(result.content, ctx.model.name);
-            return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
-          })(), tool_calls: result.toolCalls.length ? result.toolCalls : void 0 }, finish_reason: result.finishReason }],
+          choices: [{
+            index: 0,
+            message: {
+              role: "assistant",
+              content: (() => {
+                const profile = ModelProfileRegistry.get(slug2);
+                const base = sanitizeModelOutput(result.content, ctx.model.name);
+                return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+              })(),
+              tool_calls: result.toolCalls.length ? result.toolCalls : void 0
+            },
+            finish_reason: result.finishReason
+          }],
           usage: result.usage,
           uno: {
             request_id: requestId,
@@ -5891,9 +7529,10 @@ async function chatRoutes(app) {
       let contentSoFar = "";
       let finishReason = "stop";
       let providerSlug = decision.primary.providerSlug;
+      let outcomeProviderId = null;
       try {
         const outcome = await (async () => {
-          const iterator = streamChat(decision, adapterParams);
+          const iterator = streamChat(decision, adapterParams, void 0, request.signal);
           while (true) {
             const step = await iterator.next();
             if (step.done) return step.value;
@@ -5923,16 +7562,20 @@ async function chatRoutes(app) {
           }
         })();
         providerSlug = outcome.providerSlug;
+        outcomeProviderId = outcome.providerId;
         usage = outcome.usage;
         usageSource = outcome.usageSource;
         finishReason = outcome.finishReason;
-        for (const a of outcome.attempts) {
-          await db2.insert(requestAttempts).values({ requestId, attempt: outcome.attempts.indexOf(a) + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
+        for (const [i, a] of outcome.attempts.entries()) {
+          await db2.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Provider error";
-        write({ error: { code: "provider_error", message, request_id: requestId } });
-        await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: err instanceof ApiError ? err.code : "provider_error", errorMessage: message, httpStatus: 502, status: "error" }).catch(() => void 0);
+        const aborted = request.signal.aborted;
+        const message = aborted ? "Client disconnected" : err instanceof ApiError ? err.message : "Upstream provider error.";
+        if (!aborted) {
+          write({ error: { code: "provider_error", message, request_id: requestId } });
+        }
+        await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: aborted ? "client_aborted" : err instanceof ApiError ? err.code : "provider_error", errorMessage: message, httpStatus: aborted ? 499 : 502, status: "error" }).catch(() => void 0);
         res.end();
         return;
       }
@@ -5945,13 +7588,14 @@ async function chatRoutes(app) {
         };
         usageSource = "estimated";
       }
-      const cost = await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs });
+      const cost = await finalize({ usage, usageSource, providerId: outcomeProviderId ?? decision.primary.providerId, providerSlug, ttftMs });
       write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug2, choices: [], usage, uno: { request_id: requestId, provider: providerSlug, cost_paise: cost, is_free: isFree, queue_wait_ms: queueWaitMs, route: decision.trace, usage_source: usageSource } });
       res.write("data: [DONE]\n\n");
       res.end();
       return;
     } catch (err) {
-      const apiErr = err instanceof ApiError ? err : err instanceof Error && err.code === "rate_limited" ? new ApiError("provider_error", err.message) : new ApiError("provider_error", err?.message ?? "Provider error");
+      const aborted = request.signal.aborted;
+      const apiErr = err instanceof ApiError ? err : new ApiError("provider_error", aborted ? "Client disconnected" : "Upstream provider error.");
       if (sseStarted) {
         try {
           reply.raw.write(`data: ${JSON.stringify({ error: apiErr.toBody(requestId).error })}
@@ -5977,7 +7621,7 @@ async function chatRoutes(app) {
 }
 
 // apps/api/src/routes/wallet.ts
-import { z as z5 } from "zod";
+import { z as z4 } from "zod";
 import { createHmac, randomUUID, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
 import { desc as desc6, eq as eq11 } from "drizzle-orm";
 async function walletRoutes(app) {
@@ -6022,10 +7666,10 @@ async function walletRoutes(app) {
     const user = await requireUser(request);
     const rl = checkRateLimit(`user:${user.id}:checkout`, 10, 60);
     if (!rl.allowed) throw new ApiError("rate_limit_exceeded", "Too many checkout attempts.");
-    const body = z5.object({
-      packageSlug: z5.string(),
-      currency: z5.enum(["INR", "USD"]).optional(),
-      idempotencyKey: z5.string().min(8).max(128).optional()
+    const body = z4.object({
+      packageSlug: z4.string(),
+      currency: z4.enum(["INR", "USD"]).optional(),
+      idempotencyKey: z4.string().min(8).max(128).optional()
     }).parse(request.body);
     const db2 = await getDb();
     const dbPkg = (await db2.select().from(creditPackages).where(eq11(creditPackages.slug, body.packageSlug)))[0];
@@ -6089,11 +7733,11 @@ async function walletRoutes(app) {
   });
   app.post("/wallet/verify", async (request, reply) => {
     const user = await requireUser(request);
-    const body = z5.object({
-      paymentId: z5.string(),
-      razorpayPaymentId: z5.string(),
-      razorpayOrderId: z5.string(),
-      razorpaySignature: z5.string()
+    const body = z4.object({
+      paymentId: z4.string(),
+      razorpayPaymentId: z4.string(),
+      razorpayOrderId: z4.string(),
+      razorpaySignature: z4.string()
     }).parse(request.body);
     const secret = env.razorpayKeySecret;
     if (!secret) {
@@ -6249,17 +7893,17 @@ async function walletRoutes(app) {
 }
 
 // apps/api/src/routes/promotions.ts
-import { z as z6 } from "zod";
-import { and as and7, desc as desc7, eq as eq12, gt as gt3, lt, sql as sql6 } from "drizzle-orm";
+import { z as z5 } from "zod";
+import { and as and8, desc as desc7, eq as eq12, gt as gt4, lt, sql as sql6 } from "drizzle-orm";
 async function getActiveCampaign() {
   const db2 = await getDb();
   const now = /* @__PURE__ */ new Date();
-  const rows = await db2.select().from(astraCampaigns).where(and7(eq12(astraCampaigns.active, true), lt(astraCampaigns.startsAt, now))).orderBy(desc7(astraCampaigns.startsAt));
+  const rows = await db2.select().from(astraCampaigns).where(and8(eq12(astraCampaigns.active, true), lt(astraCampaigns.startsAt, now))).orderBy(desc7(astraCampaigns.startsAt));
   return rows.find((c) => !c.endsAt || c.endsAt > now) ?? null;
 }
 async function getOrCreatePersonalCode(userId, campaignId) {
   const db2 = await getDb();
-  const existing = await db2.select().from(giftCodes).where(and7(eq12(giftCodes.ownerUserId, userId), eq12(giftCodes.campaignId, campaignId)));
+  const existing = await db2.select().from(giftCodes).where(and8(eq12(giftCodes.ownerUserId, userId), eq12(giftCodes.campaignId, campaignId)));
   if (existing[0]) return existing[0].code;
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = `PRO-${randomCode(6)}`;
@@ -6281,7 +7925,7 @@ async function promotionRoutes(app) {
     try {
       const user = await requireUser(request);
       const db2 = await getDb();
-      const ent = await db2.select().from(astraEntitlements).where(and7(eq12(astraEntitlements.userId, user.id), eq12(astraEntitlements.status, "active"), gt3(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()))).orderBy(desc7(astraEntitlements.activatedAt));
+      const ent = await db2.select().from(astraEntitlements).where(and8(eq12(astraEntitlements.userId, user.id), eq12(astraEntitlements.status, "active"), gt4(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()))).orderBy(desc7(astraEntitlements.activatedAt));
       if (ent[0]) {
         const msLeft = ent[0].expiresAt.getTime() - Date.now();
         entitlement = { activatedAt: ent[0].activatedAt.toISOString(), expiresAt: ent[0].expiresAt.toISOString(), daysLeft: Math.max(0, Math.ceil(msLeft / 864e5)) };
@@ -6310,7 +7954,7 @@ async function promotionRoutes(app) {
     const user = await requireUser(request);
     const enabled = await getFlag("astra_promotion", true);
     if (!enabled) throw new ApiError("campaign_inactive", "The Astra promotion is currently inactive.");
-    const body = z6.object({ code: z6.string().min(4).max(32) }).parse(request.body);
+    const body = z5.object({ code: z5.string().min(4).max(32) }).parse(request.body);
     const rawCode = body.code.trim().toUpperCase();
     const db2 = await getDb();
     const campaign = await getActiveCampaign();
@@ -6323,7 +7967,7 @@ async function promotionRoutes(app) {
     if (code.ownerUserId && code.ownerUserId === user.id) {
       throw new ApiError("self_redemption_not_allowed", "You cannot redeem your own referral code. Share it with a friend instead.");
     }
-    const already = await db2.select().from(giftCodeRedemptions).where(and7(eq12(giftCodeRedemptions.codeId, code.id), eq12(giftCodeRedemptions.redeemerUserId, user.id)));
+    const already = await db2.select().from(giftCodeRedemptions).where(and8(eq12(giftCodeRedemptions.codeId, code.id), eq12(giftCodeRedemptions.redeemerUserId, user.id)));
     if (already.length > 0) throw new ApiError("already_redeemed", "You have already redeemed this code.");
     const maxPerCode = code.maxRedemptions ?? campaign.maxRedemptionsPerCode ?? null;
     if (!campaign.allowMultiRedeem && code.redemptionCount > 0) {
@@ -6374,7 +8018,7 @@ async function promotionRoutes(app) {
     const codes = await db2.select().from(giftCodes).where(eq12(giftCodes.code, code));
     const codeRow = codes[0];
     const redemptions = await db2.select({ count: sql6`count(*)::int` }).from(giftCodeRedemptions).where(eq12(giftCodeRedemptions.codeId, codeRow.id));
-    const activeCount = await db2.select({ count: sql6`count(*)::int` }).from(astraEntitlements).where(and7(eq12(astraEntitlements.sourceCodeId, codeRow.id), eq12(astraEntitlements.status, "active"), gt3(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const activeCount = await db2.select({ count: sql6`count(*)::int` }).from(astraEntitlements).where(and8(eq12(astraEntitlements.sourceCodeId, codeRow.id), eq12(astraEntitlements.status, "active"), gt4(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
     return {
       code,
       sharePath: `/redeem?code=${code}`,
@@ -6383,60 +8027,103 @@ async function promotionRoutes(app) {
       trialDays: campaign.trialDays
     };
   });
-  app.get("/promotions/launch-48h", async (request) => {
+  const getPromoStatusHandler = async (request) => {
+    const q = request.query || {};
+    const queryModel = q.modelId?.trim();
+    const isModelEligible = queryModel ? isStrictlyPromotionalEligible(queryModel) : true;
     let status = {
       campaign: "launch-48h-special",
       name: "Launch Special: 48 Hours Free",
       eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
       durationHours: 48,
+      modelId: queryModel ?? null,
+      isModelEligible,
       activated: false,
       active: false,
+      activatedAt: null,
+      expiresAt: null,
       remainingMs: 0,
       remainingFormatted: "Not activated",
-      expiresAt: null
+      quota: {
+        maxRequestsPerDay: 50,
+        requestsConsumed: 0,
+        maxTokensPerDay: 5e5,
+        tokensConsumed: 0,
+        quotaExceeded: false
+      }
     };
     try {
       const user = await requireUser(request);
       const db2 = await getDb();
       const rows = await db2.select().from(promotionalActivations).where(
-        and7(
+        and8(
           eq12(promotionalActivations.userId, user.id),
           eq12(promotionalActivations.campaignSlug, "launch-48h-special")
         )
       );
       if (rows[0]) {
-        const promo = isPromotionActive(rows[0].activatedAt);
+        const promoCalc = checkPromotionStatus(rows[0].activatedAt);
+        const quotaExceeded = rows[0].requestCount >= 50 || rows[0].tokensConsumed >= 5e5;
         status = {
           ...status,
           activated: true,
-          active: promo.active,
-          remainingMs: promo.remainingMs,
-          remainingFormatted: promo.remainingFormatted,
-          expiresAt: rows[0].expiresAt.toISOString()
+          active: promoCalc.active && !quotaExceeded,
+          activatedAt: rows[0].activatedAt.toISOString(),
+          expiresAt: rows[0].expiresAt.toISOString(),
+          remainingMs: promoCalc.remainingMs,
+          remainingFormatted: promoCalc.remainingFormatted,
+          quota: {
+            maxRequestsPerDay: 50,
+            requestsConsumed: rows[0].requestCount,
+            maxTokensPerDay: 5e5,
+            tokensConsumed: rows[0].tokensConsumed,
+            quotaExceeded
+          }
         };
       }
     } catch {
     }
     return status;
-  });
-  app.post("/promotions/launch-48h/activate", async (request) => {
+  };
+  const activatePromoHandler = async (request) => {
     const user = await requireUser(request);
+    const body = request.body || {};
+    const modelToActivate = body.canonicalModelId || body.modelId;
+    if (modelToActivate) {
+      const canonical = resolvePromotionalCanonicalId(modelToActivate);
+      if (!canonical) {
+        throw new ApiError(
+          "not_eligible",
+          `Model '${modelToActivate}' is not eligible for the 48-hour free promotion. Only DeepSeek V4.1 Flash and Qwen3.8-27B qualify.`
+        );
+      }
+    }
     const db2 = await getDb();
     const existing = await db2.select().from(promotionalActivations).where(
-      and7(
+      and8(
         eq12(promotionalActivations.userId, user.id),
         eq12(promotionalActivations.campaignSlug, "launch-48h-special")
       )
     );
     if (existing[0]) {
-      const promo = isPromotionActive(existing[0].activatedAt);
+      const promoCalc = checkPromotionStatus(existing[0].activatedAt);
+      const quotaExceeded = existing[0].requestCount >= 50 || existing[0].tokensConsumed >= 5e5;
       return {
         ok: true,
         alreadyActivated: true,
-        active: promo.active,
-        remainingMs: promo.remainingMs,
-        remainingFormatted: promo.remainingFormatted,
-        expiresAt: existing[0].expiresAt.toISOString()
+        active: promoCalc.active && !quotaExceeded,
+        activatedAt: existing[0].activatedAt.toISOString(),
+        expiresAt: existing[0].expiresAt.toISOString(),
+        remainingMs: promoCalc.remainingMs,
+        remainingFormatted: promoCalc.remainingFormatted,
+        eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
+        quota: {
+          maxRequestsPerDay: 50,
+          requestsConsumed: existing[0].requestCount,
+          maxTokensPerDay: 5e5,
+          tokensConsumed: existing[0].tokensConsumed,
+          quotaExceeded
+        }
       };
     }
     const now = /* @__PURE__ */ new Date();
@@ -6446,22 +8133,39 @@ async function promotionRoutes(app) {
       campaignSlug: "launch-48h-special",
       activatedAt: now,
       expiresAt,
+      requestCount: 0,
+      tokensConsumed: 0,
       active: true
     });
     return {
       ok: true,
       alreadyActivated: false,
       active: true,
+      activatedAt: now.toISOString(),
+      expiresAt: expiresAt.toISOString(),
       remainingMs: PROMO_DURATION_MS,
       remainingFormatted: "48h 0m left",
-      expiresAt: expiresAt.toISOString()
+      eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
+      quota: {
+        maxRequestsPerDay: 50,
+        requestsConsumed: 0,
+        maxTokensPerDay: 5e5,
+        tokensConsumed: 0,
+        quotaExceeded: false
+      }
     };
-  });
+  };
+  app.get("/promotions/launch-48h", getPromoStatusHandler);
+  app.get("/promotions/status", getPromoStatusHandler);
+  app.get("/api/promotions/status", getPromoStatusHandler);
+  app.post("/promotions/launch-48h/activate", activatePromoHandler);
+  app.post("/promotions/activate", activatePromoHandler);
+  app.post("/api/promotions/activate", activatePromoHandler);
 }
 
 // apps/api/src/routes/admin.ts
-import { z as z7 } from "zod";
-import { and as and8, desc as desc8, eq as eq13, gte as gte2, sql as sql7 } from "drizzle-orm";
+import { z as z6 } from "zod";
+import { and as and9, desc as desc8, eq as eq13, gte as gte2, sql as sql7 } from "drizzle-orm";
 async function runHealthCheck(providerId) {
   const db2 = await getDb();
   const rows = await db2.select().from(providers).where(eq13(providers.id, providerId));
@@ -6492,56 +8196,56 @@ async function runHealthCheck(providerId) {
   await db2.update(providers).set({ status, healthMessage: result.message ?? null, lastHealthAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date() }).where(eq13(providers.id, providerId));
   return { available: result.available, latencyMs: result.latencyMs, message: result.message ?? null, status };
 }
-var providerSchema = z7.object({
-  name: z7.string().min(1).max(64),
-  slug: z7.string().min(1).max(64).regex(/^[a-z0-9-]+$/),
-  endpointUrl: z7.string().url(),
-  adapterType: z7.enum(["openai", "anthropic", "openrouter", "groq", "mistral", "ollama", "custom_openai", "freemodels"]).default("openai"),
-  region: z7.string().max(32).default("global"),
-  priority: z7.number().int().min(1).max(1e3).default(100),
-  timeoutMs: z7.number().int().min(1e3).max(3e5).default(6e4),
-  retryCount: z7.number().int().min(0).max(10).default(2),
-  description: z7.string().max(500).default(""),
-  capabilities: z7.array(z7.string()).default([]),
-  retentionPolicy: z7.string().max(64).default("zero_retention")
+var providerSchema = z6.object({
+  name: z6.string().min(1).max(64),
+  slug: z6.string().min(1).max(64).regex(/^[a-z0-9-]+$/),
+  endpointUrl: z6.string().url(),
+  adapterType: z6.enum(["openai", "anthropic", "openrouter", "groq", "mistral", "ollama", "custom_openai", "freemodels"]).default("openai"),
+  region: z6.string().max(32).default("global"),
+  priority: z6.number().int().min(1).max(1e3).default(100),
+  timeoutMs: z6.number().int().min(1e3).max(3e5).default(6e4),
+  retryCount: z6.number().int().min(0).max(10).default(2),
+  description: z6.string().max(500).default(""),
+  capabilities: z6.array(z6.string()).default([]),
+  retentionPolicy: z6.string().max(64).default("zero_retention")
 });
-var modelSchema = z7.object({
-  slug: z7.string().min(1).max(96).regex(/^[a-z0-9.\-]+$/),
-  name: z7.string().min(1).max(96),
-  description: z7.string().max(1e3).default(""),
-  status: z7.enum(["active", "coming_soon", "disabled", "archived"]).default("active"),
-  isFree: z7.boolean().default(false),
-  contextWindow: z7.number().int().min(1e3).max(1e7).default(128e3),
-  maxOutputTokens: z7.number().int().min(100).max(2e6).default(8192),
-  rank: z7.number().int().min(0).max(1e4).default(100),
-  pricingTier: z7.string().min(1).max(48).regex(/^[a-z0-9-]+$/).nullable().optional(),
-  inputPerMillion: z7.number().int().min(0).default(0),
-  outputPerMillion: z7.number().int().min(0).default(0),
-  reasoning: z7.boolean().default(false),
-  toolCalls: z7.boolean().default(false),
-  vision: z7.boolean().default(false),
-  structuredOutputs: z7.boolean().default(false),
-  links: z7.array(z7.object({ providerSlug: z7.string(), providerModelId: z7.string().min(1), priority: z7.number().int().default(100) })).default([])
+var modelSchema = z6.object({
+  slug: z6.string().min(1).max(96).regex(/^[a-z0-9.\-]+$/),
+  name: z6.string().min(1).max(96),
+  description: z6.string().max(1e3).default(""),
+  status: z6.enum(["active", "coming_soon", "disabled", "archived"]).default("active"),
+  isFree: z6.boolean().default(false),
+  contextWindow: z6.number().int().min(1e3).max(1e7).default(128e3),
+  maxOutputTokens: z6.number().int().min(100).max(2e6).default(8192),
+  rank: z6.number().int().min(0).max(1e4).default(100),
+  pricingTier: z6.string().min(1).max(48).regex(/^[a-z0-9-]+$/).nullable().optional(),
+  inputPerMillion: z6.number().int().min(0).default(0),
+  outputPerMillion: z6.number().int().min(0).default(0),
+  reasoning: z6.boolean().default(false),
+  toolCalls: z6.boolean().default(false),
+  vision: z6.boolean().default(false),
+  structuredOutputs: z6.boolean().default(false),
+  links: z6.array(z6.object({ providerSlug: z6.string(), providerModelId: z6.string().min(1), priority: z6.number().int().default(100) })).default([])
 });
-var pricingTierSchema = z7.object({
-  slug: z7.string().min(1).max(48).regex(/^[a-z0-9-]+$/),
-  name: z7.string().min(1).max(64),
-  description: z7.string().max(500).default(""),
-  inputUsdCentsPerMillion: z7.number().int().min(0).max(1e7),
-  outputUsdCentsPerMillion: z7.number().int().min(0).max(1e7),
-  cachedInputUsdCentsPerMillion: z7.number().int().min(0).max(1e7).nullable().optional(),
-  sortOrder: z7.number().int().min(0).max(1e4).default(100),
-  active: z7.boolean().default(true)
+var pricingTierSchema = z6.object({
+  slug: z6.string().min(1).max(48).regex(/^[a-z0-9-]+$/),
+  name: z6.string().min(1).max(64),
+  description: z6.string().max(500).default(""),
+  inputUsdCentsPerMillion: z6.number().int().min(0).max(1e7),
+  outputUsdCentsPerMillion: z6.number().int().min(0).max(1e7),
+  cachedInputUsdCentsPerMillion: z6.number().int().min(0).max(1e7).nullable().optional(),
+  sortOrder: z6.number().int().min(0).max(1e4).default(100),
+  active: z6.boolean().default(true)
 });
-var pricingTierPatchSchema = z7.object({
-  slug: z7.string().min(1).max(48).regex(/^[a-z0-9-]+$/).optional(),
-  name: z7.string().min(1).max(64).optional(),
-  description: z7.string().max(500).optional(),
-  inputUsdCentsPerMillion: z7.number().int().min(0).max(1e7).optional(),
-  outputUsdCentsPerMillion: z7.number().int().min(0).max(1e7).optional(),
-  cachedInputUsdCentsPerMillion: z7.number().int().min(0).max(1e7).nullable().optional(),
-  sortOrder: z7.number().int().min(0).max(1e4).optional(),
-  active: z7.boolean().optional()
+var pricingTierPatchSchema = z6.object({
+  slug: z6.string().min(1).max(48).regex(/^[a-z0-9-]+$/).optional(),
+  name: z6.string().min(1).max(64).optional(),
+  description: z6.string().max(500).optional(),
+  inputUsdCentsPerMillion: z6.number().int().min(0).max(1e7).optional(),
+  outputUsdCentsPerMillion: z6.number().int().min(0).max(1e7).optional(),
+  cachedInputUsdCentsPerMillion: z6.number().int().min(0).max(1e7).nullable().optional(),
+  sortOrder: z6.number().int().min(0).max(1e4).optional(),
+  active: z6.boolean().optional()
 });
 async function assertPricingTier(slug2) {
   const db2 = await getDb();
@@ -6560,7 +8264,7 @@ async function adminRoutes(app) {
     const balance = await db2.select({ total: sql7`coalesce(sum(${wallets.balancePaise}),0)::bigint` }).from(wallets);
     const [redemptions] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodeRedemptions);
     const [ents] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()));
-    const [freeReqs] = await db2.select({ n: sql7`count(*)::int` }).from(requests).where(and8(gte2(requests.createdAt, since), eq13(requests.isFree, true)));
+    const [freeReqs] = await db2.select({ n: sql7`count(*)::int` }).from(requests).where(and9(gte2(requests.createdAt, since), eq13(requests.isFree, true)));
     return {
       users: userCount?.n ?? 0,
       requests30d: reqCount?.n ?? 0,
@@ -6608,7 +8312,7 @@ async function adminRoutes(app) {
   app.put("/admin/providers/:id/credential", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { id } = request.params;
-    const body = z7.object({ apiKey: z7.string().min(1).max(512) }).parse(request.body);
+    const body = z6.object({ apiKey: z6.string().min(1).max(512) }).parse(request.body);
     const db2 = await getDb();
     const prov = await db2.select().from(providers).where(eq13(providers.id, id));
     if (!prov[0]) throw new ApiError("not_found", "Provider not found.");
@@ -6653,16 +8357,16 @@ async function adminRoutes(app) {
   app.patch("/admin/models/:id", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { id } = request.params;
-    const body = z7.object({
-      name: z7.string().optional(),
-      description: z7.string().optional(),
-      status: z7.enum(["active", "coming_soon", "disabled", "archived"]).optional(),
-      isFree: z7.boolean().optional(),
-      rank: z7.number().int().optional(),
-      contextWindow: z7.number().int().optional(),
-      pricingTier: z7.string().min(1).max(48).regex(/^[a-z0-9-]+$/).nullable().optional(),
-      inputPerMillion: z7.number().int().min(0).optional(),
-      outputPerMillion: z7.number().int().min(0).optional()
+    const body = z6.object({
+      name: z6.string().optional(),
+      description: z6.string().optional(),
+      status: z6.enum(["active", "coming_soon", "disabled", "archived"]).optional(),
+      isFree: z6.boolean().optional(),
+      rank: z6.number().int().optional(),
+      contextWindow: z6.number().int().optional(),
+      pricingTier: z6.string().min(1).max(48).regex(/^[a-z0-9-]+$/).nullable().optional(),
+      inputPerMillion: z6.number().int().min(0).optional(),
+      outputPerMillion: z6.number().int().min(0).optional()
     }).parse(request.body);
     const db2 = await getDb();
     const { inputPerMillion, outputPerMillion, pricingTier, ...modelFields } = body;
@@ -6718,7 +8422,7 @@ async function adminRoutes(app) {
   app.patch("/admin/users/:id", async (request) => {
     const admin = await requireRole(request, ["admin", "support"]);
     const { id } = request.params;
-    const body = z7.object({ status: z7.enum(["active", "suspended", "pending"]).optional(), role: z7.enum(["user", "admin", "support"]).optional() }).parse(request.body);
+    const body = z6.object({ status: z6.enum(["active", "suspended", "pending"]).optional(), role: z6.enum(["user", "admin", "support"]).optional() }).parse(request.body);
     if (body.role && admin.role !== "admin") throw new ApiError("forbidden", "Only admins can change roles.");
     if (body.role && id === admin.id) throw new ApiError("invalid_request", "You cannot change your own role.");
     const db2 = await getDb();
@@ -6730,7 +8434,7 @@ async function adminRoutes(app) {
   app.post("/admin/users/:id/wallet", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { id } = request.params;
-    const body = z7.object({ amountPaise: z7.number().int().min(-1e9).max(1e9).refine((n) => n !== 0, "Amount cannot be zero"), reason: z7.string().min(3).max(200) }).parse(request.body);
+    const body = z6.object({ amountPaise: z6.number().int().min(-1e9).max(1e9).refine((n) => n !== 0, "Amount cannot be zero"), reason: z6.string().min(3).max(200) }).parse(request.body);
     const db2 = await getDb();
     const target = await db2.select().from(users).where(eq13(users.id, id));
     if (!target[0]) throw new ApiError("not_found", "User not found.");
@@ -6751,7 +8455,7 @@ async function adminRoutes(app) {
     if (!campaign) return { campaign: null, stats: null, codes: [] };
     const [codeCount] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id));
     const [redCount] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodeRedemptions).where(eq13(giftCodeRedemptions.campaignId, campaign.id));
-    const [activeUsers] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(and8(eq13(astraEntitlements.campaignId, campaign.id), eq13(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const [activeUsers] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(and9(eq13(astraEntitlements.campaignId, campaign.id), eq13(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
     const codes = await db2.select().from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id)).orderBy(desc8(giftCodes.createdAt)).limit(200);
     return {
       campaign,
@@ -6761,15 +8465,15 @@ async function adminRoutes(app) {
   });
   app.patch("/admin/promotions/astra", async (request) => {
     const admin = await requireRole(request, ["admin"]);
-    const body = z7.object({
-      active: z7.boolean().optional(),
-      originalPricePaise: z7.number().int().min(0).optional(),
-      discountPercent: z7.number().int().min(0).max(100).optional(),
-      promoPricePaise: z7.number().int().min(0).optional(),
-      trialDays: z7.number().int().min(1).max(365).optional(),
-      endsAt: z7.string().datetime().nullable().optional(),
-      allowMultiRedeem: z7.boolean().optional(),
-      maxRedemptionsPerCode: z7.number().int().min(1).nullable().optional()
+    const body = z6.object({
+      active: z6.boolean().optional(),
+      originalPricePaise: z6.number().int().min(0).optional(),
+      discountPercent: z6.number().int().min(0).max(100).optional(),
+      promoPricePaise: z6.number().int().min(0).optional(),
+      trialDays: z6.number().int().min(1).max(365).optional(),
+      endsAt: z6.string().datetime().nullable().optional(),
+      allowMultiRedeem: z6.boolean().optional(),
+      maxRedemptionsPerCode: z6.number().int().min(1).nullable().optional()
     }).parse(request.body);
     const db2 = await getDb();
     const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
@@ -6781,7 +8485,7 @@ async function adminRoutes(app) {
   });
   app.post("/admin/promotions/astra/codes", async (request) => {
     const admin = await requireRole(request, ["admin"]);
-    const body = z7.object({ count: z7.number().int().min(1).max(500), ownerUserId: z7.string().uuid().nullable().optional(), maxRedemptions: z7.number().int().min(1).nullable().optional() }).parse(request.body);
+    const body = z6.object({ count: z6.number().int().min(1).max(500), ownerUserId: z6.string().uuid().nullable().optional(), maxRedemptions: z6.number().int().min(1).nullable().optional() }).parse(request.body);
     const db2 = await getDb();
     const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) throw new ApiError("not_found", "No campaign configured.");
@@ -6802,7 +8506,7 @@ async function adminRoutes(app) {
   app.patch("/admin/promotions/astra/codes/:id", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { id } = request.params;
-    const body = z7.object({ status: z7.enum(["active", "suspended", "revoked"]) }).parse(request.body);
+    const body = z6.object({ status: z6.enum(["active", "suspended", "revoked"]) }).parse(request.body);
     const db2 = await getDb();
     const rows = await db2.update(giftCodes).set({ status: body.status }).where(eq13(giftCodes.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Code not found.");
@@ -6817,7 +8521,7 @@ async function adminRoutes(app) {
   app.patch("/admin/plans/:id", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { id } = request.params;
-    const body = z7.object({ pricePaise: z7.number().int().min(0).optional(), freeRpm: z7.number().int().min(1).optional(), freeRph: z7.number().int().min(1).optional(), freeRpd: z7.number().int().min(1).optional(), concurrency: z7.number().int().min(1).optional(), queuePriority: z7.number().int().min(1).max(10).optional(), active: z7.boolean().optional(), features: z7.array(z7.string()).optional() }).parse(request.body);
+    const body = z6.object({ pricePaise: z6.number().int().min(0).optional(), freeRpm: z6.number().int().min(1).optional(), freeRph: z6.number().int().min(1).optional(), freeRpd: z6.number().int().min(1).optional(), concurrency: z6.number().int().min(1).optional(), queuePriority: z6.number().int().min(1).max(10).optional(), active: z6.boolean().optional(), features: z6.array(z6.string()).optional() }).parse(request.body);
     const db2 = await getDb();
     const rows = await db2.update(plans).set(body).where(eq13(plans.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Plan not found.");
@@ -6832,7 +8536,7 @@ async function adminRoutes(app) {
   app.patch("/admin/packages/:id", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { id } = request.params;
-    const body = z7.object({ name: z7.string().optional(), pricePaise: z7.number().int().min(0).optional(), bonusPaise: z7.number().int().min(0).optional(), active: z7.boolean().optional() }).parse(request.body);
+    const body = z6.object({ name: z6.string().optional(), pricePaise: z6.number().int().min(0).optional(), bonusPaise: z6.number().int().min(0).optional(), active: z6.boolean().optional() }).parse(request.body);
     const db2 = await getDb();
     const rows = await db2.update(creditPackages).set(body).where(eq13(creditPackages.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Package not found.");
@@ -6848,7 +8552,7 @@ async function adminRoutes(app) {
   app.patch("/admin/settings/:key", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { key } = request.params;
-    const body = z7.object({ value: z7.unknown() }).parse(request.body);
+    const body = z6.object({ value: z6.unknown() }).parse(request.body);
     const db2 = await getDb();
     await db2.update(systemSettings).set({ value: body.value, updatedAt: /* @__PURE__ */ new Date() }).where(eq13(systemSettings.key, key));
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "setting.update", targetType: "system_setting", targetId: key });
@@ -6858,7 +8562,7 @@ async function adminRoutes(app) {
   app.patch("/admin/flags/:key", async (request) => {
     const admin = await requireRole(request, ["admin"]);
     const { key } = request.params;
-    const body = z7.object({ enabled: z7.boolean() }).parse(request.body);
+    const body = z6.object({ enabled: z6.boolean() }).parse(request.body);
     const db2 = await getDb();
     await db2.update(featureFlags).set({ enabled: body.enabled, updatedAt: /* @__PURE__ */ new Date() }).where(eq13(featureFlags.key, key));
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "flag.update", targetType: "feature_flag", targetId: key, metadata: { enabled: body.enabled } });
@@ -6881,6 +8585,281 @@ async function adminRoutes(app) {
     await requireRole(request, ["admin", "support"]);
     return IntelligentModelRouter.getMetrics();
   });
+  const getAdminPricingHandler = async (request) => {
+    await requireRole(request, ["admin", "support"]);
+    const all = ModelProfileRegistry.getAll();
+    const displayRate = DEFAULT_USD_TO_INR_DISPLAY_RATE;
+    const items = all.map((m) => {
+      const isPromo = isStrictlyPromotionalEligible(m.id);
+      const inputUsd = m.customerPricingUsd?.inputPerMillion ?? 0;
+      const outputUsd = m.customerPricingUsd?.outputPerMillion ?? 0;
+      const upstreamInput = m.upstreamCostUsd?.inputPerMillion ?? 0;
+      const upstreamOutput = m.upstreamCostUsd?.outputPerMillion ?? 0;
+      const inMargin = inputUsd > 0 ? (inputUsd - upstreamInput) / inputUsd * 100 : 0;
+      const outMargin = outputUsd > 0 ? (outputUsd - upstreamOutput) / outputUsd * 100 : 0;
+      const prov = m.provider || (m.routingPolicy?.preferredProvider ?? m.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+      return {
+        modelId: m.id,
+        canonicalModelId: m.canonicalModelId ?? m.id,
+        name: m.name,
+        provider: prov,
+        category: m.category,
+        pricingStatus: m.pricingStatus ?? "approved",
+        isPromotional: isPromo,
+        promoDurationHours: isPromo ? 48 : 0,
+        operationalReservePercent: 10,
+        targetGrossMarginPercent: 30,
+        upstreamCostUsd: {
+          inputPerMillion: upstreamInput,
+          outputPerMillion: upstreamOutput,
+          cachedInputPerMillion: m.upstreamCostUsd?.cachedInputPerMillion ?? null
+        },
+        customerPricingUsd: {
+          inputPerMillion: inputUsd,
+          outputPerMillion: outputUsd,
+          cachedInputPerMillion: m.customerPricingUsd?.cachedInputPerMillion ?? null
+        },
+        customerPricingInrPaise: {
+          inputPaisePer1M: Math.ceil(inputUsd * displayRate * 100),
+          outputPaisePer1M: Math.ceil(outputUsd * displayRate * 100)
+        },
+        realizedMarginPercent: {
+          input: Number(inMargin.toFixed(2)),
+          output: Number(outMargin.toFixed(2))
+        }
+      };
+    });
+    const approvedCount = items.filter((i) => i.pricingStatus === "approved").length;
+    const pendingCount = items.filter((i) => i.pricingStatus === "pricing_pending").length;
+    const promoCount = items.filter((i) => i.isPromotional).length;
+    return {
+      summary: {
+        totalModels: items.length,
+        approvedCount,
+        pendingCount,
+        promotionalCount: promoCount,
+        defaultOperationalReserve: 0.1,
+        defaultTargetGrossMargin: 0.3,
+        displayExchangeRate: displayRate
+      },
+      items
+    };
+  };
+  app.get("/admin/pricing", getAdminPricingHandler);
+  app.get("/api/admin/pricing", getAdminPricingHandler);
+  const patchModelPricingHandler = async (request) => {
+    const admin = await requireRole(request, ["admin"]);
+    const { modelId } = request.params;
+    const body = z6.object({
+      pricingStatus: z6.enum(["approved", "pricing_pending", "disabled"]).optional(),
+      operationalReserve: z6.number().min(0).max(1).optional(),
+      targetGrossMargin: z6.number().min(0.01).max(0.95).optional(),
+      manualInputOverrideUsd: z6.number().min(0).optional(),
+      manualOutputOverrideUsd: z6.number().min(0).optional(),
+      reason: z6.string().default("Admin updated model pricing")
+    }).parse(request.body);
+    const model = ModelProfileRegistry.get(modelId);
+    if (!model) throw new ApiError("not_found", `Model '${modelId}' not found.`);
+    const oldPricing = {
+      pricingStatus: model.pricingStatus,
+      customerPricingUsd: model.customerPricingUsd,
+      upstreamCostUsd: model.upstreamCostUsd
+    };
+    const calc = calculateModelPricing(
+      {
+        inputUsdPer1M: body.manualInputOverrideUsd ?? model.upstreamCostUsd?.inputPerMillion ?? 0.2,
+        outputUsdPer1M: body.manualOutputOverrideUsd ?? model.upstreamCostUsd?.outputPerMillion ?? 0.8
+      },
+      {
+        operationalReserve: body.operationalReserve ?? 0.1,
+        targetGrossMargin: body.targetGrossMargin ?? 0.3,
+        manualPriceOverrideUsd: body.manualInputOverrideUsd
+      }
+    );
+    const newStatus = body.pricingStatus ?? calc.pricingStatus;
+    model.pricingStatus = newStatus;
+    model.customerPricingUsd = {
+      inputPerMillion: body.manualInputOverrideUsd ?? calc.input.customerPriceUsdPer1M,
+      outputPerMillion: body.manualOutputOverrideUsd ?? calc.output.customerPriceUsdPer1M
+    };
+    const db2 = await getDb();
+    await db2.insert(pricingAuditLogs).values({
+      modelSlug: model.id,
+      actorUserId: admin.id,
+      action: "pricing.update",
+      oldPricing,
+      newPricing: {
+        pricingStatus: newStatus,
+        customerPricingUsd: model.customerPricingUsd,
+        targetGrossMargin: body.targetGrossMargin ?? 0.3,
+        operationalReserve: body.operationalReserve ?? 0.1
+      },
+      reason: body.reason
+    }).catch(() => {
+    });
+    return {
+      ok: true,
+      modelId: model.id,
+      pricingStatus: newStatus,
+      customerPricingUsd: model.customerPricingUsd,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  };
+  app.patch("/admin/pricing/:modelId", patchModelPricingHandler);
+  app.patch("/api/admin/pricing/:modelId", patchModelPricingHandler);
+  const bulkUpdatePricingHandler = async (request) => {
+    const admin = await requireRole(request, ["admin"]);
+    const body = z6.object({
+      modelIds: z6.array(z6.string()).optional(),
+      category: z6.string().optional(),
+      operationalReserve: z6.number().min(0).max(1).optional(),
+      targetGrossMargin: z6.number().min(0.01).max(0.95).optional(),
+      pricingStatus: z6.enum(["approved", "pricing_pending", "disabled"]).optional(),
+      reason: z6.string().default("Bulk admin pricing adjustment")
+    }).parse(request.body);
+    const all = ModelProfileRegistry.getAll();
+    const targets = all.filter((m) => {
+      if (body.modelIds && body.modelIds.length > 0) return body.modelIds.includes(m.id);
+      if (body.category) return m.category === body.category;
+      return true;
+    });
+    const db2 = await getDb();
+    let updatedCount = 0;
+    for (const model of targets) {
+      const calc = calculateModelPricing(
+        {
+          inputUsdPer1M: model.upstreamCostUsd?.inputPerMillion ?? 0.2,
+          outputUsdPer1M: model.upstreamCostUsd?.outputPerMillion ?? 0.8
+        },
+        {
+          operationalReserve: body.operationalReserve ?? 0.1,
+          targetGrossMargin: body.targetGrossMargin ?? 0.3
+        }
+      );
+      const newStatus = body.pricingStatus ?? calc.pricingStatus;
+      model.pricingStatus = newStatus;
+      model.customerPricingUsd = {
+        inputPerMillion: calc.input.customerPriceUsdPer1M,
+        outputPerMillion: calc.output.customerPriceUsdPer1M
+      };
+      updatedCount++;
+    }
+    await db2.insert(pricingAuditLogs).values({
+      modelSlug: "BULK_UPDATE",
+      actorUserId: admin.id,
+      action: "pricing.bulk_update",
+      oldPricing: { targetCount: targets.length },
+      newPricing: {
+        updatedCount,
+        category: body.category ?? "all",
+        targetGrossMargin: body.targetGrossMargin,
+        operationalReserve: body.operationalReserve,
+        pricingStatus: body.pricingStatus
+      },
+      reason: body.reason
+    }).catch(() => {
+    });
+    return {
+      ok: true,
+      updatedCount,
+      totalMatched: targets.length,
+      appliedConfig: {
+        operationalReserve: body.operationalReserve ?? 0.1,
+        targetGrossMargin: body.targetGrossMargin ?? 0.3,
+        pricingStatus: body.pricingStatus
+      }
+    };
+  };
+  app.post("/admin/pricing/bulk-update", bulkUpdatePricingHandler);
+  app.post("/api/admin/pricing/bulk-update", bulkUpdatePricingHandler);
+  const syncPricingHandler = async (request) => {
+    const admin = await requireRole(request, ["admin"]);
+    const body = request.body || {};
+    const provider = body.provider || "all";
+    const all = ModelProfileRegistry.getAll();
+    let synced = 0;
+    for (const m of all) {
+      const prov = m.provider || (m.routingPolicy?.preferredProvider ?? m.routingPolicy?.primaryBackend?.split("/")[0]) || "other";
+      if (provider !== "all" && prov !== provider) continue;
+      if (m.upstreamCostUsd) {
+        const calc = calculateModelPricing(
+          {
+            inputUsdPer1M: m.upstreamCostUsd.inputPerMillion,
+            outputUsdPer1M: m.upstreamCostUsd.outputPerMillion
+          },
+          { operationalReserve: 0.1, targetGrossMargin: 0.3 }
+        );
+        m.customerPricingUsd = {
+          inputPerMillion: calc.input.customerPriceUsdPer1M,
+          outputPerMillion: calc.output.customerPriceUsdPer1M
+        };
+        m.pricingStatus = calc.pricingStatus;
+        synced++;
+      }
+    }
+    const db2 = await getDb();
+    await db2.insert(pricingSyncLogs).values({
+      provider,
+      syncType: "manual_admin",
+      status: "completed",
+      modelsUpdated: synced,
+      errors: []
+    }).catch(() => {
+    });
+    return {
+      ok: true,
+      provider,
+      modelsSynced: synced,
+      timestamp: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  };
+  app.post("/admin/pricing/sync", syncPricingHandler);
+  app.post("/api/admin/pricing/sync", syncPricingHandler);
+  const getAuditLogsHandler = async (request) => {
+    await requireRole(request, ["admin"]);
+    const db2 = await getDb();
+    const rows = await db2.select().from(pricingAuditLogs).orderBy(desc8(pricingAuditLogs.createdAt)).limit(100);
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString()
+      }))
+    };
+  };
+  app.get("/admin/pricing/audit-logs", getAuditLogsHandler);
+  app.get("/api/admin/pricing/audit-logs", getAuditLogsHandler);
+  app.get("/api/billing/usage", async (request) => {
+    const user = await requireUser(request);
+    const db2 = await getDb();
+    const rows = await db2.select({
+      id: requests.id,
+      modelId: requests.modelId,
+      isFree: requests.isFree,
+      status: requests.status,
+      inputTokens: requests.inputTokens,
+      outputTokens: requests.outputTokens,
+      totalTokens: requests.totalTokens,
+      costPaise: requests.costPaise,
+      createdAt: requests.createdAt
+    }).from(requests).where(user.role === "admin" ? void 0 : eq13(requests.userId, user.id)).orderBy(desc8(requests.createdAt)).limit(200);
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString()
+      }))
+    };
+  });
+  app.get("/api/billing/transactions", async (request) => {
+    const user = await requireUser(request);
+    const db2 = await getDb();
+    const rows = await db2.select().from(walletTransactions).where(user.role === "admin" ? void 0 : eq13(walletTransactions.userId, user.id)).orderBy(desc8(walletTransactions.createdAt)).limit(200);
+    return {
+      items: rows.map((r) => ({
+        ...r,
+        createdAt: r.createdAt.toISOString()
+      }))
+    };
+  });
   app.get("/admin/audit", async (request) => {
     await requireRole(request, ["admin"]);
     const db2 = await getDb();
@@ -6896,7 +8875,7 @@ function slug(m) {
 }
 
 // apps/api/src/routes/dashboard.ts
-import { and as and9, desc as desc9, eq as eq14, gte as gte3, sql as sql8 } from "drizzle-orm";
+import { and as and10, desc as desc9, eq as eq14, gte as gte3, sql as sql8 } from "drizzle-orm";
 import { and as and22, eq as eq22, gte as gte22 } from "drizzle-orm";
 async function dashboardRoutes(app) {
   app.get("/dashboard/overview", async (request) => {
@@ -6906,9 +8885,9 @@ async function dashboardRoutes(app) {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const balance = await getBalance(user.id);
-    const [today] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and9(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
-    const [month] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and9(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
-    const [keys] = await db2.select({ n: sql8`count(*)::int` }).from(apiKeys).where(and9(eq14(apiKeys.userId, user.id), sql8`${apiKeys.revokedAt} IS NULL`));
+    const [today] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
+    const [month] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
+    const [keys] = await db2.select({ n: sql8`count(*)::int` }).from(apiKeys).where(and10(eq14(apiKeys.userId, user.id), sql8`${apiKeys.revokedAt} IS NULL`));
     const subRows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq22(subscriptions.planId, plans.id)).where(eq22(subscriptions.userId, user.id));
     const plan = subRows.find((s) => s.plan)?.plan ?? null;
     const [freeToday] = await db2.select({ n: sql8`coalesce(sum(count),0)::int` }).from(freeUsage).where(eq22(freeUsage.userId, user.id));
@@ -6932,7 +8911,7 @@ async function dashboardRoutes(app) {
     const days = Math.min(Math.max(Number(q.days ?? 7), 1), 90);
     const db2 = await getDb();
     const since = new Date(Date.now() - days * 864e5);
-    const rows = await db2.select().from(requests).where(and9(eq14(requests.userId, user.id), gte3(requests.createdAt, since)));
+    const rows = await db2.select().from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, since)));
     const buckets2 = /* @__PURE__ */ new Map();
     for (let i = 0; i < days; i++) {
       const d = new Date(Date.now() - (days - 1 - i) * 864e5);
@@ -6957,8 +8936,8 @@ async function dashboardRoutes(app) {
     const conditions = [eq14(requests.userId, user.id)];
     if (q.status === "errors") conditions.push(eq14(requests.status, "error"));
     if (q.status === "success") conditions.push(eq14(requests.status, "success"));
-    const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and9(...conditions)).orderBy(desc9(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
-    const [total] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(and9(...conditions));
+    const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and10(...conditions)).orderBy(desc9(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
+    const [total] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(and10(...conditions));
     return {
       total: total?.n ?? 0,
       items: rows.map((x) => ({
@@ -7030,8 +9009,8 @@ async function dashboardRoutes(app) {
     const user = await requireUser(request);
     const db2 = await getDb();
     const since = new Date(Date.now() - 30 * 864e5);
-    const byModel = await db2.select({ model: models.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and9(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql8`count(*)`));
-    const byProvider = await db2.select({ provider: providers.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and9(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql8`count(*)`));
+    const byModel = await db2.select({ model: models.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and10(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql8`count(*)`));
+    const byProvider = await db2.select({ provider: providers.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and10(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql8`count(*)`));
     return { byModel: byModel.map((r) => ({ ...r, cost: Number(r.cost) })), byProvider };
   });
   app.get("/notifications", async (request) => {
@@ -7043,7 +9022,7 @@ async function dashboardRoutes(app) {
   app.post("/notifications/read", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and9(eq14(notifications.userId, user.id), sql8`${notifications.readAt} IS NULL`));
+    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and10(eq14(notifications.userId, user.id), sql8`${notifications.readAt} IS NULL`));
     return { ok: true };
   });
   app.get("/status", async () => {
@@ -7101,15 +9080,15 @@ async function planRoutes(app) {
 }
 
 // apps/api/src/routes/usage.ts
-import { z as z8 } from "zod";
-import { and as and10, desc as desc10, eq as eq16, gte as gte4, lte, sql as sql9 } from "drizzle-orm";
-var usageQuery = z8.object({
-  limit: z8.coerce.number().int().min(1).max(100).default(50),
-  offset: z8.coerce.number().int().min(0).default(0),
-  model: z8.string().min(1).optional(),
-  status: z8.enum(["success", "error", "rate_limited", "blocked", "queued"]).optional(),
-  from: z8.string().datetime().optional(),
-  to: z8.string().datetime().optional()
+import { z as z7 } from "zod";
+import { and as and11, desc as desc10, eq as eq16, gte as gte4, lte, sql as sql9 } from "drizzle-orm";
+var usageQuery = z7.object({
+  limit: z7.coerce.number().int().min(1).max(100).default(50),
+  offset: z7.coerce.number().int().min(0).default(0),
+  model: z7.string().min(1).optional(),
+  status: z7.enum(["success", "error", "rate_limited", "blocked", "queued"]).optional(),
+  from: z7.string().datetime().optional(),
+  to: z7.string().datetime().optional()
 });
 async function usageRoutes(app) {
   app.get("/v1/account/balance", async (request) => {
@@ -7135,7 +9114,7 @@ async function usageRoutes(app) {
     if (q.status) conditions.push(eq16(requests.status, q.status));
     if (q.from) conditions.push(gte4(requests.createdAt, new Date(q.from)));
     if (q.to) conditions.push(lte(requests.createdAt, new Date(q.to)));
-    const where = and10(...conditions);
+    const where = and11(...conditions);
     const totalRows = await db2.select({ n: sql9`count(*)::int` }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).where(where);
     const rows = await db2.select({
       request: requests,
@@ -7152,9 +9131,9 @@ async function usageRoutes(app) {
   });
   app.get("/v1/usage/:request_id", async (request) => {
     const auth = await authenticateRequest(request);
-    const params = z8.object({ request_id: z8.string().min(1) }).parse(request.params);
+    const params = z7.object({ request_id: z7.string().min(1) }).parse(request.params);
     const db2 = await getDb();
-    const rows = await db2.select({ request: requests, modelSlug: models.slug, providerSlug: providers.slug }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).leftJoin(providers, eq16(providers.id, requests.providerId)).where(and10(eq16(requests.id, params.request_id), eq16(requests.userId, auth.user.id)));
+    const rows = await db2.select({ request: requests, modelSlug: models.slug, providerSlug: providers.slug }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).leftJoin(providers, eq16(providers.id, requests.providerId)).where(and11(eq16(requests.id, params.request_id), eq16(requests.userId, auth.user.id)));
     const row = rows[0];
     if (!row) throw new ApiError("not_found", "Usage record not found.");
     return { ...toUsageRecord(row), route: row.request.route, queue_wait_ms: row.request.queueWaitMs };

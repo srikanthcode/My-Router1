@@ -135,6 +135,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         body: JSON.stringify(this.buildBody({ ...params, stream: true })),
         signal: controller.signal,
       });
+      clearTimeout(timer);
       if (!res.ok) await this.fail(res);
       if (!res.body) throw new ProviderError(this.providerSlug, "empty_body", "Empty streaming response", 502);
       yield { type: "start", upstreamRequestId: res.headers.get("x-request-id") ?? undefined };
