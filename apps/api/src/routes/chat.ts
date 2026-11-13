@@ -287,13 +287,9 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const adapterParams = {
       model: decision.primary.upstreamModelId,
-      messages: (() => {
-        const profile = ModelProfileRegistry.get(slug);
-        if (profile) {
-          return ModelBehaviorEngine.applyBehaviorToMessages(messages as unknown as Array<{ role: string; content?: unknown }>, profile) as unknown as ChatMessage[];
-        }
-        return applyPersonaToMessages(messages, ctx.model.name, ctx.model.slug);
-      })(),
+      // Pass client messages verbatim. Never inject synthetic personas, behavioral directives,
+      // or identity instructions that conflict with coding agents or user prompts.
+      messages: messages as unknown as ChatMessage[],
       stream,
       temperature: body.temperature,
       topP: body.top_p,

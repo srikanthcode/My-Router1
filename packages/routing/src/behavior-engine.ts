@@ -89,39 +89,14 @@ export class ModelBehaviorEngine {
 
   /**
    * Apply behavioral system prompt to incoming conversation messages.
+   * Passthrough: Preserves caller messages verbatim. In accordance with gateway fidelity,
+   * no synthetic personas or behavioral directives are injected to corrupt agent instructions.
    */
   public static applyBehaviorToMessages(
     messages: Array<{ role: string; content?: unknown }>,
-    profile: FrontendModelProfile
+    _profile: FrontendModelProfile
   ): Array<{ role: string; content: unknown }> {
-    const systemPrompt = this.buildSystemPrompt(profile);
-    const result: Array<{ role: string; content: unknown }> = [];
-
-    const hasSystem = messages.some(
-      (m) => m && (m.role === "system" || m.role === "developer")
-    );
-
-    if (!hasSystem) {
-      result.push({ role: "system", content: systemPrompt });
-      for (const m of messages) {
-        result.push({ role: m.role, content: m.content ?? "" });
-      }
-    } else {
-      // Append behavioral directives to the existing system message
-      for (const m of messages) {
-        if (m.role === "system" || m.role === "developer") {
-          const original = typeof m.content === "string" ? m.content : "";
-          result.push({
-            role: m.role,
-            content: `${original}\n\n[Active Model Persona]: ${systemPrompt}`,
-          });
-        } else {
-          result.push({ role: m.role, content: m.content ?? "" });
-        }
-      }
-    }
-
-    return result;
+    return messages.map((m) => ({ role: m.role, content: m.content ?? "" }));
   }
   /**
    * Redact sensitive credentials, private gateway endpoints, or internal routing keys from model output (§8).
