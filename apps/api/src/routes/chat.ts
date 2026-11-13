@@ -198,7 +198,10 @@ export async function chatRoutes(app: FastifyInstance) {
       throw new ApiError("forbidden", "This API key is not permitted to use the requested model.");
     }
 
-    const candidates = await hydrateCandidates(ctx.model.id, resolved.forcedProvider);
+    const candidates = await hydrateCandidates(ctx.model.id, resolved.forcedProvider, {
+      tools: Boolean(body.tools && body.tools.length > 0),
+      reasoning: Boolean(ctx.caps?.reasoning),
+    });
     if (candidates.length === 0) {
       throw new ApiError("provider_unavailable", `No providers are configured for '${ctx.model.name}'.`);
     }

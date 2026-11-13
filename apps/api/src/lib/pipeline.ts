@@ -262,7 +262,11 @@ export async function loadModelContext(slug: string): Promise<ModelContext | nul
 }
 
 /** Hydrate routing candidates for a model from DB + latest health. */
-export async function hydrateCandidates(modelId: string, forcedProvider?: string): Promise<RouteCandidate[]> {
+export async function hydrateCandidates(
+  modelId: string,
+  forcedProvider?: string,
+  requirements?: { tools?: boolean; reasoning?: boolean }
+): Promise<RouteCandidate[]> {
   const db = await getDb();
   const linkRows = await db.select({ link: modelProviders, provider: providers }).from(modelProviders)
     .innerJoin(providers, eq(providers.id, modelProviders.providerId))
@@ -284,7 +288,10 @@ export async function hydrateCandidates(modelId: string, forcedProvider?: string
     const cleanId = modelId.startsWith("profile-") ? modelId.slice(8) : modelId;
     const profile = ModelProfileRegistry.get(cleanId);
     if (profile) {
-      const decision = IntelligentModelRouter.route(cleanId, {});
+      const decision = IntelligentModelRouter.route(cleanId, {
+        requiresTools: requirements?.tools,
+        requiresReasoning: requirements?.reasoning,
+      });
       const chain = [decision.primary, ...decision.fallbackChain];
       const allProviders = await db.select().from(providers);
       const providerBySlug = new Map(allProviders.map((p) => [p.slug, p]));
