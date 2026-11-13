@@ -330,8 +330,17 @@ export async function hydrateCandidates(
     }
   }
 
-  return linkRows
-    .filter((l) => !forcedProvider || l.provider.slug === forcedProvider)
+  // A model-level tool_calls flag is not enough: every concrete upstream
+  // provider candidate must also advertise native tool-call support. Without
+  // this filter a model with a chat-only fallback (for example Nabh) could be
+  // selected for a request that contains tools, and return ordinary text.
+  const eligibleLinkRows = linkRows.filter((l) => {
+    if (forcedProvider && l.provider.slug !== forcedProvider) return false;
+    if (requirements?.tools && !l.provider.capabilities?.includes("tool_calls")) return false;
+    return true;
+  });
+
+  return eligibleLinkRows
     .map((l) => {
       const h = latestHealth.get(l.provider.id);
       return {
@@ -346,6 +355,7 @@ export async function hydrateCandidates(
         linkStatus: l.link.status,
         timeoutMs: l.provider.timeoutMs,
         retryCount: l.provider.retryCount,
+        capabilities: l.provider.capabilities ?? [],
         health: h ? { available: h.available, latencyMs: h.latencyMs, successRateBp: h.successRateBp, checkedAt: h.checkedAt } : null,
         inputPerMillion: effective?.pricing.inputPerMillion ?? 0,
         outputPerMillion: effective?.pricing.outputPerMillion ?? 0,
@@ -544,7 +554,7 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const result = await adapter.chat(params, signal);
+      const result = await adapter.chat({ ...params, model: candidate.upstreamModelId }, signal);
       ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
       attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
       return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
@@ -600,7 +610,7 @@ export async function* streamChat(
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const iterator = adapter.chatStream(params, signal)[Symbol.asyncIterator]();
+      const iterator = adapter.chatStream({ ...params, model: candidate.upstreamModelId }, signal)[Symbol.asyncIterator]();
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;

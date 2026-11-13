@@ -14,6 +14,7 @@ import { eventHub } from "../lib/events.js";
 import { extractHints, executeChat, hydrateCandidates, loadModelContext, resolveAutoModel, resolveModelInput, streamChat } from "../lib/pipeline.js";
 import { getFlag, getNumber } from "../lib/settings.js";
 import { getUsdToInrRate, resolveEffectivePricing } from "../lib/pricing.js";
+import { getModelDetail, listModels } from "../lib/catalog.js";
 import { randomBytes } from "node:crypto";
 
 const bodySchema = z.looseObject({
@@ -73,76 +74,46 @@ function newRequestId(): string {
 }
 
 export async function chatRoutes(app: FastifyInstance) {
-  // ── OpenAI-compatible model listing (Official Pro Router 5 Text Models) ──
-  const PRO_MODELS_DATA = [
-    {
-      id: "pr-echo",
-      name: "Pro Router Echo",
-      object: "model",
-      created: 1710000000,
-      owned_by: "prorouter",
-      tier: "Starter",
-      description: "A basic, affordable text-to-text model for everyday questions, short answers, summaries, and simple chat.",
-      pricing: { input_usd_per_million: 0.20, output_usd_per_million: 0.80 },
-    },
-    {
-      id: "pr-swift",
-      name: "Pro Router Swift",
-      object: "model",
-      created: 1710000000,
-      owned_by: "prorouter",
-      tier: "Fast",
-      description: "Designed for quick responses, customer support, chatbots, and high-volume applications.",
-      pricing: { input_usd_per_million: 0.30, output_usd_per_million: 1.20 },
-    },
-    {
-      id: "pr-nova",
-      name: "Pro Router Nova",
-      object: "model",
-      created: 1710000000,
-      owned_by: "prorouter",
-      tier: "Chat",
-      description: "Your general-purpose premium model for detailed answers, writing, reasoning, and everyday development assistance.",
-      pricing: { input_usd_per_million: 0.50, output_usd_per_million: 2.00 },
-    },
-    {
-      id: "pr-aura",
-      name: "Pro Router Aura",
-      object: "model",
-      created: 1710000000,
-      owned_by: "prorouter",
-      tier: "Writing",
-      description: "Positioned for more advanced reasoning, long-form content, complex instructions, and coding assistance, depending on the configured backend.",
-      pricing: { input_usd_per_million: 0.75, output_usd_per_million: 3.00 },
-    },
-    {
-      id: "pr-zenith",
-      name: "Pro Router Zenith",
-      object: "model",
-      created: 1710000000,
-      owned_by: "prorouter",
-      tier: "Flagship",
-      description: "Your flagship tier for the most demanding text tasks, complex analysis, and coding workflows supported by your chosen backend.",
-      pricing: { input_usd_per_million: 1.00, output_usd_per_million: 4.00 },
-    },
-  ];
-
+  // ── OpenAI-compatible model discovery ───────────────────────────────
+  // Do not return a hard-coded five-model list here: coding clients call this
+  // endpoint to populate their model selector. Returning an incomplete list
+  // made configured models appear unavailable, while the old detail endpoint
+  // misleadingly returned Pro Router Nova for every unknown model ID.
   app.get("/v1/models", async (_request, reply) => {
+    const catalog = await listModels({ limit: 200, sort: "popularity" });
+    const data = catalog.items.map((model) => ({
+      id: model.slug,
+      object: "model" as const,
+      created: Math.floor(new Date(model.createdAt).getTime() / 1000) || Math.floor(Date.now() / 1000),
+      owned_by: model.providerSlug || "prorouter",
+    }));
     reply.header("Access-Control-Allow-Origin", "*");
-    return {
-      object: "list",
-      data: PRO_MODELS_DATA,
-    };
+    return reply.send({ object: "list", data });
   });
 
   app.get("/v1/models/:id", async (request, reply) => {
-    reply.header("Access-Control-Allow-Origin", "*");
     const { id } = request.params as { id: string };
-    const clean = id.toLowerCase().trim();
-    const found = PRO_MODELS_DATA.find((m) => m.id === clean || clean.includes(m.id.replace("pr-", ""))) || PRO_MODELS_DATA[2];
+    let detail = await getModelDetail(id);
+    if (!detail) {
+      const resolved = await resolveModelInput(id);
+      detail = await getModelDetail(resolved.slug);
+    }
+    if (!detail) {
+      return reply.code(404).send({
+        error: { message: `The model '${id}' does not exist or is not configured.`, type: "invalid_request_error", code: "model_not_found" },
+      });
+    }
+    const model = detail.model;
+    reply.header("Access-Control-Allow-Origin", "*");
     return reply.send({
-      ...found,
-      id: clean || found.id,
+      id: model.slug,
+      object: "model",
+      created: Math.floor(new Date(model.createdAt).getTime() / 1000) || Math.floor(Date.now() / 1000),
+      owned_by: model.providerSlug || "prorouter",
+      name: model.name,
+      context_window: model.contextWindow,
+      max_output_tokens: model.maxOutputTokens,
+      capabilities: model.capabilities,
     });
   });
 
@@ -203,6 +174,9 @@ export async function chatRoutes(app: FastifyInstance) {
       reasoning: Boolean(ctx.caps?.reasoning),
     });
     if (candidates.length === 0) {
+      if (body.tools?.length) {
+        throw new ApiError("provider_unavailable", `No configured upstream provider for '${ctx.model.name}' is marked as supporting native tool calls. Configure a tool-capable provider/model binding; this request will not be downgraded to text-only chat.`);
+      }
       throw new ApiError("provider_unavailable", `No providers are configured for '${ctx.model.name}'.`);
     }
 
@@ -508,6 +482,11 @@ export async function chatRoutes(app: FastifyInstance) {
       let hasSeenToolCalls = false;
       let providerSlug = decision.primary.providerSlug;
       let outcomeProviderId: string | null = null;
+      // Keep long reasoning/tool-planning streams alive while the provider is
+      // thinking. SSE comments are protocol-safe and are ignored by clients.
+      const heartbeatTimer = setInterval(() => {
+        if (!res.destroyed && !res.writableEnded) res.write(": keep-alive\n\n");
+      }, 15_000);
 
       try {
         const outcome = await (async () => {
@@ -554,6 +533,7 @@ export async function chatRoutes(app: FastifyInstance) {
             }
           }
         })();
+        clearInterval(heartbeatTimer);
         providerSlug = outcome.providerSlug;
         outcomeProviderId = outcome.providerId;
         usage = outcome.usage;
@@ -566,6 +546,7 @@ export async function chatRoutes(app: FastifyInstance) {
           await db.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
       } catch (err) {
+        clearInterval(heartbeatTimer);
         const aborted = request.signal.aborted;
         const message = aborted
           ? "Client disconnected"

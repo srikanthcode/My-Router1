@@ -33,18 +33,33 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
   }
 
   protected buildBody(params: AdapterChatParams): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      model: params.model,
-      messages: params.messages satisfies ChatMessage[],
-      stream: params.stream,
-    };
-    if (params.stream) {
-      body.stream_options = (params.raw as any)?.stream_options ?? { include_usage: true };
-    }
+    // Start from the client's original request. Rebuilding a reduced payload here
+    // used to silently discard fields used by coding clients/providers (for
+    // example max_completion_tokens, reasoning_effort, presence_penalty,
+    // frequency_penalty, logprobs, n, metadata and provider-specific options).
+    // Preserve unknown fields and only replace the fields that this adapter
+    // intentionally normalizes.
+    const raw = params.raw as (Record<string, unknown> | undefined);
+    const body: Record<string, unknown> = raw ? { ...raw } : {};
+
+    body.model = params.model;
+    body.messages = params.messages satisfies ChatMessage[];
+    body.stream = params.stream;
+
+    // Preserve stream_options only when the client explicitly supplied it.
+    // Injecting include_usage by default is not universally supported by
+    // OpenAI-compatible gateways and makes a proxy request differ from the
+    // same request sent directly to the provider.
     if (params.temperature !== undefined) body.temperature = params.temperature;
     if (params.topP !== undefined) body.top_p = params.topP;
-    if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;
-    if (params.stop !== undefined) body.stop = params.stop;
+    // Do not turn max_completion_tokens into max_tokens. Several current
+    // OpenAI-compatible models accept only the former; preserve the exact
+    // parameter supplied by the client. For callers using the legacy field,
+    // keep max_tokens as-is.
+    if (raw?.max_completion_tokens === undefined && raw?.max_tokens === undefined && params.maxTokens !== undefined) {
+      body.max_tokens = params.maxTokens;
+    }
+    if (params.stop !== undefined && raw?.stop === undefined) body.stop = params.stop;
     if (params.tools !== undefined) body.tools = params.tools;
     if (params.toolChoice !== undefined) body.tool_choice = params.toolChoice;
     if (params.parallelToolCalls !== undefined) body.parallel_tool_calls = params.parallelToolCalls;

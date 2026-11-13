@@ -22,6 +22,53 @@ afterEach(() => {
 });
 
 describe("OpenAI-compatible adapter contract", () => {
+  it("preserves the original client payload instead of dropping provider-specific fields", async () => {
+    let sentBody: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      sentBody = JSON.parse(String(init?.body));
+      return jsonResponse({ choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }] });
+    }));
+    const adapter = new OpenAICompatibleAdapter({ providerSlug: "tokenjuice", endpointUrl: "https://example.test/v1", apiKey: "k" });
+    await adapter.chat({
+      model: "upstream-model",
+      messages: [{ role: "user", content: "inspect project" }],
+      stream: false,
+      maxTokens: 4096,
+      tools: [{ type: "function", function: { name: "list_files", parameters: { type: "object", properties: {} } } }],
+      raw: {
+        model: "public-model",
+        messages: [{ role: "user", content: "inspect project" }],
+        stream: false,
+        max_completion_tokens: 4096,
+        reasoning_effort: "high",
+        presence_penalty: 0.2,
+        frequency_penalty: 0.1,
+        metadata: { client: "coding-agent" },
+        tools: [{ type: "function", function: { name: "list_files", parameters: { type: "object", properties: {} } } }],
+      } as never,
+    });
+    expect(sentBody?.model).toBe("upstream-model");
+    expect(sentBody?.max_completion_tokens).toBe(4096);
+    expect(sentBody?.max_tokens).toBeUndefined();
+    expect(sentBody?.reasoning_effort).toBe("high");
+    expect(sentBody?.presence_penalty).toBe(0.2);
+    expect(sentBody?.frequency_penalty).toBe(0.1);
+    expect(sentBody?.metadata).toEqual({ client: "coding-agent" });
+    expect(sentBody?.tools).toBeDefined();
+  });
+
+  it("does not inject stream_options when the client did not request them", async () => {
+    let sentBody: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      sentBody = JSON.parse(String(init?.body));
+      return new Response(sseStream(["data: [DONE]\n\n"]), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }));
+    const adapter = new OpenAICompatibleAdapter({ providerSlug: "tokenjuice", endpointUrl: "https://example.test/v1", apiKey: "k" });
+    for await (const _event of adapter.chatStream({ model: "m", messages: [{ role: "user", content: "hi" }], stream: true })) { /* drain */ }
+    expect(sentBody?.stream).toBe(true);
+    expect(sentBody?.stream_options).toBeUndefined();
+  });
+
   it("normalizes non-streaming tool calls and upstream usage", async () => {
     vi.stubGlobal("fetch", vi.fn(async () =>
       jsonResponse({

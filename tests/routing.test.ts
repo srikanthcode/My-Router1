@@ -41,6 +41,27 @@ describe("routing engine (§11)", () => {
     expect(decision?.fallbackChain).toHaveLength(0);
   });
 
+  it("never routes a tool-enabled request to a provider without native tool-call capability", () => {
+    const chatOnly = cand({ providerSlug: "chat-only", capabilities: ["chat", "reasoning"], providerPriority: 1 });
+    const toolCapable = cand({ providerSlug: "tool-capable", capabilities: ["chat", "tool_calls"], providerPriority: 50 });
+    const decision = routeRequest([chatOnly, toolCapable], {
+      planSlug: "free",
+      fallbackEnabled: true,
+      requiresTools: true,
+    });
+    expect(decision?.primary.providerSlug).toBe("tool-capable");
+    expect(decision?.fallbackChain.map((candidate) => candidate.providerSlug)).toEqual([]);
+  });
+
+  it("returns null rather than silently using a text-only provider for tool requests", () => {
+    const chatOnly = cand({ capabilities: ["chat", "reasoning"] });
+    expect(routeRequest([chatOnly], {
+      planSlug: "free",
+      fallbackEnabled: true,
+      requiresTools: true,
+    })).toBeNull();
+  });
+
   it("returns null when no candidate is usable", () => {
     const bad = cand({ providerStatus: "unknown", health: null });
     expect(routeRequest([bad], { planSlug: "free", fallbackEnabled: true })).toBeNull();

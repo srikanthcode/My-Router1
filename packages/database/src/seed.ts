@@ -175,6 +175,19 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     await upsert(providers, { ...p, status: "unknown" }, providers.slug);
   }
 
+  // Provider rows may predate the capability registry. `upsert` intentionally
+  // avoids overwriting administrator-managed provider settings, so make this
+  // one critical, documented invariant explicit: TokenJuice is configured as
+  // the native tool-call gateway used by coding-agent clients.
+  const tokenJuiceProviderRows = await db.select().from(providers).where(eq(providers.slug, "prorouter-gateway"));
+  const tokenJuiceProvider = tokenJuiceProviderRows[0];
+  if (tokenJuiceProvider && !tokenJuiceProvider.capabilities.includes("tool_calls")) {
+    await db.update(providers).set({
+      capabilities: [...tokenJuiceProvider.capabilities, "tool_calls"],
+      updatedAt: new Date(),
+    }).where(eq(providers.id, tokenJuiceProvider.id));
+  }
+
   for (const slug of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh"]) {
     await db
       .update(providers)

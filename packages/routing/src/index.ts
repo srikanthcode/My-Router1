@@ -42,6 +42,8 @@ export interface RouteCandidate {
   inputPerMillion: number;
   outputPerMillion: number;
   isFree: boolean;
+  /** Provider-level capabilities copied from the provider registry. */
+  capabilities?: string[];
 }
 
 export interface RouteOptions {
@@ -53,6 +55,8 @@ export interface RouteOptions {
   maxInputCostPerMillion?: number;
   /** Prefer free candidates (user has free quota available). */
   preferFree?: boolean;
+  /** Exclude provider candidates that cannot perform native function/tool calls. */
+  requiresTools?: boolean;
 }
 
 export interface RouteScore {
@@ -134,7 +138,9 @@ export function routeRequest(candidates: RouteCandidate[], opts: RouteOptions): 
   const trace: string[] = [];
   trace.push(`candidates=${candidates.length}`);
 
-  const usable = candidates.filter(isUsable);
+  const usable = candidates.filter((candidate) =>
+    isUsable(candidate) && (!opts.requiresTools || candidate.capabilities?.includes("tool_calls") === true),
+  );
   trace.push(`usable=${usable.length}`);
   if (usable.length === 0) return null;
 

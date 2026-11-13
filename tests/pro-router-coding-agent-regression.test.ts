@@ -114,3 +114,4 @@ describe("Coding Agent Protocol & SSE Stream Regression Suite", () => {
     expect(toolResultMsg.content).toContain("const a = 1; // bug here");
   });
 });
+
