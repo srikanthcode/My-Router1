@@ -42,10 +42,11 @@ export const DEFAULT_MAX_APPROVED_MARGIN = 0.85; // 85% ceiling
 /**
  * Exchange rate configuration.
  * Market exchange rate reflects true currency conversion.
- * Display policy rate (e.g. ₹80/USD) is distinct and admin-configurable.
+ * Display policy rate is the single billing/display default used everywhere.
  */
 export const DEFAULT_USD_TO_INR_MARKET_RATE = 88.0;
-export const DEFAULT_USD_TO_INR_DISPLAY_RATE = 80.0;
+export const DEFAULT_USD_TO_INR_DISPLAY_RATE = 97.0;
+export const DEFAULT_USD_TO_INR_RATE = DEFAULT_USD_TO_INR_DISPLAY_RATE;
 
 export interface TokenPriceCalculation {
   upstreamCostUsdPer1M: number;

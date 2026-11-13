@@ -38,7 +38,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       messages: params.messages satisfies ChatMessage[],
       stream: params.stream,
     };
-    if (params.stream) body.stream_options = { include_usage: true };
+    if (params.stream) {
+      body.stream_options = (params.raw as any)?.stream_options ?? { include_usage: true };
+    }
     if (params.temperature !== undefined) body.temperature = params.temperature;
     if (params.topP !== undefined) body.top_p = params.topP;
     if (params.maxTokens !== undefined) body.max_tokens = params.maxTokens;

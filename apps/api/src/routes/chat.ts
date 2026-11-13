@@ -20,6 +20,7 @@ const bodySchema = z.looseObject({
   model: z.string().min(1),
   messages: z.array(z.looseObject({ role: z.string() })).min(1).max(500),
   stream: z.boolean().optional(),
+  stream_options: z.unknown().optional(),
   temperature: z.number().min(0).max(2).optional(),
   top_p: z.number().min(0).max(1).optional(),
   max_tokens: z.number().int().positive().optional(),
@@ -30,6 +31,13 @@ const bodySchema = z.looseObject({
   parallel_tool_calls: z.boolean().optional(),
   response_format: z.unknown().optional(),
   seed: z.number().optional(),
+  user: z.string().optional(),
+  frequency_penalty: z.number().optional(),
+  presence_penalty: z.number().optional(),
+  logit_bias: z.unknown().optional(),
+  logprobs: z.boolean().optional(),
+  top_logprobs: z.number().int().optional(),
+  n: z.number().int().positive().optional(),
 });
 
 interface PlanInfo {
@@ -419,6 +427,16 @@ export async function chatRoutes(app: FastifyInstance) {
         const cost = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: result.providerId, providerSlug: result.providerSlug, ttftMs: null });
         reply.header("x-prorouter-usage-source", result.usageSource);
         const created = Math.floor(Date.now() / 1000);
+        const hasToolCalls = result.toolCalls.length > 0;
+        // Normalize finish_reason: if upstream said "stop" but tool calls present, correct it
+        const normalizedFinishReason = (result.finishReason === "stop" && hasToolCalls)
+          ? "tool_calls"
+          : result.finishReason;
+        const sanitizedContent = (() => {
+          const profile = ModelProfileRegistry.get(slug);
+          const base = sanitizeModelOutput(result.content, ctx.model.name);
+          return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+        })();
         return reply.send({
           id: requestId,
           object: "chat.completion",
@@ -426,12 +444,12 @@ export async function chatRoutes(app: FastifyInstance) {
           model: body.model || slug,
           choices: [{
             index: 0, message: {
-              role: "assistant", content: (() => {
-                const profile = ModelProfileRegistry.get(slug);
-                const base = sanitizeModelOutput(result.content, ctx.model.name);
-                return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
-              })(), tool_calls: result.toolCalls.length ? result.toolCalls : undefined
-            }, finish_reason: result.finishReason
+              role: "assistant",
+              // When tool calls are present and content is empty, set content to null
+              // (not "") to match OpenAI spec — agents check for null to detect pure tool responses
+              content: hasToolCalls && !sanitizedContent ? null : sanitizedContent,
+              tool_calls: hasToolCalls ? result.toolCalls : undefined,
+            }, finish_reason: normalizedFinishReason
           }],
           usage: result.usage,
           uno: {
@@ -480,12 +498,15 @@ export async function chatRoutes(app: FastifyInstance) {
         write({ uno_queue: { model: slug, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready — starting response" } });
       }
 
-      write(oaiChunk({ role: "assistant", content: "" }));
+      // ⚠️ Do NOT emit content:"" here — it locks coding-agent parsers (Cline, Claude Code, Kilo Code)
+      // into text-only mode before any tool_calls arrive. Only emit role announcement.
+      write(oaiChunk({ role: "assistant" }));
       let usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
       let usageSource: UsageSource = "none";
       let ttftMs: number | null = null;
       let contentSoFar = "";
       let finishReason = "stop";
+      let hasSeenToolCalls = false;
       let providerSlug = decision.primary.providerSlug;
       let outcomeProviderId: string | null = null;
 
@@ -511,12 +532,26 @@ export async function chatRoutes(app: FastifyInstance) {
                 write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug, choices: [], uno_reasoning: sanitizedReasoning });
               }
             } else if (ev.type === "tool_call_delta") {
-              write(oaiChunk({ tool_calls: [{ index: ev.index, id: ev.id, type: "function", function: { name: ev.name, arguments: ev.arguments ?? "" } }] }));
+              if (ttftMs === null) ttftMs = Date.now() - startedAt;
+              // Build tool_call delta preserving exact OpenAI SSE schema.
+              // Only include fields that are actually present so agents can
+              // distinguish name-initialization chunks from argument chunks.
+              const tcFunc: Record<string, string> = {};
+              if (ev.name !== undefined) tcFunc.name = ev.name;
+              if (ev.arguments !== undefined) tcFunc.arguments = ev.arguments;
+              const tcEntry: Record<string, unknown> = { index: ev.index, type: "function", function: tcFunc };
+              if (ev.id !== undefined) tcEntry.id = ev.id;
+              write(oaiChunk({ tool_calls: [tcEntry] }));
+              hasSeenToolCalls = true;
             } else if (ev.type === "usage") {
               usage = ev.usage;
               usageSource = ev.usageSource;
             } else if (ev.type === "done") {
-              finishReason = ev.finishReason;
+              // Normalize finish_reason: if the upstream model said "stop" but
+              // tool call deltas were streamed, the actual reason is "tool_calls".
+              finishReason = (ev.finishReason === "stop" && hasSeenToolCalls)
+                ? "tool_calls"
+                : ev.finishReason;
             }
           }
         })();
@@ -524,7 +559,10 @@ export async function chatRoutes(app: FastifyInstance) {
         outcomeProviderId = outcome.providerId;
         usage = outcome.usage;
         usageSource = outcome.usageSource;
-        finishReason = outcome.finishReason;
+        // Final normalize: upstream may report "stop" even after tool calls
+        finishReason = (outcome.finishReason === "stop" && hasSeenToolCalls)
+          ? "tool_calls"
+          : outcome.finishReason;
         for (const [i, a] of outcome.attempts.entries()) {
           await db.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
@@ -581,6 +619,22 @@ export async function chatRoutes(app: FastifyInstance) {
       }
       if (acquired) releaseSlot(acquiredKey, slotServiceStart ? Date.now() - slotServiceStart : 0);
     }
+  });
+
+  // ── Bare /chat/completions (without /v1 prefix) for Claude Code and Cursor compatibility ──
+  app.post("/chat/completions", async (request, reply) => {
+    return app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: request.headers as Record<string, string>,
+      payload: request.body as Record<string, unknown>,
+    }).then((res) => {
+      reply.code(res.statusCode);
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (v !== undefined) reply.header(k, v as string);
+      }
+      return reply.send(res.rawPayload);
+    });
   });
 }
 

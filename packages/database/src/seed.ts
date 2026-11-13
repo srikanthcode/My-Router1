@@ -52,7 +52,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
 
   // ── System settings (§68) ───────────────────────────────────────────────
   const settings: Array<{ key: string; value: unknown; description: string }> = [
-    { key: "USD_TO_INR_RATE", value: Number(env.isProd ? 97 : process.env.USD_TO_INR_RATE || 80), description: "INR per 1 USD (admin display policy rate)" },
+    { key: "USD_TO_INR_RATE", value: Number(process.env.USD_TO_INR_RATE || 97), description: "INR per 1 USD (admin display policy rate)" },
     { key: "USD_TO_INR_MARKET_RATE", value: 88, description: "True market INR per 1 USD exchange rate" },
     { key: "OPERATIONAL_RESERVE_PERCENT", value: 10, description: "Pricing engine operational reserve percentage" },
     { key: "TARGET_GROSS_MARGIN_PERCENT", value: 30, description: "Pricing engine target gross margin percentage" },

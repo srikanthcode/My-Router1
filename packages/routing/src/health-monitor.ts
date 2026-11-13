@@ -18,7 +18,7 @@ export class ProviderHealthMonitor {
   private static healthMap = new Map<string, HealthRecord>();
 
   private static getOrCreate(backendId: string, provider: string): HealthRecord {
-    const key = `${provider}:${backendId}`;
+    const key = backendId;
     let record = this.healthMap.get(key);
     if (!record) {
       record = {
@@ -38,9 +38,7 @@ export class ProviderHealthMonitor {
   }
 
   public static isAvailable(backendIdOrProvider: string, maybeProvider?: string): boolean {
-    const provider = maybeProvider || backendIdOrProvider;
-    const backendId = maybeProvider ? backendIdOrProvider : provider;
-    const key = `${provider}:${backendId}`;
+    const key = backendIdOrProvider;
     const record = this.healthMap.get(key);
     if (!record) return true;
     if (record.cooldownUntil > Date.now()) {
