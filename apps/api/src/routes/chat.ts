@@ -517,7 +517,7 @@ export async function chatRoutes(app: FastifyInstance) {
             if (step.done) return step.value;
             const ev = step.value;
             if (ev.type === "start") {
-              write({ uno_start: { provider: decision.primary.providerSlug } });
+              // Standard initial connection event
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
               const profile = ModelProfileRegistry.get(slug);
@@ -528,7 +528,7 @@ export async function chatRoutes(app: FastifyInstance) {
             } else if (ev.type === "reasoning_delta") {
               if (ctx.caps?.reasoning) {
                 const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
-                write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug, choices: [], uno_reasoning: sanitizedReasoning });
+                write(oaiChunk({ reasoning_content: sanitizedReasoning }));
               }
             } else if (ev.type === "tool_call_delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
