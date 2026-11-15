@@ -5705,6 +5705,10 @@ async function* parseSse(body) {
 }
 
 // packages/providers/src/openai.ts
+function cleanSpecialTokens(text7) {
+  if (!text7) return text7;
+  return text7.replace(/<\/?(?:｜|\|)[^>]*>/g, "").replace(/<[｜|][\s\S]*?[｜|]>/g, "");
+}
 var OpenAICompatibleAdapter = class {
   type = "openai";
   providerSlug;
@@ -5778,7 +5782,14 @@ var OpenAICompatibleAdapter = class {
       const json = await res.json();
       const choice = json.choices?.[0];
       const content = choice?.message?.content ?? "";
-      const toolCalls = choice?.message?.tool_calls ?? [];
+      const rawToolCalls = choice?.message?.tool_calls ?? [];
+      const toolCalls = rawToolCalls.map((tc) => ({
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments: tc.function?.arguments ? cleanSpecialTokens(tc.function.arguments) : tc.function?.arguments
+        }
+      }));
       const usage = json.usage ?? estimateUsage({ messages: params.messages, completion: content });
       const usageSource = json.usage ? "upstream" : "estimated";
       return {
@@ -5839,7 +5850,9 @@ var OpenAICompatibleAdapter = class {
         if (reasoning) yield { type: "reasoning_delta", text: reasoning };
         if (delta?.content) yield { type: "delta", text: delta.content };
         for (const tc of delta?.tool_calls ?? []) {
-          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments };
+          const rawArgs = tc.function?.arguments;
+          const cleanedArgs = rawArgs !== void 0 ? cleanSpecialTokens(rawArgs) : void 0;
+          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: cleanedArgs };
         }
       }
       if (usage) yield { type: "usage", usage, usageSource: "upstream" };
@@ -7351,18 +7364,25 @@ async function chatRoutes(app) {
         model: body.model || slug2,
         choices: [{ index: 0, delta, finish_reason: finish }]
       });
+      const emitQueueEvents = !body.tools?.length && !auth.apiKey;
       if (isFree) {
         const status = probeQueue(slug2, plan.queuePriority);
-        write({ uno_queue: { model: slug2, ...status, message: status.ready ? "Ready \u2014 instant response" : "Provider capacity limited" } });
+        if (emitQueueEvents) {
+          write({ uno_queue: { model: slug2, ...status, message: status.ready ? "Ready \u2014 instant response" : "Provider capacity limited" } });
+        }
         const concurrency = ctx.limits?.concurrency ?? plan.concurrency;
         const slot = await acquireSlot(slug2, concurrency, plan.queuePriority, (s) => {
-          write({ uno_queue: { model: slug2, ...s, message: s.ready ? "Ready \u2014 instant response" : "Provider capacity limited" } });
+          if (emitQueueEvents) {
+            write({ uno_queue: { model: slug2, ...s, message: s.ready ? "Ready \u2014 instant response" : "Provider capacity limited" } });
+          }
         });
         acquired = true;
         acquiredKey = slug2;
         queueWaitMs = slot.queueWaitMs;
         slotServiceStart = Date.now();
-        write({ uno_queue: { model: slug2, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready \u2014 starting response" } });
+        if (emitQueueEvents) {
+          write({ uno_queue: { model: slug2, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready \u2014 starting response" } });
+        }
       }
       write(oaiChunk({ role: "assistant" }));
       let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
@@ -7401,8 +7421,11 @@ async function chatRoutes(app) {
               const tcFunc = {};
               if (ev.name !== void 0) tcFunc.name = ev.name;
               if (ev.arguments !== void 0) tcFunc.arguments = ev.arguments;
-              const tcEntry = { index: ev.index, type: "function", function: tcFunc };
-              if (ev.id !== void 0) tcEntry.id = ev.id;
+              const tcEntry = { index: ev.index, function: tcFunc };
+              if (ev.id !== void 0) {
+                tcEntry.id = ev.id;
+                tcEntry.type = "function";
+              }
               write(oaiChunk({ tool_calls: [tcEntry] }));
               hasSeenToolCalls = true;
             } else if (ev.type === "usage") {

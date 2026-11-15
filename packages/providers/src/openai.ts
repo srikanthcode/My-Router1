@@ -11,6 +11,14 @@ import {
   parseSse,
 } from "./adapter.js";
 
+/** Removes residual upstream markup tags (such as DeepSeek DSML tokens) from tool arguments */
+export function cleanSpecialTokens(text: string): string {
+  if (!text) return text;
+  return text
+    .replace(/<\/?(?:｜|\|)[^>]*>/g, "")
+    .replace(/<[｜|][\s\S]*?[｜|]>/g, "");
+}
+
 /** OpenAI-compatible adapter — works for OpenAI, Groq, Mistral, Ollama, OpenRouter, etc. */
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   readonly type: string = "openai";
@@ -113,7 +121,14 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       };
       const choice = json.choices?.[0];
       const content = choice?.message?.content ?? "";
-      const toolCalls = choice?.message?.tool_calls ?? [];
+      const rawToolCalls = choice?.message?.tool_calls ?? [];
+      const toolCalls = rawToolCalls.map((tc) => ({
+        ...tc,
+        function: {
+          ...tc.function,
+          arguments: tc.function?.arguments ? cleanSpecialTokens(tc.function.arguments) : tc.function?.arguments,
+        },
+      }));
       const usage = json.usage ?? estimateUsage({ messages: params.messages, completion: content });
       const usageSource: UsageSource = json.usage ? "upstream" : "estimated";
       return {
@@ -185,7 +200,9 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         if (reasoning) yield { type: "reasoning_delta", text: reasoning };
         if (delta?.content) yield { type: "delta", text: delta.content };
         for (const tc of delta?.tool_calls ?? []) {
-          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments };
+          const rawArgs = tc.function?.arguments;
+          const cleanedArgs = rawArgs !== undefined ? cleanSpecialTokens(rawArgs) : undefined;
+          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: cleanedArgs };
         }
       }
       if (usage) yield { type: "usage", usage, usageSource: "upstream" };

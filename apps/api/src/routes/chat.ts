@@ -460,19 +460,28 @@ export async function chatRoutes(app: FastifyInstance) {
         choices: [{ index: 0, delta, finish_reason: finish }],
       });
 
-      // Real queue status events (§59) — positions come from actual queue state.
+      // Real queue status events (§59) — only emit non-standard uno_queue JSON
+      // chunks when calling from the web dashboard without client API keys or tools.
+      // Emitting non-standard chunks into coding agent tool streams breaks client SSE parsers.
+      const emitQueueEvents = !body.tools?.length && !auth.apiKey;
       if (isFree) {
         const status = probeQueue(slug, plan.queuePriority);
-        write({ uno_queue: { model: slug, ...status, message: status.ready ? "Ready — instant response" : "Provider capacity limited" } });
+        if (emitQueueEvents) {
+          write({ uno_queue: { model: slug, ...status, message: status.ready ? "Ready — instant response" : "Provider capacity limited" } });
+        }
         const concurrency = ctx.limits?.concurrency ?? plan.concurrency;
         const slot = await acquireSlot(slug, concurrency, plan.queuePriority, (s: QueueStatus) => {
-          write({ uno_queue: { model: slug, ...s, message: s.ready ? "Ready — instant response" : "Provider capacity limited" } });
+          if (emitQueueEvents) {
+            write({ uno_queue: { model: slug, ...s, message: s.ready ? "Ready — instant response" : "Provider capacity limited" } });
+          }
         });
         acquired = true;
         acquiredKey = slug;
         queueWaitMs = slot.queueWaitMs;
         slotServiceStart = Date.now();
-        write({ uno_queue: { model: slug, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready — starting response" } });
+        if (emitQueueEvents) {
+          write({ uno_queue: { model: slug, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready — starting response" } });
+        }
       }
 
       // ⚠️ Do NOT emit content:"" here — it locks coding-agent parsers (Cline, Claude Code, Kilo Code)
@@ -521,8 +530,11 @@ export async function chatRoutes(app: FastifyInstance) {
               const tcFunc: Record<string, string> = {};
               if (ev.name !== undefined) tcFunc.name = ev.name;
               if (ev.arguments !== undefined) tcFunc.arguments = ev.arguments;
-              const tcEntry: Record<string, unknown> = { index: ev.index, type: "function", function: tcFunc };
-              if (ev.id !== undefined) tcEntry.id = ev.id;
+              const tcEntry: Record<string, unknown> = { index: ev.index, function: tcFunc };
+              if (ev.id !== undefined) {
+                tcEntry.id = ev.id;
+                tcEntry.type = "function";
+              }
               write(oaiChunk({ tool_calls: [tcEntry] }));
               hasSeenToolCalls = true;
             } else if (ev.type === "usage") {
