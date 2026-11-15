@@ -135,6 +135,9 @@ export async function chatRoutes(app: FastifyInstance) {
     if (resolved.auto) {
       const hints = extractHints(messages);
       hints.preferFree = true;
+      if (body.tools && body.tools.length > 0) {
+        hints.wantsCoding = true;
+      }
       const autoSlug = await resolveAutoModel(hints);
       if (!autoSlug) throw new ApiError("provider_unavailable", "No models are currently available for auto routing.");
       slug = autoSlug;

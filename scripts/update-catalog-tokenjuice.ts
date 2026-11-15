@@ -13,9 +13,19 @@ import {
 } from "@pro/database";
 import { encryptSecret } from "@pro/shared";
 
-const TOKENJUICE_BASE_URL = "https://api.tokenjuice.ai/v1";
-const TOKENJUICE_API_KEY = "tj_m0sow5S81J10HmZLkIC-lPXWmIl8ojnREQ9Mo_Xd3ts";
-const UPSTREAM_MODEL_ID = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
+const TOKENJUICE_BASE_URL = process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL || "https://api.tokenjuice.ai/v1";
+const rawKeys = process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY || process.env.PROROUTER_GATEWAY_KEYS || "";
+const tokenJuiceKeys = rawKeys
+  .split(/[\s,;\n]+/)
+  .map((k) => k.trim())
+  .filter(Boolean);
+
+if (tokenJuiceKeys.length === 0) {
+  console.error("[update-catalog] ERROR: PROVIDER_PROROUTER_GATEWAY_API_KEY environment variable is required.");
+  process.exit(1);
+}
+
+const UPSTREAM_MODEL_ID = process.env.PROVIDER_PROROUTER_GATEWAY_MODEL || "deepseek-ai/DeepSeek-V4.1-Flash-1017";
 
 console.log("[update-catalog] Connecting to DB...");
 const db = (await getDb()) as Database;
@@ -42,24 +52,31 @@ if (!gatewayId) {
   await db.update(providers).set({
     endpointUrl: TOKENJUICE_BASE_URL,
     status: "active",
+    capabilities: Array.from(new Set([...(provRows[0]?.capabilities || []), "tool_calls", "chat"])),
   }).where(eq(providers.id, gatewayId));
   console.log("[update-catalog] Updated prorouter-gateway provider URL:", TOKENJUICE_BASE_URL);
 }
 
-// 2. Encrypt and store API key
-const enc = encryptSecret(TOKENJUICE_API_KEY);
-await db.insert(providerCredentials).values({
-  providerId: gatewayId,
-  keyName: "default",
-  ciphertext: enc.ciphertext,
-  iv: enc.iv,
-  authTag: enc.authTag,
-  active: true,
-}).onConflictDoUpdate({
-  target: [providerCredentials.providerId, providerCredentials.keyName],
-  set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true },
-});
-console.log("[update-catalog] Stored encrypted API key for prorouter-gateway");
+// 2. Encrypt and store API keys from environment
+await db.update(providerCredentials).set({ active: false }).where(eq(providerCredentials.providerId, gatewayId));
+
+for (let i = 0; i < tokenJuiceKeys.length; i++) {
+  const key = tokenJuiceKeys[i]!;
+  const keyName = i === 0 ? "default" : `pool_${i}`;
+  const enc = encryptSecret(key);
+  await db.insert(providerCredentials).values({
+    providerId: gatewayId,
+    keyName,
+    ciphertext: enc.ciphertext,
+    iv: enc.iv,
+    authTag: enc.authTag,
+    active: true,
+  }).onConflictDoUpdate({
+    target: [providerCredentials.providerId, providerCredentials.keyName],
+    set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true },
+  });
+}
+console.log(`[update-catalog] Stored ${tokenJuiceKeys.length} encrypted API key(s) for prorouter-gateway`);
 
 // 3. Define the full set of models requested by the user
 const modelsToSeed = [

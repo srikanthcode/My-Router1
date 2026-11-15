@@ -521,11 +521,24 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
     throw new ProviderError(candidate.providerSlug, "no_credential", "No API key configured for this provider.", 503);
   }
 
+  let endpointUrl = provider.endpointUrl;
+  let timeoutMs = candidate.timeoutMs;
+
+  if (candidate.providerSlug === "prorouter-gateway") {
+    if (process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL) {
+      endpointUrl = process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL;
+    }
+    const envTimeout = Number(process.env.PROVIDER_PROROUTER_GATEWAY_TIMEOUT_MS);
+    if (!Number.isNaN(envTimeout) && envTimeout > 0) {
+      timeoutMs = Math.max(timeoutMs, envTimeout);
+    }
+  }
+
   return createAdapter(provider.adapterType, {
     providerSlug: candidate.providerSlug,
-    endpointUrl: provider.endpointUrl,
+    endpointUrl,
     apiKey,
-    timeoutMs: candidate.timeoutMs,
+    timeoutMs,
   });
 }
 
