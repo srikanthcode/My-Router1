@@ -422,6 +422,40 @@ export function generateProfiles(): FrontendModelProfile[] {
     benchmarks?: ModelBenchmarkScore[];
   }> = [
     {
+      id: "gpt-4.1",
+      canonicalId: "gpt-4.1",
+      name: "GPT-4.1",
+      cat: "coding",
+      primary: "openai/gpt-4.1",
+      sec: "openrouter/openai/gpt-4.1",
+      desc: "OpenAI GPT-4.1 — flagship coding agent model with state-of-the-art native tool calling and reasoning.",
+      context: 128000,
+      maxOut: 16384,
+      upstreamIn: 2.50,
+      upstreamOut: 10.00,
+      benchmarks: [
+        { name: "SWE-bench", score: 53.7, source: "OpenAI Evaluation", evaluationDate: "2024-11-01" },
+        { name: "HumanEval", score: 90.2, source: "OpenAI Benchmark", evaluationDate: "2024-11-01" },
+      ],
+    },
+    {
+      id: "gpt-4o",
+      canonicalId: "gpt-4o",
+      name: "GPT-4o",
+      cat: "coding",
+      primary: "openai/gpt-4o",
+      sec: "openrouter/openai/gpt-4o",
+      desc: "OpenAI GPT-4o — versatile multimodal flagship model for coding, tool execution, and complex reasoning.",
+      context: 128000,
+      maxOut: 16384,
+      upstreamIn: 2.50,
+      upstreamOut: 10.00,
+      benchmarks: [
+        { name: "MMLU", score: 88.7, source: "OpenAI Benchmark", evaluationDate: "2024-05-13" },
+        { name: "HumanEval", score: 90.2, source: "OpenAI Benchmark", evaluationDate: "2024-05-13" },
+      ],
+    },
+    {
       id: "deepseek-v4.1-flash",
       canonicalId: "deepseek-v4.1-flash",
       name: "DeepSeek V4.1 Flash",

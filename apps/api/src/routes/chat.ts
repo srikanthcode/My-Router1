@@ -94,11 +94,33 @@ export async function chatRoutes(app: FastifyInstance) {
   app.get("/v1/models/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
     let detail = await getModelDetail(id);
+    let resolvedSlug = id;
     if (!detail) {
       const resolved = await resolveModelInput(id);
+      resolvedSlug = resolved.slug;
       detail = await getModelDetail(resolved.slug);
     }
     if (!detail) {
+      const profile = ModelProfileRegistry.get(id) || ModelProfileRegistry.get(resolvedSlug);
+      if (profile) {
+        reply.header("Access-Control-Allow-Origin", "*");
+        return reply.send({
+          id: profile.id,
+          object: "model",
+          created: Math.floor(Date.now() / 1000),
+          owned_by: "openai",
+          name: profile.name,
+          context_window: profile.contextWindow,
+          max_output_tokens: profile.maxOutputTokens,
+          capabilities: {
+            streaming: profile.capabilities.streaming === "supported",
+            tool_calls: profile.capabilities.tool_calling === "supported",
+            vision: profile.capabilities.vision === "supported",
+            reasoning: profile.capabilities.reasoning === "supported",
+            json_mode: true,
+          },
+        });
+      }
       return reply.code(404).send({
         error: { message: `The model '${id}' does not exist or is not configured.`, type: "invalid_request_error", code: "model_not_found" },
       });
@@ -256,11 +278,12 @@ export async function chatRoutes(app: FastifyInstance) {
     });
 
     // Routing (§11)
+    const requiresTools = Boolean(body.tools && body.tools.length > 0);
     const decision = routeRequest(candidates, {
       planSlug: plan.slug,
       fallbackEnabled,
       preferFree: isFree,
-      requiresTools: Boolean(body.tools && body.tools.length > 0),
+      requiresTools,
     });
     if (!decision) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
@@ -414,6 +437,18 @@ export async function chatRoutes(app: FastifyInstance) {
           const base = sanitizeModelOutput(result.content, ctx.model.name);
           return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
         })();
+        app.log.info({
+          tag: "coding_agent_telemetry",
+          requestId,
+          model: body.model,
+          resolvedSlug: slug,
+          stream: false,
+          requiresTools,
+          toolCount: body.tools?.length ?? 0,
+          providerSlug: result.providerSlug,
+          finishReason: normalizedFinishReason,
+          latencyMs: Date.now() - startedAt,
+        });
         return reply.send({
           id: requestId,
           object: "chat.completion",
@@ -587,6 +622,18 @@ export async function chatRoutes(app: FastifyInstance) {
         usageSource = "estimated";
       }
       const cost = await finalize({ usage, usageSource, providerId: outcomeProviderId ?? decision.primary.providerId, providerSlug, ttftMs });
+      app.log.info({
+        tag: "coding_agent_telemetry",
+        requestId,
+        model: body.model,
+        resolvedSlug: slug,
+        stream: true,
+        requiresTools,
+        toolCount: body.tools?.length ?? 0,
+        providerSlug,
+        finishReason,
+        latencyMs: Date.now() - startedAt,
+      });
       write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug, choices: [], usage, uno: { request_id: requestId, provider: providerSlug, cost_paise: cost, is_free: isFree, queue_wait_ms: queueWaitMs, route: decision.trace, usage_source: usageSource } });
       res.write("data: [DONE]\n\n");
       res.end();

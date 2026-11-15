@@ -94,11 +94,14 @@ export const MODEL_ALIASES: Record<string, string> = {
   "mistral": "mistral-large",
 
   // GPT
+  "gpt-4.1": "gpt-4.1",
+  "openai/gpt-4.1": "gpt-4.1",
+  "gpt-4o": "gpt-4o",
+  "openai/gpt-4o": "gpt-4o",
+  "gpt-4": "gpt-4o",
   "gpt-6.1-sol": "gpt-6.1-sol",
   "gpt-6.1-terra": "gpt-6.1-terra",
   "gpt-6-luna": "gpt-6-luna",
-  "gpt-4o": "gpt-6.1-sol",
-  "gpt-4": "gpt-6.1-sol",
   // Requesty 6 models aliases
   "mistral/leanstral-1-5": "leanstral-1-5",
   "leanstral-1-5": "leanstral-1-5",
@@ -455,9 +458,27 @@ export function getBackendOpenRouterKey(): string | undefined {
   return key;
 }
 
+function getBackendOpenAIPool(): string[] {
+  const envVal = process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey || "";
+  if (!envVal.trim()) return [];
+  return envVal
+    .split(/[\s,;\n]+/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+let backendOpenAIPoolIndex = 0;
+export function getBackendOpenAIKey(): string | undefined {
+  const pool = getBackendOpenAIPool();
+  if (pool.length === 0) return process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey;
+  const key = pool[backendOpenAIPoolIndex % pool.length];
+  backendOpenAIPoolIndex = (backendOpenAIPoolIndex + 1) % pool.length;
+  return key;
+}
+
 const ENV_KEY_MAP: Record<string, string | undefined> = {
   "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
-  openai: env.openaiApiKey,
+  openai: getBackendOpenAIKey(),
   groq: env.groqApiKey,
   mistral: env.mistralApiKey,
   anthropic: env.anthropicApiKey,
@@ -505,6 +526,8 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
 
   if (candidate.providerSlug === "prorouter-gateway") {
     apiKey = getBackendGatewayKey() || apiKey;
+  } else if (candidate.providerSlug === "openai") {
+    apiKey = getBackendOpenAIKey() || apiKey;
   } else if (candidate.providerSlug === "requesty") {
     apiKey = getBackendRequestyKey() || apiKey;
   } else if (candidate.providerSlug === "groq") {
@@ -524,7 +547,11 @@ export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAda
   let endpointUrl = provider.endpointUrl;
   let timeoutMs = candidate.timeoutMs;
 
-  if (candidate.providerSlug === "prorouter-gateway") {
+  if (candidate.providerSlug === "openai") {
+    if (process.env.PROVIDER_OPENAI_BASE_URL) {
+      endpointUrl = process.env.PROVIDER_OPENAI_BASE_URL;
+    }
+  } else if (candidate.providerSlug === "prorouter-gateway") {
     if (process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL) {
       endpointUrl = process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL;
     }

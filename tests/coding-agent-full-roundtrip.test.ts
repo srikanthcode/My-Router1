@@ -4,8 +4,9 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { OpenAICompatibleAdapter, cleanSpecialTokens } from "../packages/providers/src/openai";
 import { AnthropicAdapter } from "../packages/providers/src/anthropic";
-import { routeRequest, type RouteCandidate } from "@pro/routing";
+import { routeRequest, type RouteCandidate, ModelProfileRegistry, IntelligentModelRouter, BackendModelRegistry } from "@pro/routing";
 import type { ChatMessage, ToolCall } from "@pro/shared";
+import { resolveModelInput, MODEL_ALIASES } from "../apps/api/src/lib/pipeline";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -413,6 +414,56 @@ describe("Master Coding Agent & Tool Calling Regression Suite (Tests A through K
     expect(capturedMessages[4].tool_calls[0].id).toBe("c2");
     expect(capturedMessages[5].role).toBe("tool");
     expect(capturedMessages[5].tool_call_id).toBe("c2");
+  });
+
+  // Test J: GPT-4.1 alias & model resolution
+  it("Test J: resolves gpt-4.1 and openai/gpt-4.1 to authentic profile with native tool calling", async () => {
+    const res1 = await resolveModelInput("gpt-4.1");
+    expect(res1.slug).toBe("gpt-4.1");
+    expect(res1.auto).toBe(false);
+
+    const res2 = await resolveModelInput("openai/gpt-4.1");
+    expect(res2.slug).toBe("gpt-4.1");
+
+    const profile = ModelProfileRegistry.get("gpt-4.1");
+    expect(profile).toBeDefined();
+    expect(profile?.name).toBe("GPT-4.1");
+    expect(profile?.capabilities.tool_calling).toBe("supported");
+    expect(profile?.capabilities.coding).toBe("supported");
+    expect(profile?.routingPolicy.primaryBackend).toBe("openai/gpt-4.1");
+    expect(profile?.routingPolicy.secondaryBackend).toBe("openrouter/openai/gpt-4.1");
+  });
+
+  // Test K: GPT-4.1 intelligent route decision & backend verification
+  it("Test K: routes gpt-4.1 to verified openai or openrouter backends without defaulting to deepseek", () => {
+    const backendDirect = BackendModelRegistry.get("openai/gpt-4.1");
+    expect(backendDirect).toBeDefined();
+    expect(backendDirect?.provider).toBe("openai");
+    expect(backendDirect?.upstreamModelId).toBe("gpt-4.1");
+    expect(backendDirect?.capabilities.tool_calling).toBe("supported");
+
+    const backendRouter = BackendModelRegistry.get("openrouter/openai/gpt-4.1");
+    expect(backendRouter).toBeDefined();
+    expect(backendRouter?.provider).toBe("openrouter");
+    expect(backendRouter?.upstreamModelId).toBe("openai/gpt-4.1");
+
+    const decision = IntelligentModelRouter.route("gpt-4.1", { requiresTools: true });
+    expect(decision.primary.provider).toBe("openai");
+    expect(decision.primary.upstreamModelId).toBe("gpt-4.1");
+    expect(decision.primary.id).toBe("openai/gpt-4.1");
+  });
+
+  // Test L: GPT-4o alias mapping
+  it("Test L: maps gpt-4o and gpt-4 to genuine gpt-4o model without substitution to gpt-6.1-sol", async () => {
+    const res4o = await resolveModelInput("gpt-4o");
+    expect(res4o.slug).toBe("gpt-4o");
+
+    const res4 = await resolveModelInput("gpt-4");
+    expect(res4.slug).toBe("gpt-4o");
+
+    const profile4o = ModelProfileRegistry.get("gpt-4o");
+    expect(profile4o).toBeDefined();
+    expect(profile4o?.capabilities.tool_calling).toBe("supported");
   });
 });
 

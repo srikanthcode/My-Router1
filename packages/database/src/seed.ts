@@ -188,7 +188,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     }).where(eq(providers.id, tokenJuiceProvider.id));
   }
 
-  for (const slug of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh"]) {
+  for (const slug of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh", "openai"]) {
     await db
       .update(providers)
       .set({ status: "active" })
@@ -200,7 +200,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     requesty: process.env.PROVIDER_REQUESTY_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_REQUESTY_API_KEY,
     openrouter: process.env.PROVIDER_OPENROUTER_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_OPENROUTER_API_KEY,
     nabh: process.env.PROVIDER_NABH_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_NABH_API_KEY,
-    openai: env.openaiApiKey,
+    openai: (process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey)?.split(/[\s,;\n]+/)[0],
     groq: (process.env.GROQ_API_KEY || env.groqApiKey)?.split(/[\s,;\n]+/)[0],
     mistral: env.mistralApiKey,
     anthropic: env.anthropicApiKey,
@@ -225,6 +225,10 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
 
   // ── Seed Upstream Provider Costs (§4) ────────────────────────────────
   const verifiedUpstreamCosts = [
+    { provider: "openai", modelId: "gpt-4.1", inCents: 250, outCents: 1000, source: "OpenAI official pricing" },
+    { provider: "openrouter", modelId: "openai/gpt-4.1", inCents: 250, outCents: 1000, source: "OpenRouter verified gateway" },
+    { provider: "openai", modelId: "gpt-4o", inCents: 250, outCents: 1000, source: "OpenAI official pricing" },
+    { provider: "openrouter", modelId: "openai/gpt-4o", inCents: 250, outCents: 1000, source: "OpenRouter verified gateway" },
     { provider: "prorouter-gateway", modelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", inCents: 14, outCents: 28, source: "TokenJuice verified gateway" },
     { provider: "groq", modelId: "qwen/qwen3.8-27b", inCents: 20, outCents: 80, source: "Groq official pricing" },
     { provider: "groq", modelId: "openai/gpt-oss-120b", inCents: 30, outCents: 120, source: "Groq official pricing" },
@@ -284,6 +288,52 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
   // 2. qwen3.8-27b (and exact namespace qwen/qwen3.8-27b)
   // ALL OTHER MODELS ARE STRICTLY PAID.
   const catalog: SeedModel[] = [
+    {
+      slug: "gpt-4.1",
+      canonicalId: "gpt-4.1",
+      name: "GPT-4.1",
+      description: "OpenAI GPT-4.1 — flagship coding agent model with state-of-the-art native tool calling and reasoning.",
+      provider: "openai",
+      isFree: false,
+      contextWindow: 128000,
+      maxOutputTokens: 16384,
+      input: 20000,
+      output: 80000,
+      rank: 2,
+      popularity: 9960,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [
+        { provider: "openai", providerModelId: "gpt-4.1", priority: 10 },
+        { provider: "openrouter", providerModelId: "openai/gpt-4.1", priority: 20 },
+      ],
+    },
+    {
+      slug: "gpt-4o",
+      canonicalId: "gpt-4o",
+      name: "GPT-4o",
+      description: "OpenAI GPT-4o — versatile multimodal flagship model for coding, tool execution, and complex reasoning.",
+      provider: "openai",
+      isFree: false,
+      contextWindow: 128000,
+      maxOutputTokens: 16384,
+      input: 20000,
+      output: 80000,
+      rank: 3,
+      popularity: 9940,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [
+        { provider: "openai", providerModelId: "gpt-4o", priority: 10 },
+        { provider: "openrouter", providerModelId: "openai/gpt-4o", priority: 20 },
+      ],
+    },
     {
       slug: "deepseek-v4.1-flash-1017",
       canonicalId: "deepseek-v4.1-flash",
@@ -526,7 +576,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }],
     },
     {
       slug: "gpt-oss-20b",
@@ -545,7 +595,10 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 }, { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      links: [
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 },
+        { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 },
+      ],
     },
     {
       slug: "nemotron-3-ultra-550b-a55b",

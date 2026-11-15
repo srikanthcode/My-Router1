@@ -1609,7 +1609,7 @@ async function seedDatabase(closeAtEnd = false) {
       updatedAt: /* @__PURE__ */ new Date()
     }).where(eq(providers.id, tokenJuiceProvider.id));
   }
-  for (const slug2 of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh"]) {
+  for (const slug2 of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh", "openai"]) {
     await db2.update(providers).set({ status: "active" }).where(and(eq(providers.slug, slug2), eq(providers.status, "unknown")));
   }
   const envKeyFor = {
@@ -1617,7 +1617,7 @@ async function seedDatabase(closeAtEnd = false) {
     requesty: process.env.PROVIDER_REQUESTY_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_REQUESTY_API_KEY,
     openrouter: process.env.PROVIDER_OPENROUTER_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_OPENROUTER_API_KEY,
     nabh: process.env.PROVIDER_NABH_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_NABH_API_KEY,
-    openai: env.openaiApiKey,
+    openai: (process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey)?.split(/[\s,;\n]+/)[0],
     groq: (process.env.GROQ_API_KEY || env.groqApiKey)?.split(/[\s,;\n]+/)[0],
     mistral: env.mistralApiKey,
     anthropic: env.anthropicApiKey,
@@ -1636,6 +1636,10 @@ async function seedDatabase(closeAtEnd = false) {
     });
   }
   const verifiedUpstreamCosts = [
+    { provider: "openai", modelId: "gpt-4.1", inCents: 250, outCents: 1e3, source: "OpenAI official pricing" },
+    { provider: "openrouter", modelId: "openai/gpt-4.1", inCents: 250, outCents: 1e3, source: "OpenRouter verified gateway" },
+    { provider: "openai", modelId: "gpt-4o", inCents: 250, outCents: 1e3, source: "OpenAI official pricing" },
+    { provider: "openrouter", modelId: "openai/gpt-4o", inCents: 250, outCents: 1e3, source: "OpenRouter verified gateway" },
     { provider: "prorouter-gateway", modelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", inCents: 14, outCents: 28, source: "TokenJuice verified gateway" },
     { provider: "groq", modelId: "qwen/qwen3.8-27b", inCents: 20, outCents: 80, source: "Groq official pricing" },
     { provider: "groq", modelId: "openai/gpt-oss-120b", inCents: 30, outCents: 120, source: "Groq official pricing" },
@@ -1665,6 +1669,52 @@ async function seedDatabase(closeAtEnd = false) {
     }).onConflictDoNothing();
   }
   const catalog = [
+    {
+      slug: "gpt-4.1",
+      canonicalId: "gpt-4.1",
+      name: "GPT-4.1",
+      description: "OpenAI GPT-4.1 \u2014 flagship coding agent model with state-of-the-art native tool calling and reasoning.",
+      provider: "openai",
+      isFree: false,
+      contextWindow: 128e3,
+      maxOutputTokens: 16384,
+      input: 2e4,
+      output: 8e4,
+      rank: 2,
+      popularity: 9960,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [
+        { provider: "openai", providerModelId: "gpt-4.1", priority: 10 },
+        { provider: "openrouter", providerModelId: "openai/gpt-4.1", priority: 20 }
+      ]
+    },
+    {
+      slug: "gpt-4o",
+      canonicalId: "gpt-4o",
+      name: "GPT-4o",
+      description: "OpenAI GPT-4o \u2014 versatile multimodal flagship model for coding, tool execution, and complex reasoning.",
+      provider: "openai",
+      isFree: false,
+      contextWindow: 128e3,
+      maxOutputTokens: 16384,
+      input: 2e4,
+      output: 8e4,
+      rank: 3,
+      popularity: 9940,
+      reasoning: true,
+      vision: true,
+      toolCalls: true,
+      structured: true,
+      pricingStatus: "approved",
+      links: [
+        { provider: "openai", providerModelId: "gpt-4o", priority: 10 },
+        { provider: "openrouter", providerModelId: "openai/gpt-4o", priority: 20 }
+      ]
+    },
     {
       slug: "deepseek-v4.1-flash-1017",
       canonicalId: "deepseek-v4.1-flash",
@@ -1911,7 +1961,7 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+      links: [{ provider: "groq", providerModelId: "openai/gpt-oss-120b", priority: 10 }]
     },
     {
       slug: "gpt-oss-20b",
@@ -1930,7 +1980,10 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 }, { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }]
+      links: [
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 10 },
+        { provider: "groq", providerModelId: "openai/gpt-oss-20b", priority: 20 }
+      ]
     },
     {
       slug: "nemotron-3-ultra-550b-a55b",
@@ -3005,6 +3058,127 @@ function makeCaps(overrides = {}) {
   };
 }
 var VERIFIED_BACKEND_MODELS = {
+  // ── 0. Native OpenAI Flagship Coding Models ──
+  "openai/gpt-4.1": {
+    id: "openai/gpt-4.1",
+    name: "GPT-4.1 (OpenAI Direct)",
+    provider: "openai",
+    upstreamModelId: "gpt-4.1",
+    contextWindow: 128e3,
+    maxOutputTokens: 16384,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 2e3, output: 8e3 }
+  },
+  "openrouter/openai/gpt-4.1": {
+    id: "openrouter/openai/gpt-4.1",
+    name: "GPT-4.1 (OpenRouter Gateway)",
+    provider: "openrouter",
+    upstreamModelId: "openai/gpt-4.1",
+    contextWindow: 128e3,
+    maxOutputTokens: 16384,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 2e3, output: 8e3 }
+  },
+  "openai/gpt-4o": {
+    id: "openai/gpt-4o",
+    name: "GPT-4o (OpenAI Direct)",
+    provider: "openai",
+    upstreamModelId: "gpt-4o",
+    contextWindow: 128e3,
+    maxOutputTokens: 16384,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 2e3, output: 8e3 }
+  },
+  "openrouter/openai/gpt-4o": {
+    id: "openrouter/openai/gpt-4o",
+    name: "GPT-4o (OpenRouter Gateway)",
+    provider: "openrouter",
+    upstreamModelId: "openai/gpt-4o",
+    contextWindow: 128e3,
+    maxOutputTokens: 16384,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 2e3, output: 8e3 }
+  },
   // ── 1. GPT OSS Models ──
   "nabh/gpt-oss-20b": {
     id: "nabh/gpt-oss-20b",
@@ -3744,6 +3918,40 @@ function generateProfiles() {
     });
   }
   const verifiedLive = [
+    {
+      id: "gpt-4.1",
+      canonicalId: "gpt-4.1",
+      name: "GPT-4.1",
+      cat: "coding",
+      primary: "openai/gpt-4.1",
+      sec: "openrouter/openai/gpt-4.1",
+      desc: "OpenAI GPT-4.1 \u2014 flagship coding agent model with state-of-the-art native tool calling and reasoning.",
+      context: 128e3,
+      maxOut: 16384,
+      upstreamIn: 2.5,
+      upstreamOut: 10,
+      benchmarks: [
+        { name: "SWE-bench", score: 53.7, source: "OpenAI Evaluation", evaluationDate: "2024-11-01" },
+        { name: "HumanEval", score: 90.2, source: "OpenAI Benchmark", evaluationDate: "2024-11-01" }
+      ]
+    },
+    {
+      id: "gpt-4o",
+      canonicalId: "gpt-4o",
+      name: "GPT-4o",
+      cat: "coding",
+      primary: "openai/gpt-4o",
+      sec: "openrouter/openai/gpt-4o",
+      desc: "OpenAI GPT-4o \u2014 versatile multimodal flagship model for coding, tool execution, and complex reasoning.",
+      context: 128e3,
+      maxOut: 16384,
+      upstreamIn: 2.5,
+      upstreamOut: 10,
+      benchmarks: [
+        { name: "MMLU", score: 88.7, source: "OpenAI Benchmark", evaluationDate: "2024-05-13" },
+        { name: "HumanEval", score: 90.2, source: "OpenAI Benchmark", evaluationDate: "2024-05-13" }
+      ]
+    },
     {
       id: "deepseek-v4.1-flash",
       canonicalId: "deepseek-v4.1-flash",
@@ -6508,11 +6716,14 @@ var MODEL_ALIASES = {
   "mistral-large": "mistral-large",
   "mistral": "mistral-large",
   // GPT
+  "gpt-4.1": "gpt-4.1",
+  "openai/gpt-4.1": "gpt-4.1",
+  "gpt-4o": "gpt-4o",
+  "openai/gpt-4o": "gpt-4o",
+  "gpt-4": "gpt-4o",
   "gpt-6.1-sol": "gpt-6.1-sol",
   "gpt-6.1-terra": "gpt-6.1-terra",
   "gpt-6-luna": "gpt-6-luna",
-  "gpt-4o": "gpt-6.1-sol",
-  "gpt-4": "gpt-6.1-sol",
   // Requesty 6 models aliases
   "mistral/leanstral-1-5": "leanstral-1-5",
   "leanstral-1-5": "leanstral-1-5",
@@ -6793,9 +7004,22 @@ function getBackendOpenRouterKey() {
   backendOpenRouterPoolIndex = (backendOpenRouterPoolIndex + 1) % pool2.length;
   return key;
 }
+function getBackendOpenAIPool() {
+  const envVal = process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey || "";
+  if (!envVal.trim()) return [];
+  return envVal.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean);
+}
+var backendOpenAIPoolIndex = 0;
+function getBackendOpenAIKey() {
+  const pool2 = getBackendOpenAIPool();
+  if (pool2.length === 0) return process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey;
+  const key = pool2[backendOpenAIPoolIndex % pool2.length];
+  backendOpenAIPoolIndex = (backendOpenAIPoolIndex + 1) % pool2.length;
+  return key;
+}
 var ENV_KEY_MAP = {
   "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
-  openai: env.openaiApiKey,
+  openai: getBackendOpenAIKey(),
   groq: env.groqApiKey,
   mistral: env.mistralApiKey,
   anthropic: env.anthropicApiKey,
@@ -6836,6 +7060,8 @@ async function getAdapter(candidate) {
   }
   if (candidate.providerSlug === "prorouter-gateway") {
     apiKey = getBackendGatewayKey() || apiKey;
+  } else if (candidate.providerSlug === "openai") {
+    apiKey = getBackendOpenAIKey() || apiKey;
   } else if (candidate.providerSlug === "requesty") {
     apiKey = getBackendRequestyKey() || apiKey;
   } else if (candidate.providerSlug === "groq") {
@@ -6852,7 +7078,11 @@ async function getAdapter(candidate) {
   }
   let endpointUrl = provider.endpointUrl;
   let timeoutMs = candidate.timeoutMs;
-  if (candidate.providerSlug === "prorouter-gateway") {
+  if (candidate.providerSlug === "openai") {
+    if (process.env.PROVIDER_OPENAI_BASE_URL) {
+      endpointUrl = process.env.PROVIDER_OPENAI_BASE_URL;
+    }
+  } else if (candidate.providerSlug === "prorouter-gateway") {
     if (process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL) {
       endpointUrl = process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL;
     }
@@ -7039,11 +7269,33 @@ async function chatRoutes(app) {
   app.get("/v1/models/:id", async (request, reply) => {
     const { id } = request.params;
     let detail = await getModelDetail(id);
+    let resolvedSlug = id;
     if (!detail) {
       const resolved = await resolveModelInput(id);
+      resolvedSlug = resolved.slug;
       detail = await getModelDetail(resolved.slug);
     }
     if (!detail) {
+      const profile = ModelProfileRegistry.get(id) || ModelProfileRegistry.get(resolvedSlug);
+      if (profile) {
+        reply.header("Access-Control-Allow-Origin", "*");
+        return reply.send({
+          id: profile.id,
+          object: "model",
+          created: Math.floor(Date.now() / 1e3),
+          owned_by: "openai",
+          name: profile.name,
+          context_window: profile.contextWindow,
+          max_output_tokens: profile.maxOutputTokens,
+          capabilities: {
+            streaming: profile.capabilities.streaming === "supported",
+            tool_calls: profile.capabilities.tool_calling === "supported",
+            vision: profile.capabilities.vision === "supported",
+            reasoning: profile.capabilities.reasoning === "supported",
+            json_mode: true
+          }
+        });
+      }
       return reply.code(404).send({
         error: { message: `The model '${id}' does not exist or is not configured.`, type: "invalid_request_error", code: "model_not_found" }
       });
@@ -7171,11 +7423,12 @@ async function chatRoutes(app) {
       model: slug2,
       stream
     });
+    const requiresTools = Boolean(body.tools && body.tools.length > 0);
     const decision = routeRequest(candidates, {
       planSlug: plan.slug,
       fallbackEnabled,
       preferFree: isFree,
-      requiresTools: Boolean(body.tools && body.tools.length > 0)
+      requiresTools
     });
     if (!decision) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
@@ -7314,6 +7567,18 @@ async function chatRoutes(app) {
           const base = sanitizeModelOutput(result.content, ctx.model.name);
           return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
         })();
+        app.log.info({
+          tag: "coding_agent_telemetry",
+          requestId,
+          model: body.model,
+          resolvedSlug: slug2,
+          stream: false,
+          requiresTools,
+          toolCount: body.tools?.length ?? 0,
+          providerSlug: result.providerSlug,
+          finishReason: normalizedFinishReason,
+          latencyMs: Date.now() - startedAt
+        });
         return reply.send({
           id: requestId,
           object: "chat.completion",
@@ -7466,6 +7731,18 @@ async function chatRoutes(app) {
         usageSource = "estimated";
       }
       const cost = await finalize({ usage, usageSource, providerId: outcomeProviderId ?? decision.primary.providerId, providerSlug, ttftMs });
+      app.log.info({
+        tag: "coding_agent_telemetry",
+        requestId,
+        model: body.model,
+        resolvedSlug: slug2,
+        stream: true,
+        requiresTools,
+        toolCount: body.tools?.length ?? 0,
+        providerSlug,
+        finishReason,
+        latencyMs: Date.now() - startedAt
+      });
       write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug2, choices: [], usage, uno: { request_id: requestId, provider: providerSlug, cost_paise: cost, is_free: isFree, queue_wait_ms: queueWaitMs, route: decision.trace, usage_source: usageSource } });
       res.write("data: [DONE]\n\n");
       res.end();
