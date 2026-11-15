@@ -260,6 +260,7 @@ export async function chatRoutes(app: FastifyInstance) {
       planSlug: plan.slug,
       fallbackEnabled,
       preferFree: isFree,
+      requiresTools: Boolean(body.tools && body.tools.length > 0),
     });
     if (!decision) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
@@ -280,7 +281,7 @@ export async function chatRoutes(app: FastifyInstance) {
       parallelToolCalls: (body as any).parallel_tool_calls,
       responseFormat: body.response_format,
       seed: body.seed,
-      raw: body as never,
+      raw: (request.body && typeof request.body === "object" ? request.body : body) as never,
     };
 
     // Insert the request record up-front so attempts can reference it.

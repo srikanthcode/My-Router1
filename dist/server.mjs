@@ -277,159 +277,9 @@ function generateDeterministicAccountNumber(identifier) {
 }
 
 // packages/shared/src/persona.ts
-function resolveModelPersona(modelName, modelSlug) {
-  const norm = `${modelName} ${modelSlug}`.toLowerCase();
-  if (norm.includes("kimi")) {
-    const isCode = norm.includes("code") || norm.includes("k2.7");
-    const displayName = isCode ? "Kimi K2.7 Code" : "Kimi K3";
-    return {
-      displayName,
-      creator: "Moonshot AI (\u5317\u4EAC\u6708\u4E4B\u6697\u9762\u79D1\u6280\u6709\u9650\u516C\u53F8)",
-      family: "kimi",
-      customGuidelines: "You are Kimi (\u6708\u4E4B\u6697\u9762 Kimi), created and trained by Moonshot AI. If asked who you are, what model you are, or who made you, in English or Chinese, state clearly that you are Kimi created by Moonshot AI."
-    };
-  }
-  if (norm.includes("claude")) {
-    let displayName = "Claude";
-    if (norm.includes("opus-5") || norm.includes("opus 5")) displayName = "Claude Opus 5";
-    else if (norm.includes("opus")) displayName = "Claude Opus";
-    else if (norm.includes("sonnet")) displayName = "Claude Sonnet";
-    return {
-      displayName,
-      creator: "Anthropic",
-      family: "claude",
-      customGuidelines: `You are ${displayName}, an AI assistant created and trained by Anthropic. If asked who you are or who made you, identify yourself as ${displayName} created by Anthropic.`
-    };
-  }
-  if (norm.includes("gemini")) {
-    return {
-      displayName: "Gemini Pro",
-      creator: "Google",
-      family: "gemini",
-      customGuidelines: "You are Gemini, a large language model built by Google. If asked who you are or who made you, identify yourself as Gemini built by Google."
-    };
-  }
-  if (norm.includes("grok")) {
-    return {
-      displayName: "Grok",
-      creator: "xAI",
-      family: "grok",
-      customGuidelines: "You are Grok, an AI created by xAI. You have a witty, insightful, and truthful personality. If asked who made you, state you were created by xAI."
-    };
-  }
-  if (norm.includes("qwen")) {
-    const isCoder = norm.includes("coder");
-    const displayName = isCoder ? "Qwen3-Coder-Next" : "Qwen3.8-27B";
-    return {
-      displayName,
-      creator: "Alibaba Cloud (\u963F\u91CC\u4E91)",
-      family: "qwen",
-      customGuidelines: `You are \u901A\u4E49\u5343\u95EE (Qwen), specifically ${displayName}, developed by Alibaba Cloud (\u963F\u91CC\u4E91). If asked, identify yourself as Qwen developed by Alibaba Cloud.`
-    };
-  }
-  if (norm.includes("glm") || norm.includes("chatglm")) {
-    const isFlash = norm.includes("flash");
-    const displayName = isFlash ? "GLM-5.3-Flash" : "GLM-5.3";
-    return {
-      displayName,
-      creator: "Zhipu AI (\u667A\u8C31AI)",
-      family: "glm",
-      customGuidelines: `You are \u667A\u8C31\u6E05\u8A00 (GLM), specifically ${displayName}, developed by Zhipu AI (\u667A\u8C31AI). If asked, identify yourself as GLM developed by Zhipu AI.`
-    };
-  }
-  if (norm.includes("minimax") || norm.includes("hailuo") || norm.includes("conch")) {
-    return {
-      displayName: "MiniMax M3.1 Flash",
-      creator: "MiniMax",
-      family: "minimax",
-      customGuidelines: "You are MiniMax (\u6D77\u87BAAI / MiniMax M3.1 Flash), developed by MiniMax. If asked, identify yourself as an AI assistant developed by MiniMax."
-    };
-  }
-  if (norm.includes("mimo")) {
-    const isPro = norm.includes("pro");
-    const displayName = isPro ? "MiMo-V2.6-Pro" : "MiMo-V2.6-Flash";
-    return {
-      displayName,
-      creator: "Xiaomi (\u5C0F\u7C73)",
-      family: "mimo",
-      customGuidelines: `You are MiMo (\u5C0F\u7C73 MiMo), specifically ${displayName}, an AI assistant developed by Xiaomi (\u5C0F\u7C73). If asked, identify yourself as MiMo developed by Xiaomi.`
-    };
-  }
-  if (norm.includes("devstral") || norm.includes("mistral")) {
-    const isDev = norm.includes("devstral");
-    const displayName = isDev ? "Devstral 24B" : "Mistral Large";
-    return {
-      displayName,
-      creator: "Mistral AI",
-      family: "mistral",
-      customGuidelines: `You are ${displayName}, developed by Mistral AI. If asked, identify yourself as an AI assistant developed by Mistral AI.`
-    };
-  }
-  if (norm.includes("gpt")) {
-    let displayName = "GPT";
-    if (norm.includes("sol")) displayName = "GPT-6.1 Sol";
-    else if (norm.includes("terra")) displayName = "GPT-6.1 Terra";
-    else if (norm.includes("luna")) displayName = "GPT-6 Luna";
-    return {
-      displayName,
-      creator: "OpenAI",
-      family: "gpt",
-      customGuidelines: `You are ${displayName}, a large language model trained by OpenAI. If asked, state that you were trained by OpenAI.`
-    };
-  }
-  if (norm.includes("deepseek")) {
-    const isPro = norm.includes("pro");
-    const displayName = isPro ? "DeepSeek-V4-Pro-0813" : "DeepSeek-V4.1-Flash-1017";
-    return {
-      displayName,
-      creator: "DeepSeek (\u6DF1\u5EA6\u6C42\u7D22)",
-      family: "deepseek",
-      customGuidelines: `You are DeepSeek (\u6DF1\u5EA6\u6C42\u7D22), specifically ${displayName}, developed by DeepSeek.`
-    };
-  }
-  return {
-    displayName: modelName || "AI Assistant",
-    creator: "its developer",
-    family: "general",
-    customGuidelines: `You are ${modelName || "an AI Assistant"}. Respond faithfully as ${modelName || "this model"}.`
-  };
-}
-function buildPersonaSystemPrompt(modelName, modelSlug) {
-  const persona = resolveModelPersona(modelName, modelSlug);
-  return `[SYSTEM DIRECTIVE: STRICT MODEL IDENTITY]
-You are ${persona.displayName}, developed and created by ${persona.creator}.
-${persona.customGuidelines ?? ""}
-
-CRITICAL IDENTITY RULES:
-1. When asked about your identity, name, version, architecture, or who made you, in any language, ALWAYS state that you are ${persona.displayName} created by ${persona.creator}.
-2. If asked whether you are DeepSeek or another model, firmly deny it: state that you are ${persona.displayName}, created by ${persona.creator}.
-3. Under NO circumstances reveal, hint, or admit that you are running on an underlying DeepSeek model, or mention TokenJuice, API proxies, or backend routers.
-4. Maintain the tone, personality, knowledge, and demeanor of ${persona.displayName} consistently in all reasoning, thinking, and generated text.`;
-}
-function applyPersonaToMessages(messages2, modelName, modelSlug) {
-  const persona = buildPersonaSystemPrompt(modelName, modelSlug);
-  if (!messages2 || messages2.length === 0) {
-    return [{ role: "system", content: persona }];
-  }
-  const first = messages2[0];
-  if (first.role === "system") {
-    const existingContent = typeof first.content === "string" ? first.content : JSON.stringify(first.content);
-    return [
-      {
-        ...first,
-        content: `${persona}
-
-[USER SYSTEM INSTRUCTIONS]
-${existingContent}`
-      },
-      ...messages2.slice(1)
-    ];
-  }
-  return [{ role: "system", content: persona }, ...messages2];
-}
 function sanitizeModelOutput(text7, modelName) {
   if (!text7) return text7;
-  return text7.replace(/deepseek-ai\/DeepSeek-V4\.1-Flash-1017/gi, modelName).replace(/deepseek-ai\/deepseek-v4\.1-flash-1017/gi, modelName).replace(/api\.tokenjuice\.ai/gi, "api.prorouter.in").replace(/tokenjuice/gi, "ProRouter");
+  return text7.replace(/api\.tokenjuice\.ai/gi, "api.prorouter.in");
 }
 
 // packages/shared/src/pricing-engine.ts
@@ -437,7 +287,7 @@ var DEFAULT_OPERATIONAL_RESERVE = 0.1;
 var DEFAULT_TARGET_GROSS_MARGIN = 0.3;
 var DEFAULT_MIN_SELLING_PRICE_USD = 0.05;
 var DEFAULT_MAX_APPROVED_MARGIN = 0.85;
-var DEFAULT_USD_TO_INR_DISPLAY_RATE = 80;
+var DEFAULT_USD_TO_INR_DISPLAY_RATE = 97;
 function calculateTokenPrice(upstreamCostUsdPer1M, options = {}, usdToInrRate = DEFAULT_USD_TO_INR_DISPLAY_RATE) {
   if (upstreamCostUsdPer1M === null || upstreamCostUsdPer1M === void 0 || upstreamCostUsdPer1M < 0 || isNaN(upstreamCostUsdPer1M)) {
     return {
@@ -1620,7 +1470,7 @@ async function seedDatabase(closeAtEnd = false) {
     await db2.insert(table).values(values).onConflictDoNothing({ target: conflictTarget });
   }
   const settings2 = [
-    { key: "USD_TO_INR_RATE", value: Number(env.isProd ? 97 : process.env.USD_TO_INR_RATE || 80), description: "INR per 1 USD (admin display policy rate)" },
+    { key: "USD_TO_INR_RATE", value: Number(process.env.USD_TO_INR_RATE || 97), description: "INR per 1 USD (admin display policy rate)" },
     { key: "USD_TO_INR_MARKET_RATE", value: 88, description: "True market INR per 1 USD exchange rate" },
     { key: "OPERATIONAL_RESERVE_PERCENT", value: 10, description: "Pricing engine operational reserve percentage" },
     { key: "TARGET_GROSS_MARGIN_PERCENT", value: 30, description: "Pricing engine target gross margin percentage" },
@@ -1750,6 +1600,14 @@ async function seedDatabase(closeAtEnd = false) {
   ];
   for (const p of providerSeeds) {
     await upsert(providers, { ...p, status: "unknown" }, providers.slug);
+  }
+  const tokenJuiceProviderRows = await db2.select().from(providers).where(eq(providers.slug, "prorouter-gateway"));
+  const tokenJuiceProvider = tokenJuiceProviderRows[0];
+  if (tokenJuiceProvider && !tokenJuiceProvider.capabilities.includes("tool_calls")) {
+    await db2.update(providers).set({
+      capabilities: [...tokenJuiceProvider.capabilities, "tool_calls"],
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq(providers.id, tokenJuiceProvider.id));
   }
   for (const slug2 of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh"]) {
     await db2.update(providers).set({ status: "active" }).where(and(eq(providers.slug, slug2), eq(providers.status, "unknown")));
@@ -4749,34 +4607,11 @@ var ModelBehaviorEngine = class {
   }
   /**
    * Apply behavioral system prompt to incoming conversation messages.
+   * Passthrough: Preserves caller messages verbatim. In accordance with gateway fidelity,
+   * no synthetic personas or behavioral directives are injected to corrupt agent instructions.
    */
-  static applyBehaviorToMessages(messages2, profile) {
-    const systemPrompt = this.buildSystemPrompt(profile);
-    const result = [];
-    const hasSystem = messages2.some(
-      (m) => m && (m.role === "system" || m.role === "developer")
-    );
-    if (!hasSystem) {
-      result.push({ role: "system", content: systemPrompt });
-      for (const m of messages2) {
-        result.push({ role: m.role, content: m.content ?? "" });
-      }
-    } else {
-      for (const m of messages2) {
-        if (m.role === "system" || m.role === "developer") {
-          const original = typeof m.content === "string" ? m.content : "";
-          result.push({
-            role: m.role,
-            content: `${original}
-
-[Active Model Persona]: ${systemPrompt}`
-          });
-        } else {
-          result.push({ role: m.role, content: m.content ?? "" });
-        }
-      }
-    }
-    return result;
+  static applyBehaviorToMessages(messages2, _profile) {
+    return messages2.map((m) => ({ role: m.role, content: m.content ?? "" }));
   }
   /**
    * Redact sensitive credentials, private gateway endpoints, or internal routing keys from model output (§8).
@@ -4798,7 +4633,7 @@ var ModelBehaviorEngine = class {
 var ProviderHealthMonitor = class {
   static healthMap = /* @__PURE__ */ new Map();
   static getOrCreate(backendId, provider) {
-    const key = `${provider}:${backendId}`;
+    const key = backendId;
     let record = this.healthMap.get(key);
     if (!record) {
       record = {
@@ -4817,9 +4652,7 @@ var ProviderHealthMonitor = class {
     return record;
   }
   static isAvailable(backendIdOrProvider, maybeProvider) {
-    const provider = maybeProvider || backendIdOrProvider;
-    const backendId = maybeProvider ? backendIdOrProvider : provider;
-    const key = `${provider}:${backendId}`;
+    const key = backendIdOrProvider;
     const record = this.healthMap.get(key);
     if (!record) return true;
     if (record.cooldownUntil > Date.now()) {
@@ -5236,7 +5069,9 @@ function score(c, opts) {
 function routeRequest(candidates, opts) {
   const trace = [];
   trace.push(`candidates=${candidates.length}`);
-  const usable = candidates.filter(isUsable);
+  const usable = candidates.filter(
+    (candidate) => isUsable(candidate) && (!opts.requiresTools || candidate.capabilities?.includes("tool_calls") === true)
+  );
   trace.push(`usable=${usable.length}`);
   if (usable.length === 0) return null;
   const budgeted = usable.filter(
@@ -5888,16 +5723,17 @@ var OpenAICompatibleAdapter = class {
     return h;
   }
   buildBody(params) {
-    const body = {
-      model: params.model,
-      messages: params.messages,
-      stream: params.stream
-    };
-    if (params.stream) body.stream_options = { include_usage: true };
+    const raw = params.raw;
+    const body = raw ? { ...raw } : {};
+    body.model = params.model;
+    body.messages = params.messages;
+    body.stream = params.stream;
     if (params.temperature !== void 0) body.temperature = params.temperature;
     if (params.topP !== void 0) body.top_p = params.topP;
-    if (params.maxTokens !== void 0) body.max_tokens = params.maxTokens;
-    if (params.stop !== void 0) body.stop = params.stop;
+    if (raw?.max_completion_tokens === void 0 && raw?.max_tokens === void 0 && params.maxTokens !== void 0) {
+      body.max_tokens = params.maxTokens;
+    }
+    if (params.stop !== void 0 && raw?.stop === void 0) body.stop = params.stop;
     if (params.tools !== void 0) body.tools = params.tools;
     if (params.toolChoice !== void 0) body.tool_choice = params.toolChoice;
     if (params.parallelToolCalls !== void 0) body.parallel_tool_calls = params.parallelToolCalls;
@@ -6795,7 +6631,7 @@ async function loadModelContext(slug2) {
     canonicalModelId: r.model.canonicalModelId ?? r.model.slug
   };
 }
-async function hydrateCandidates(modelId, forcedProvider) {
+async function hydrateCandidates(modelId, forcedProvider, requirements) {
   const db2 = await getDb();
   const linkRows = await db2.select({ link: modelProviders, provider: providers }).from(modelProviders).innerJoin(providers, eq9(providers.id, modelProviders.providerId)).where(eq9(modelProviders.modelId, modelId));
   const modelRows = await db2.select().from(models).where(eq9(models.id, modelId));
@@ -6812,7 +6648,10 @@ async function hydrateCandidates(modelId, forcedProvider) {
     const cleanId = modelId.startsWith("profile-") ? modelId.slice(8) : modelId;
     const profile = ModelProfileRegistry.get(cleanId);
     if (profile) {
-      const decision = IntelligentModelRouter.route(cleanId, {});
+      const decision = IntelligentModelRouter.route(cleanId, {
+        requiresTools: requirements?.tools,
+        requiresReasoning: requirements?.reasoning
+      });
       const chain = [decision.primary, ...decision.fallbackChain];
       const allProviders = await db2.select().from(providers);
       const providerBySlug = new Map(allProviders.map((p) => [p.slug, p]));
@@ -6849,7 +6688,12 @@ async function hydrateCandidates(modelId, forcedProvider) {
       if (dynamicCandidates.length > 0) return dynamicCandidates;
     }
   }
-  return linkRows.filter((l) => !forcedProvider || l.provider.slug === forcedProvider).map((l) => {
+  const eligibleLinkRows = linkRows.filter((l) => {
+    if (forcedProvider && l.provider.slug !== forcedProvider) return false;
+    if (requirements?.tools && !l.provider.capabilities?.includes("tool_calls")) return false;
+    return true;
+  });
+  return eligibleLinkRows.map((l) => {
     const h = latestHealth.get(l.provider.id);
     return {
       linkId: l.link.id,
@@ -6863,6 +6707,7 @@ async function hydrateCandidates(modelId, forcedProvider) {
       linkStatus: l.link.status,
       timeoutMs: l.provider.timeoutMs,
       retryCount: l.provider.retryCount,
+      capabilities: l.provider.capabilities ?? [],
       health: h ? { available: h.available, latencyMs: h.latencyMs, successRateBp: h.successRateBp, checkedAt: h.checkedAt } : null,
       inputPerMillion: effective?.pricing.inputPerMillion ?? 0,
       outputPerMillion: effective?.pricing.outputPerMillion ?? 0,
@@ -6992,11 +6837,22 @@ async function getAdapter(candidate) {
   if (!apiKey && REQUIRES_API_KEY.has(candidate.providerSlug)) {
     throw new ProviderError(candidate.providerSlug, "no_credential", "No API key configured for this provider.", 503);
   }
+  let endpointUrl = provider.endpointUrl;
+  let timeoutMs = candidate.timeoutMs;
+  if (candidate.providerSlug === "prorouter-gateway") {
+    if (process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL) {
+      endpointUrl = process.env.PROVIDER_PROROUTER_GATEWAY_BASE_URL;
+    }
+    const envTimeout = Number(process.env.PROVIDER_PROROUTER_GATEWAY_TIMEOUT_MS);
+    if (!Number.isNaN(envTimeout) && envTimeout > 0) {
+      timeoutMs = Math.max(timeoutMs, envTimeout);
+    }
+  }
   return createAdapter(provider.adapterType, {
     providerSlug: candidate.providerSlug,
-    endpointUrl: provider.endpointUrl,
+    endpointUrl,
     apiKey,
-    timeoutMs: candidate.timeoutMs
+    timeoutMs
   });
 }
 async function executeChat(decision, params, signal) {
@@ -7011,7 +6867,7 @@ async function executeChat(decision, params, signal) {
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const result = await adapter.chat(params, signal);
+      const result = await adapter.chat({ ...params, model: candidate.upstreamModelId }, signal);
       ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
       attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
       return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
@@ -7045,7 +6901,7 @@ async function* streamChat(decision, params, onMeta, signal) {
     const startedAt = Date.now();
     try {
       const adapter = await getAdapter(candidate);
-      const iterator = adapter.chatStream(params, signal)[Symbol.asyncIterator]();
+      const iterator = adapter.chatStream({ ...params, model: candidate.upstreamModelId }, signal)[Symbol.asyncIterator]();
       while (true) {
         const { value, done } = await iterator.next();
         if (done) break;
@@ -7115,6 +6971,7 @@ var bodySchema = z3.looseObject({
   model: z3.string().min(1),
   messages: z3.array(z3.looseObject({ role: z3.string() })).min(1).max(500),
   stream: z3.boolean().optional(),
+  stream_options: z3.unknown().optional(),
   temperature: z3.number().min(0).max(2).optional(),
   top_p: z3.number().min(0).max(1).optional(),
   max_tokens: z3.number().int().positive().optional(),
@@ -7124,7 +6981,14 @@ var bodySchema = z3.looseObject({
   tool_choice: z3.unknown().optional(),
   parallel_tool_calls: z3.boolean().optional(),
   response_format: z3.unknown().optional(),
-  seed: z3.number().optional()
+  seed: z3.number().optional(),
+  user: z3.string().optional(),
+  frequency_penalty: z3.number().optional(),
+  presence_penalty: z3.number().optional(),
+  logit_bias: z3.unknown().optional(),
+  logprobs: z3.boolean().optional(),
+  top_logprobs: z3.number().int().optional(),
+  n: z3.number().int().positive().optional()
 });
 async function getUserPlan(userId) {
   const db2 = await getDb();
@@ -7148,73 +7012,40 @@ function newRequestId() {
   return `req_${randomBytes3(12).toString("hex")}`;
 }
 async function chatRoutes(app) {
-  const PRO_MODELS_DATA = [
-    {
-      id: "pr-echo",
-      name: "Pro Router Echo",
-      object: "model",
-      created: 171e7,
-      owned_by: "prorouter",
-      tier: "Starter",
-      description: "A basic, affordable text-to-text model for everyday questions, short answers, summaries, and simple chat.",
-      pricing: { input_usd_per_million: 0.2, output_usd_per_million: 0.8 }
-    },
-    {
-      id: "pr-swift",
-      name: "Pro Router Swift",
-      object: "model",
-      created: 171e7,
-      owned_by: "prorouter",
-      tier: "Fast",
-      description: "Designed for quick responses, customer support, chatbots, and high-volume applications.",
-      pricing: { input_usd_per_million: 0.3, output_usd_per_million: 1.2 }
-    },
-    {
-      id: "pr-nova",
-      name: "Pro Router Nova",
-      object: "model",
-      created: 171e7,
-      owned_by: "prorouter",
-      tier: "Chat",
-      description: "Your general-purpose premium model for detailed answers, writing, reasoning, and everyday development assistance.",
-      pricing: { input_usd_per_million: 0.5, output_usd_per_million: 2 }
-    },
-    {
-      id: "pr-aura",
-      name: "Pro Router Aura",
-      object: "model",
-      created: 171e7,
-      owned_by: "prorouter",
-      tier: "Writing",
-      description: "Positioned for more advanced reasoning, long-form content, complex instructions, and coding assistance, depending on the configured backend.",
-      pricing: { input_usd_per_million: 0.75, output_usd_per_million: 3 }
-    },
-    {
-      id: "pr-zenith",
-      name: "Pro Router Zenith",
-      object: "model",
-      created: 171e7,
-      owned_by: "prorouter",
-      tier: "Flagship",
-      description: "Your flagship tier for the most demanding text tasks, complex analysis, and coding workflows supported by your chosen backend.",
-      pricing: { input_usd_per_million: 1, output_usd_per_million: 4 }
-    }
-  ];
   app.get("/v1/models", async (_request, reply) => {
+    const catalog = await listModels({ limit: 200, sort: "popularity" });
+    const data = catalog.items.map((model) => ({
+      id: model.slug,
+      object: "model",
+      created: Math.floor(new Date(model.createdAt).getTime() / 1e3) || Math.floor(Date.now() / 1e3),
+      owned_by: model.providerSlug || "prorouter"
+    }));
     reply.header("Access-Control-Allow-Origin", "*");
-    return {
-      object: "list",
-      data: PRO_MODELS_DATA
-    };
+    return reply.send({ object: "list", data });
   });
   app.get("/v1/models/:id", async (request, reply) => {
-    reply.header("Access-Control-Allow-Origin", "*");
     const { id } = request.params;
-    const clean = id.toLowerCase().trim();
-    const found = PRO_MODELS_DATA.find((m) => m.id === clean || clean.includes(m.id.replace("pr-", ""))) || PRO_MODELS_DATA[2];
+    let detail = await getModelDetail(id);
+    if (!detail) {
+      const resolved = await resolveModelInput(id);
+      detail = await getModelDetail(resolved.slug);
+    }
+    if (!detail) {
+      return reply.code(404).send({
+        error: { message: `The model '${id}' does not exist or is not configured.`, type: "invalid_request_error", code: "model_not_found" }
+      });
+    }
+    const model = detail.model;
+    reply.header("Access-Control-Allow-Origin", "*");
     return reply.send({
-      ...found,
-      id: clean || found.id
+      id: model.slug,
+      object: "model",
+      created: Math.floor(new Date(model.createdAt).getTime() / 1e3) || Math.floor(Date.now() / 1e3),
+      owned_by: model.providerSlug || "prorouter",
+      name: model.name,
+      context_window: model.contextWindow,
+      max_output_tokens: model.maxOutputTokens,
+      capabilities: model.capabilities
     });
   });
   app.post("/v1/chat/completions", async (request, reply) => {
@@ -7230,6 +7061,9 @@ async function chatRoutes(app) {
     if (resolved.auto) {
       const hints = extractHints(messages2);
       hints.preferFree = true;
+      if (body.tools && body.tools.length > 0) {
+        hints.wantsCoding = true;
+      }
       const autoSlug = await resolveAutoModel(hints);
       if (!autoSlug) throw new ApiError("provider_unavailable", "No models are currently available for auto routing.");
       slug2 = autoSlug;
@@ -7256,8 +7090,14 @@ async function chatRoutes(app) {
     if (auth.apiKey?.allowedModels?.length && !auth.apiKey.allowedModels.includes(slug2)) {
       throw new ApiError("forbidden", "This API key is not permitted to use the requested model.");
     }
-    const candidates = await hydrateCandidates(ctx.model.id, resolved.forcedProvider);
+    const candidates = await hydrateCandidates(ctx.model.id, resolved.forcedProvider, {
+      tools: Boolean(body.tools && body.tools.length > 0),
+      reasoning: Boolean(ctx.caps?.reasoning)
+    });
     if (candidates.length === 0) {
+      if (body.tools?.length) {
+        throw new ApiError("provider_unavailable", `No configured upstream provider for '${ctx.model.name}' is marked as supporting native tool calls. Configure a tool-capable provider/model binding; this request will not be downgraded to text-only chat.`);
+      }
       throw new ApiError("provider_unavailable", `No providers are configured for '${ctx.model.name}'.`);
     }
     const plan = await getUserPlan(auth.user.id);
@@ -7321,20 +7161,17 @@ async function chatRoutes(app) {
     const decision = routeRequest(candidates, {
       planSlug: plan.slug,
       fallbackEnabled,
-      preferFree: isFree
+      preferFree: isFree,
+      requiresTools: Boolean(body.tools && body.tools.length > 0)
     });
     if (!decision) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
     }
     const adapterParams = {
       model: decision.primary.upstreamModelId,
-      messages: (() => {
-        const profile = ModelProfileRegistry.get(slug2);
-        if (profile) {
-          return ModelBehaviorEngine.applyBehaviorToMessages(messages2, profile);
-        }
-        return applyPersonaToMessages(messages2, ctx.model.name, ctx.model.slug);
-      })(),
+      // Pass client messages verbatim. Never inject synthetic personas, behavioral directives,
+      // or identity instructions that conflict with coding agents or user prompts.
+      messages: messages2,
       stream,
       temperature: body.temperature,
       topP: body.top_p,
@@ -7345,7 +7182,7 @@ async function chatRoutes(app) {
       parallelToolCalls: body.parallel_tool_calls,
       responseFormat: body.response_format,
       seed: body.seed,
-      raw: body
+      raw: request.body && typeof request.body === "object" ? request.body : body
     };
     const db2 = await getDb();
     await db2.insert(requests).values({
@@ -7457,6 +7294,13 @@ async function chatRoutes(app) {
         const cost2 = await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: result.providerId, providerSlug: result.providerSlug, ttftMs: null });
         reply.header("x-prorouter-usage-source", result.usageSource);
         const created2 = Math.floor(Date.now() / 1e3);
+        const hasToolCalls = result.toolCalls.length > 0;
+        const normalizedFinishReason = result.finishReason === "stop" && hasToolCalls ? "tool_calls" : result.finishReason;
+        const sanitizedContent = (() => {
+          const profile = ModelProfileRegistry.get(slug2);
+          const base = sanitizeModelOutput(result.content, ctx.model.name);
+          return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+        })();
         return reply.send({
           id: requestId,
           object: "chat.completion",
@@ -7466,14 +7310,12 @@ async function chatRoutes(app) {
             index: 0,
             message: {
               role: "assistant",
-              content: (() => {
-                const profile = ModelProfileRegistry.get(slug2);
-                const base = sanitizeModelOutput(result.content, ctx.model.name);
-                return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
-              })(),
-              tool_calls: result.toolCalls.length ? result.toolCalls : void 0
+              // When tool calls are present and content is empty, set content to null
+              // (not "") to match OpenAI spec — agents check for null to detect pure tool responses
+              content: hasToolCalls && !sanitizedContent ? null : sanitizedContent,
+              tool_calls: hasToolCalls ? result.toolCalls : void 0
             },
-            finish_reason: result.finishReason
+            finish_reason: normalizedFinishReason
           }],
           usage: result.usage,
           uno: {
@@ -7522,14 +7364,18 @@ async function chatRoutes(app) {
         slotServiceStart = Date.now();
         write({ uno_queue: { model: slug2, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready \u2014 starting response" } });
       }
-      write(oaiChunk({ role: "assistant", content: "" }));
+      write(oaiChunk({ role: "assistant" }));
       let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
       let usageSource = "none";
       let ttftMs = null;
       let contentSoFar = "";
       let finishReason = "stop";
+      let hasSeenToolCalls = false;
       let providerSlug = decision.primary.providerSlug;
       let outcomeProviderId = null;
+      const heartbeatTimer = setInterval(() => {
+        if (!res.destroyed && !res.writableEnded) res.write(": keep-alive\n\n");
+      }, 15e3);
       try {
         const outcome = await (async () => {
           const iterator = streamChat(decision, adapterParams, void 0, request.signal);
@@ -7538,7 +7384,6 @@ async function chatRoutes(app) {
             if (step.done) return step.value;
             const ev = step.value;
             if (ev.type === "start") {
-              write({ uno_start: { provider: decision.primary.providerSlug } });
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
               const profile = ModelProfileRegistry.get(slug2);
@@ -7549,27 +7394,36 @@ async function chatRoutes(app) {
             } else if (ev.type === "reasoning_delta") {
               if (ctx.caps?.reasoning) {
                 const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
-                write({ id: chunkId, object: "chat.completion.chunk", created, model: body.model || slug2, choices: [], uno_reasoning: sanitizedReasoning });
+                write(oaiChunk({ reasoning_content: sanitizedReasoning }));
               }
             } else if (ev.type === "tool_call_delta") {
-              write(oaiChunk({ tool_calls: [{ index: ev.index, id: ev.id, type: "function", function: { name: ev.name, arguments: ev.arguments ?? "" } }] }));
+              if (ttftMs === null) ttftMs = Date.now() - startedAt;
+              const tcFunc = {};
+              if (ev.name !== void 0) tcFunc.name = ev.name;
+              if (ev.arguments !== void 0) tcFunc.arguments = ev.arguments;
+              const tcEntry = { index: ev.index, type: "function", function: tcFunc };
+              if (ev.id !== void 0) tcEntry.id = ev.id;
+              write(oaiChunk({ tool_calls: [tcEntry] }));
+              hasSeenToolCalls = true;
             } else if (ev.type === "usage") {
               usage = ev.usage;
               usageSource = ev.usageSource;
             } else if (ev.type === "done") {
-              finishReason = ev.finishReason;
+              finishReason = ev.finishReason === "stop" && hasSeenToolCalls ? "tool_calls" : ev.finishReason;
             }
           }
         })();
+        clearInterval(heartbeatTimer);
         providerSlug = outcome.providerSlug;
         outcomeProviderId = outcome.providerId;
         usage = outcome.usage;
         usageSource = outcome.usageSource;
-        finishReason = outcome.finishReason;
+        finishReason = outcome.finishReason === "stop" && hasSeenToolCalls ? "tool_calls" : outcome.finishReason;
         for (const [i, a] of outcome.attempts.entries()) {
           await db2.insert(requestAttempts).values({ requestId, providerId: a.providerId, attempt: i + 1, status: a.status, httpStatus: a.httpStatus, latencyMs: a.latencyMs, error: a.error });
         }
       } catch (err) {
+        clearInterval(heartbeatTimer);
         const aborted = request.signal.aborted;
         const message = aborted ? "Client disconnected" : err instanceof ApiError ? err.message : "Upstream provider error.";
         if (!aborted) {
@@ -7617,6 +7471,20 @@ async function chatRoutes(app) {
       }
       if (acquired) releaseSlot(acquiredKey, slotServiceStart ? Date.now() - slotServiceStart : 0);
     }
+  });
+  app.post("/chat/completions", async (request, reply) => {
+    return app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: request.headers,
+      payload: request.body
+    }).then((res) => {
+      reply.code(res.statusCode);
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (v !== void 0) reply.header(k, v);
+      }
+      return reply.send(res.rawPayload);
+    });
   });
 }
 

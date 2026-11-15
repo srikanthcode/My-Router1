@@ -10,10 +10,11 @@ import { spawnSync } from "node:child_process";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const distFile = path.resolve(here, "../dist/server.mjs");
 
-if (!fs.existsSync(distFile)) {
-  console.log("[prorouter-backend] dist/server.mjs not found, building...");
-  const buildScript = path.resolve(here, "build.mjs");
-  spawnSync("node", [buildScript], { stdio: "inherit" });
+console.log("[prorouter-backend] Building fresh dist/server.mjs bundle...");
+const buildScript = path.resolve(here, "build.mjs");
+const buildRes = spawnSync("node", [buildScript], { stdio: "inherit" });
+if (buildRes.status !== 0) {
+  console.error("[prorouter-backend] Build failed with exit code", buildRes.status);
 }
 
 console.log(`[prorouter-backend] Starting API Gateway via dist/server.mjs...`);
