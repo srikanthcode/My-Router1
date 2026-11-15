@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, notInArray, sql } from "drizzle-orm";
 import {
   closeDb,
   getDb,
@@ -229,6 +229,11 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     { provider: "openrouter", modelId: "openai/gpt-4.1", inCents: 250, outCents: 1000, source: "OpenRouter verified gateway" },
     { provider: "openai", modelId: "gpt-4o", inCents: 250, outCents: 1000, source: "OpenAI official pricing" },
     { provider: "openrouter", modelId: "openai/gpt-4o", inCents: 250, outCents: 1000, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "anthropic/claude-3.5-sonnet", inCents: 300, outCents: 1500, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "anthropic/claude-3-opus", inCents: 1500, outCents: 7500, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "google/gemini-2.0-flash-001", inCents: 15, outCents: 60, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "x-ai/grok-2-1212", inCents: 200, outCents: 1000, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "mistralai/mistral-large-2411", inCents: 200, outCents: 600, source: "OpenRouter verified gateway" },
     { provider: "prorouter-gateway", modelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", inCents: 14, outCents: 28, source: "TokenJuice verified gateway" },
     { provider: "groq", modelId: "qwen/qwen3.8-27b", inCents: 20, outCents: 80, source: "Groq official pricing" },
     { provider: "groq", modelId: "openai/gpt-oss-120b", inCents: 30, outCents: 120, source: "Groq official pricing" },
@@ -424,7 +429,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       canonicalId: "claude-3-5-sonnet",
       name: "Claude Sonnet",
       description: "Anthropic Claude Sonnet — balanced intelligence, high coding precision, and nuanced creative writing.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 200000,
       maxOutputTokens: 64000,
@@ -437,14 +442,17 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "openrouter", providerModelId: "anthropic/claude-3.5-sonnet", priority: 10 },
+        { provider: "anthropic", providerModelId: "claude-3-5-sonnet-20241022", priority: 20 },
+      ],
     },
     {
       slug: "claude-opus",
       canonicalId: "claude-3-opus",
       name: "Claude Opus",
       description: "Anthropic Claude Opus — deep analysis, nuanced reasoning, and complex task decomposition.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 200000,
       maxOutputTokens: 64000,
@@ -457,14 +465,17 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "openrouter", providerModelId: "anthropic/claude-3-opus", priority: 10 },
+        { provider: "anthropic", providerModelId: "claude-3-opus-20240229", priority: 20 },
+      ],
     },
     {
       slug: "gemini-pro",
       canonicalId: "gemini-1.5-pro",
       name: "Gemini Pro",
       description: "Google Gemini Pro — powerful multimodal model with vast context window and world knowledge.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 1000000,
       maxOutputTokens: 64000,
@@ -477,14 +488,16 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "openrouter", providerModelId: "google/gemini-2.0-flash-001", priority: 10 },
+      ],
     },
     {
       slug: "grok",
       canonicalId: "grok-2",
       name: "Grok",
       description: "xAI Grok — direct, truthful AI with real-time insight and witty demeanor.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 131072,
       maxOutputTokens: 64000,
@@ -497,14 +510,16 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "openrouter", providerModelId: "x-ai/grok-2-1212", priority: 10 },
+      ],
     },
     {
       slug: "mistral-large",
       canonicalId: "mistral-large-2407",
       name: "Mistral Large",
       description: "Mistral Large — flagship model for complex multilingual reasoning and precise instruction following.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 128000,
       maxOutputTokens: 64000,
@@ -517,7 +532,10 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "openrouter", providerModelId: "mistralai/mistral-large-2411", priority: 10 },
+        { provider: "mistral", providerModelId: "mistral-large-latest", priority: 20 },
+      ],
     },
     {
       slug: "glm-5.3",
@@ -785,6 +803,17 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
         target: [modelProviders.modelId, modelProviders.providerId],
         set: { providerModelId: link.providerModelId, priority: link.priority ?? 100, status: "active" },
       });
+    }
+
+    // Prune stale/legacy provider links that are no longer part of this model's active catalog definition
+    const allowedProviderIds = m.links
+      .map((l) => providerBySlug.get(l.provider)?.id)
+      .filter((id): id is string => Boolean(id));
+    if (allowedProviderIds.length > 0) {
+      await db.delete(modelProviders).where(and(
+        eq(modelProviders.modelId, existing.id),
+        notInArray(modelProviders.providerId, allowedProviderIds)
+      ));
     }
   }
 

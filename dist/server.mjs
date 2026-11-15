@@ -1311,7 +1311,7 @@ var emailLog = pgTable6(
 import { MongoClient } from "mongodb";
 
 // packages/database/src/seed.ts
-import { and, eq } from "drizzle-orm";
+import { and, eq, notInArray } from "drizzle-orm";
 
 // packages/database/src/catalog-aliases.ts
 var PRICING_TIER_SEEDS = [
@@ -1640,6 +1640,11 @@ async function seedDatabase(closeAtEnd = false) {
     { provider: "openrouter", modelId: "openai/gpt-4.1", inCents: 250, outCents: 1e3, source: "OpenRouter verified gateway" },
     { provider: "openai", modelId: "gpt-4o", inCents: 250, outCents: 1e3, source: "OpenAI official pricing" },
     { provider: "openrouter", modelId: "openai/gpt-4o", inCents: 250, outCents: 1e3, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "anthropic/claude-3.5-sonnet", inCents: 300, outCents: 1500, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "anthropic/claude-3-opus", inCents: 1500, outCents: 7500, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "google/gemini-2.0-flash-001", inCents: 15, outCents: 60, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "x-ai/grok-2-1212", inCents: 200, outCents: 1e3, source: "OpenRouter verified gateway" },
+    { provider: "openrouter", modelId: "mistralai/mistral-large-2411", inCents: 200, outCents: 600, source: "OpenRouter verified gateway" },
     { provider: "prorouter-gateway", modelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", inCents: 14, outCents: 28, source: "TokenJuice verified gateway" },
     { provider: "groq", modelId: "qwen/qwen3.8-27b", inCents: 20, outCents: 80, source: "Groq official pricing" },
     { provider: "groq", modelId: "openai/gpt-oss-120b", inCents: 30, outCents: 120, source: "Groq official pricing" },
@@ -1809,7 +1814,7 @@ async function seedDatabase(closeAtEnd = false) {
       canonicalId: "claude-3-5-sonnet",
       name: "Claude Sonnet",
       description: "Anthropic Claude Sonnet \u2014 balanced intelligence, high coding precision, and nuanced creative writing.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 2e5,
       maxOutputTokens: 64e3,
@@ -1822,14 +1827,17 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+      links: [
+        { provider: "openrouter", providerModelId: "anthropic/claude-3.5-sonnet", priority: 10 },
+        { provider: "anthropic", providerModelId: "claude-3-5-sonnet-20241022", priority: 20 }
+      ]
     },
     {
       slug: "claude-opus",
       canonicalId: "claude-3-opus",
       name: "Claude Opus",
       description: "Anthropic Claude Opus \u2014 deep analysis, nuanced reasoning, and complex task decomposition.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 2e5,
       maxOutputTokens: 64e3,
@@ -1842,14 +1850,17 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+      links: [
+        { provider: "openrouter", providerModelId: "anthropic/claude-3-opus", priority: 10 },
+        { provider: "anthropic", providerModelId: "claude-3-opus-20240229", priority: 20 }
+      ]
     },
     {
       slug: "gemini-pro",
       canonicalId: "gemini-1.5-pro",
       name: "Gemini Pro",
       description: "Google Gemini Pro \u2014 powerful multimodal model with vast context window and world knowledge.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 1e6,
       maxOutputTokens: 64e3,
@@ -1862,14 +1873,16 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+      links: [
+        { provider: "openrouter", providerModelId: "google/gemini-2.0-flash-001", priority: 10 }
+      ]
     },
     {
       slug: "grok",
       canonicalId: "grok-2",
       name: "Grok",
       description: "xAI Grok \u2014 direct, truthful AI with real-time insight and witty demeanor.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 131072,
       maxOutputTokens: 64e3,
@@ -1882,14 +1895,16 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+      links: [
+        { provider: "openrouter", providerModelId: "x-ai/grok-2-1212", priority: 10 }
+      ]
     },
     {
       slug: "mistral-large",
       canonicalId: "mistral-large-2407",
       name: "Mistral Large",
       description: "Mistral Large \u2014 flagship model for complex multilingual reasoning and precise instruction following.",
-      provider: "prorouter-gateway",
+      provider: "openrouter",
       isFree: false,
       contextWindow: 128e3,
       maxOutputTokens: 64e3,
@@ -1902,7 +1917,10 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }]
+      links: [
+        { provider: "openrouter", providerModelId: "mistralai/mistral-large-2411", priority: 10 },
+        { provider: "mistral", providerModelId: "mistral-large-latest", priority: 20 }
+      ]
     },
     {
       slug: "glm-5.3",
@@ -2158,6 +2176,13 @@ async function seedDatabase(closeAtEnd = false) {
         target: [modelProviders.modelId, modelProviders.providerId],
         set: { providerModelId: link.providerModelId, priority: link.priority ?? 100, status: "active" }
       });
+    }
+    const allowedProviderIds = m.links.map((l) => providerBySlug.get(l.provider)?.id).filter((id) => Boolean(id));
+    if (allowedProviderIds.length > 0) {
+      await db2.delete(modelProviders).where(and(
+        eq(modelProviders.modelId, existing.id),
+        notInArray(modelProviders.providerId, allowedProviderIds)
+      ));
     }
   }
   const aliasProvider = providerBySlug.get(PRO_ALIAS_PROVIDER_SLUG);
@@ -2416,7 +2441,7 @@ function checkRateLimit(key, limit, windowSeconds) {
 }
 
 // apps/api/src/lib/wallet.ts
-import { and as and3, eq as eq3, gt as gt2, sql } from "drizzle-orm";
+import { and as and3, eq as eq3, gt as gt2, sql as sql2 } from "drizzle-orm";
 
 // apps/api/src/lib/events.ts
 var EventHub = class {
@@ -2545,7 +2570,7 @@ async function creditWallet(params) {
       }
     }
     await ensureWallet(tx, params.userId);
-    const [row] = await tx.update(wallets).set({ balancePaise: sql`${wallets.balancePaise} + ${params.amountPaise}`, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(wallets.userId, params.userId)).returning();
+    const [row] = await tx.update(wallets).set({ balancePaise: sql2`${wallets.balancePaise} + ${params.amountPaise}`, updatedAt: /* @__PURE__ */ new Date() }).where(eq3(wallets.userId, params.userId)).returning();
     const balance = row.balancePaise;
     const [txRow] = await tx.insert(walletTransactions).values({
       userId: params.userId,
@@ -2994,7 +3019,7 @@ async function keyRoutes(app) {
 }
 
 // apps/api/src/lib/catalog.ts
-import { desc as desc3, eq as eq7, gte, or, sql as sql2 } from "drizzle-orm";
+import { desc as desc3, eq as eq7, gte, or, sql as sql3 } from "drizzle-orm";
 
 // apps/api/src/lib/pricing.ts
 import { and as and4, eq as eq6 } from "drizzle-orm";
@@ -3178,6 +3203,129 @@ var VERIFIED_BACKEND_MODELS = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 2e3, output: 8e3 }
+  },
+  // ── OpenRouter Frontier Flagship Coding Models ──
+  "openrouter/anthropic/claude-3.5-sonnet": {
+    id: "openrouter/anthropic/claude-3.5-sonnet",
+    name: "Claude 3.5 Sonnet (OpenRouter)",
+    provider: "openrouter",
+    upstreamModelId: "anthropic/claude-3.5-sonnet",
+    contextWindow: 2e5,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      image_understanding: "supported",
+      document_understanding: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      complex_analysis: "supported",
+      research: "supported",
+      planning: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 2400, output: 12e3 }
+  },
+  "openrouter/anthropic/claude-3-opus": {
+    id: "openrouter/anthropic/claude-3-opus",
+    name: "Claude 3 Opus (OpenRouter)",
+    provider: "openrouter",
+    upstreamModelId: "anthropic/claude-3-opus",
+    contextWindow: 2e5,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      deep_reasoning: "supported",
+      coding: "supported",
+      agentic_coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      complex_analysis: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 12e3, output: 6e4 }
+  },
+  "openrouter/google/gemini-2.0-flash-001": {
+    id: "openrouter/google/gemini-2.0-flash-001",
+    name: "Gemini 2.0 Flash (OpenRouter)",
+    provider: "openrouter",
+    upstreamModelId: "google/gemini-2.0-flash-001",
+    contextWindow: 1e6,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      low_latency: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 120, output: 480 }
+  },
+  "openrouter/x-ai/grok-2-1212": {
+    id: "openrouter/x-ai/grok-2-1212",
+    name: "Grok 2 (OpenRouter)",
+    provider: "openrouter",
+    upstreamModelId: "x-ai/grok-2-1212",
+    contextWindow: 131072,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 1600, output: 8e3 }
+  },
+  "openrouter/mistralai/mistral-large-2411": {
+    id: "openrouter/mistralai/mistral-large-2411",
+    name: "Mistral Large 2411 (OpenRouter)",
+    provider: "openrouter",
+    upstreamModelId: "mistralai/mistral-large-2411",
+    contextWindow: 128e3,
+    maxOutputTokens: 64e3,
+    capabilities: makeCaps({
+      reasoning: "supported",
+      coding: "supported",
+      tool_calling: "supported",
+      function_calling: "supported",
+      vision: "supported",
+      json_structured: "supported",
+      streaming: "supported",
+      instruction_following: "supported"
+    }),
+    verified: true,
+    healthStatus: "active",
+    isFree: false,
+    costPaisePerMillion: { input: 1600, output: 4800 }
   },
   // ── 1. GPT OSS Models ──
   "nabh/gpt-oss-20b": {
@@ -5316,10 +5464,10 @@ function selectAutoModel(options, hints) {
 async function listModels(filters = {}) {
   const db2 = await getDb();
   const conditions = [];
-  conditions.push(sql2`${models.status} IN ('active','coming_soon')`);
+  conditions.push(sql3`${models.status} IN ('active','coming_soon')`);
   if (filters.q) {
     const q = `%${filters.q.toLowerCase()}%`;
-    conditions.push(or(sql2`lower(${models.name}) LIKE ${q}`, sql2`lower(${models.slug}) LIKE ${q}`, sql2`lower(${models.description}) LIKE ${q}`));
+    conditions.push(or(sql3`lower(${models.name}) LIKE ${q}`, sql3`lower(${models.slug}) LIKE ${q}`, sql3`lower(${models.description}) LIKE ${q}`));
   }
   if (filters.provider) {
     const p = (await db2.select().from(providers).where(eq7(providers.slug, filters.provider)))[0];
@@ -5329,8 +5477,8 @@ async function listModels(filters = {}) {
   if (filters.free) conditions.push(eq7(models.isFree, true));
   if (filters.paid) conditions.push(eq7(models.isFree, false));
   if (filters.minContext) conditions.push(gte(models.contextWindow, filters.minContext));
-  const where = conditions.length ? sql2.join(conditions, sql2` AND `) : void 0;
-  const totalRows = await db2.select({ n: sql2`count(*)::int` }).from(models).where(where);
+  const where = conditions.length ? sql3.join(conditions, sql3` AND `) : void 0;
+  const totalRows = await db2.select({ n: sql3`count(*)::int` }).from(models).where(where);
   const total = totalRows[0]?.n ?? 0;
   let orderBy = desc3(models.popularity);
   switch (filters.sort) {
@@ -5849,7 +5997,7 @@ async function catalogRoutes(app) {
 
 // apps/api/src/routes/chat.ts
 import { z as z3 } from "zod";
-import { and as and7, eq as eq10, gt as gt3, sql as sql5 } from "drizzle-orm";
+import { and as and7, eq as eq10, gt as gt3, sql as sql6 } from "drizzle-orm";
 
 // packages/providers/src/adapter.ts
 var ProviderError = class extends Error {
@@ -6531,7 +6679,7 @@ function enforceRateLimits(request, auth) {
 }
 
 // apps/api/src/lib/freequota.ts
-import { eq as eq8, sql as sql3 } from "drizzle-orm";
+import { eq as eq8, sql as sql4 } from "drizzle-orm";
 function bucketKeys(userId, now = Date.now()) {
   const minute = Math.floor(now / 6e4);
   const hour = Math.floor(now / 36e5);
@@ -6561,7 +6709,7 @@ async function consumeFreeQuota(userId, limits) {
   try {
     for (const b of buckets2) {
       const limit = limitsByWindow[b.window];
-      const insertSql = sql3`INSERT INTO free_usage (user_id, bucket_key, count, updated_at) VALUES (${userId}, ${b.key}, 1, now()) ON CONFLICT (user_id, bucket_key) DO UPDATE SET count = free_usage.count + 1, updated_at = now() RETURNING count`;
+      const insertSql = sql4`INSERT INTO free_usage (user_id, bucket_key, count, updated_at) VALUES (${userId}, ${b.key}, 1, now()) ON CONFLICT (user_id, bucket_key) DO UPDATE SET count = free_usage.count + 1, updated_at = now() RETURNING count`;
       const rows = await db2.execute(insertSql);
       const count = Number(rows.rows?.[0]?.count ?? 1);
       consumed.push(b);
@@ -6569,7 +6717,7 @@ async function consumeFreeQuota(userId, limits) {
     }
   } catch (err) {
     for (const c of consumed) {
-      await db2.execute(sql3`UPDATE free_usage SET count = GREATEST(count - 1, 0) WHERE user_id = ${userId} AND bucket_key = ${c.key}`);
+      await db2.execute(sql4`UPDATE free_usage SET count = GREATEST(count - 1, 0) WHERE user_id = ${userId} AND bucket_key = ${c.key}`);
     }
     if (err instanceof QuotaExceeded) {
       const retryAfter = err.window === "minute" ? 60 : err.window === "hour" ? 3600 : 86400;
@@ -6638,7 +6786,7 @@ function queueSnapshot() {
 }
 
 // apps/api/src/lib/pipeline.ts
-import { and as and6, desc as desc4, eq as eq9, inArray, or as or2, sql as sql4 } from "drizzle-orm";
+import { and as and6, desc as desc4, eq as eq9, inArray, or as or2, sql as sql5 } from "drizzle-orm";
 var MODEL_ALIASES = {
   // Pro Router Official Tiered Models
   "pr-zenith": "claude-opus-5",
@@ -6772,8 +6920,8 @@ async function loadModelContext(slug2) {
   const lowerSlug = slug2.toLowerCase();
   const rows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(or2(
     eq9(models.slug, slug2),
-    sql4`lower(${models.slug}) = ${lowerSlug}`,
-    sql4`lower(${models.name}) = ${lowerSlug}`
+    sql5`lower(${models.slug}) = ${lowerSlug}`,
+    sql5`lower(${models.name}) = ${lowerSlug}`
   ));
   let r = rows[0];
   if (!r) {
@@ -7500,8 +7648,8 @@ async function chatRoutes(app) {
       if (activePromoActivationId && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
         const totalToks = usage.total_tokens || usage.prompt_tokens + usage.completion_tokens;
         await db2.update(promotionalActivations).set({
-          requestCount: sql5`${promotionalActivations.requestCount} + 1`,
-          tokensConsumed: sql5`${promotionalActivations.tokensConsumed} + ${totalToks}`
+          requestCount: sql6`${promotionalActivations.requestCount} + 1`,
+          tokensConsumed: sql6`${promotionalActivations.tokensConsumed} + ${totalToks}`
         }).where(eq10(promotionalActivations.id, activePromoActivationId)).catch(() => {
         });
       }
@@ -7521,7 +7669,7 @@ async function chatRoutes(app) {
         providerId: params.providerId
       }).where(eq10(requests.id, requestId));
       if (auth.apiKey) {
-        await db2.update(apiKeys).set({ requestCount: sql5`${apiKeys.requestCount} + 1`, spendPaise: sql5`${apiKeys.spendPaise} + ${cost}`, lastUsedAt: /* @__PURE__ */ new Date() }).where(eq10(apiKeys.id, auth.apiKey.id));
+        await db2.update(apiKeys).set({ requestCount: sql6`${apiKeys.requestCount} + 1`, spendPaise: sql6`${apiKeys.spendPaise} + ${cost}`, lastUsedAt: /* @__PURE__ */ new Date() }).where(eq10(apiKeys.id, auth.apiKey.id));
       }
       if (params.errorCode) {
         eventHub.publish(auth.user.id, "usage.request.failed", {
@@ -8062,7 +8210,7 @@ async function walletRoutes(app) {
 
 // apps/api/src/routes/promotions.ts
 import { z as z5 } from "zod";
-import { and as and8, desc as desc7, eq as eq12, gt as gt4, lt, sql as sql6 } from "drizzle-orm";
+import { and as and8, desc as desc7, eq as eq12, gt as gt4, lt, sql as sql7 } from "drizzle-orm";
 async function getActiveCampaign() {
   const db2 = await getDb();
   const now = /* @__PURE__ */ new Date();
@@ -8149,7 +8297,7 @@ async function promotionRoutes(app) {
     try {
       await db2.transaction(async (tx) => {
         await tx.insert(giftCodeRedemptions).values({ campaignId: campaign.id, codeId: code.id, redeemerUserId: user.id });
-        await tx.update(giftCodes).set({ redemptionCount: sql6`${giftCodes.redemptionCount} + 1` }).where(eq12(giftCodes.id, code.id));
+        await tx.update(giftCodes).set({ redemptionCount: sql7`${giftCodes.redemptionCount} + 1` }).where(eq12(giftCodes.id, code.id));
         await tx.insert(astraEntitlements).values({ userId: user.id, campaignId: campaign.id, sourceCodeId: code.id, activatedAt, expiresAt, status: "active" });
         await tx.insert(notifications).values({
           userId: user.id,
@@ -8185,8 +8333,8 @@ async function promotionRoutes(app) {
     const code = await getOrCreatePersonalCode(user.id, campaign.id);
     const codes = await db2.select().from(giftCodes).where(eq12(giftCodes.code, code));
     const codeRow = codes[0];
-    const redemptions = await db2.select({ count: sql6`count(*)::int` }).from(giftCodeRedemptions).where(eq12(giftCodeRedemptions.codeId, codeRow.id));
-    const activeCount = await db2.select({ count: sql6`count(*)::int` }).from(astraEntitlements).where(and8(eq12(astraEntitlements.sourceCodeId, codeRow.id), eq12(astraEntitlements.status, "active"), gt4(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const redemptions = await db2.select({ count: sql7`count(*)::int` }).from(giftCodeRedemptions).where(eq12(giftCodeRedemptions.codeId, codeRow.id));
+    const activeCount = await db2.select({ count: sql7`count(*)::int` }).from(astraEntitlements).where(and8(eq12(astraEntitlements.sourceCodeId, codeRow.id), eq12(astraEntitlements.status, "active"), gt4(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
     return {
       code,
       sharePath: `/redeem?code=${code}`,
@@ -8333,7 +8481,7 @@ async function promotionRoutes(app) {
 
 // apps/api/src/routes/admin.ts
 import { z as z6 } from "zod";
-import { and as and9, desc as desc8, eq as eq13, gte as gte2, sql as sql7 } from "drizzle-orm";
+import { and as and9, desc as desc8, eq as eq13, gte as gte2, sql as sql8 } from "drizzle-orm";
 async function runHealthCheck(providerId) {
   const db2 = await getDb();
   const rows = await db2.select().from(providers).where(eq13(providers.id, providerId));
@@ -8425,14 +8573,14 @@ async function adminRoutes(app) {
     await requireRole(request, ["admin", "support"]);
     const db2 = await getDb();
     const since = new Date(Date.now() - 30 * 864e5);
-    const [userCount] = await db2.select({ n: sql7`count(*)::int` }).from(users);
-    const [reqCount] = await db2.select({ n: sql7`count(*)::int` }).from(requests).where(gte2(requests.createdAt, since));
-    const revenue = await db2.select({ total: sql7`coalesce(sum(${payments.amountPaise}),0)::bigint` }).from(payments).where(eq13(payments.status, "captured"));
-    const spend = await db2.select({ total: sql7`coalesce(sum(-${walletTransactions.amountPaise}),0)::bigint` }).from(walletTransactions).where(eq13(walletTransactions.type, "usage"));
-    const balance = await db2.select({ total: sql7`coalesce(sum(${wallets.balancePaise}),0)::bigint` }).from(wallets);
-    const [redemptions] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodeRedemptions);
-    const [ents] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()));
-    const [freeReqs] = await db2.select({ n: sql7`count(*)::int` }).from(requests).where(and9(gte2(requests.createdAt, since), eq13(requests.isFree, true)));
+    const [userCount] = await db2.select({ n: sql8`count(*)::int` }).from(users);
+    const [reqCount] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(gte2(requests.createdAt, since));
+    const revenue = await db2.select({ total: sql8`coalesce(sum(${payments.amountPaise}),0)::bigint` }).from(payments).where(eq13(payments.status, "captured"));
+    const spend = await db2.select({ total: sql8`coalesce(sum(-${walletTransactions.amountPaise}),0)::bigint` }).from(walletTransactions).where(eq13(walletTransactions.type, "usage"));
+    const balance = await db2.select({ total: sql8`coalesce(sum(${wallets.balancePaise}),0)::bigint` }).from(wallets);
+    const [redemptions] = await db2.select({ n: sql8`count(*)::int` }).from(giftCodeRedemptions);
+    const [ents] = await db2.select({ n: sql8`count(*)::int` }).from(astraEntitlements).where(gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()));
+    const [freeReqs] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(and9(gte2(requests.createdAt, since), eq13(requests.isFree, true)));
     return {
       users: userCount?.n ?? 0,
       requests30d: reqCount?.n ?? 0,
@@ -8581,7 +8729,7 @@ async function adminRoutes(app) {
     let rows;
     if (q.q) {
       const pattern = `%${q.q.toLowerCase()}%`;
-      rows = await db2.select().from(users).where(sql7`lower(${users.email}) LIKE ${pattern}`).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
+      rows = await db2.select().from(users).where(sql8`lower(${users.email}) LIKE ${pattern}`).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     } else {
       rows = await db2.select().from(users).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     }
@@ -8610,7 +8758,7 @@ async function adminRoutes(app) {
       await creditWallet({ userId: id, amountPaise: body.amountPaise, type: "adjustment", reference: `admin:${admin.id}`, idempotencyKey: `adj:${admin.id}:${Date.now()}`, metadata: { reason: body.reason } });
     } else if (body.amountPaise < 0) {
       await db2.insert(walletTransactions).values({ userId: id, type: "adjustment", amountPaise: body.amountPaise, balanceAfterPaise: -1, reference: `admin:${admin.id}`, metadata: { reason: body.reason } });
-      await db2.update(wallets).set({ balancePaise: sql7`GREATEST(${wallets.balancePaise} + ${body.amountPaise}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq13(wallets.userId, id));
+      await db2.update(wallets).set({ balancePaise: sql8`GREATEST(${wallets.balancePaise} + ${body.amountPaise}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq13(wallets.userId, id));
     }
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "wallet.adjust", targetType: "user", targetId: id, metadata: { amountPaise: body.amountPaise, reason: body.reason } });
     const w = await db2.select().from(wallets).where(eq13(wallets.userId, id));
@@ -8621,9 +8769,9 @@ async function adminRoutes(app) {
     const db2 = await getDb();
     const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) return { campaign: null, stats: null, codes: [] };
-    const [codeCount] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id));
-    const [redCount] = await db2.select({ n: sql7`count(*)::int` }).from(giftCodeRedemptions).where(eq13(giftCodeRedemptions.campaignId, campaign.id));
-    const [activeUsers] = await db2.select({ n: sql7`count(*)::int` }).from(astraEntitlements).where(and9(eq13(astraEntitlements.campaignId, campaign.id), eq13(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const [codeCount] = await db2.select({ n: sql8`count(*)::int` }).from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id));
+    const [redCount] = await db2.select({ n: sql8`count(*)::int` }).from(giftCodeRedemptions).where(eq13(giftCodeRedemptions.campaignId, campaign.id));
+    const [activeUsers] = await db2.select({ n: sql8`count(*)::int` }).from(astraEntitlements).where(and9(eq13(astraEntitlements.campaignId, campaign.id), eq13(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
     const codes = await db2.select().from(giftCodes).where(eq13(giftCodes.campaignId, campaign.id)).orderBy(desc8(giftCodes.createdAt)).limit(200);
     return {
       campaign,
@@ -9043,7 +9191,7 @@ function slug(m) {
 }
 
 // apps/api/src/routes/dashboard.ts
-import { and as and10, desc as desc9, eq as eq14, gte as gte3, sql as sql8 } from "drizzle-orm";
+import { and as and10, desc as desc9, eq as eq14, gte as gte3, sql as sql9 } from "drizzle-orm";
 import { and as and22, eq as eq22, gte as gte22 } from "drizzle-orm";
 async function dashboardRoutes(app) {
   app.get("/dashboard/overview", async (request) => {
@@ -9053,12 +9201,12 @@ async function dashboardRoutes(app) {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const balance = await getBalance(user.id);
-    const [today] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
-    const [month] = await db2.select({ n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
-    const [keys] = await db2.select({ n: sql8`count(*)::int` }).from(apiKeys).where(and10(eq14(apiKeys.userId, user.id), sql8`${apiKeys.revokedAt} IS NULL`));
+    const [today] = await db2.select({ n: sql9`count(*)::int`, tokens: sql9`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql9`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
+    const [month] = await db2.select({ n: sql9`count(*)::int`, tokens: sql9`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql9`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and10(eq14(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
+    const [keys] = await db2.select({ n: sql9`count(*)::int` }).from(apiKeys).where(and10(eq14(apiKeys.userId, user.id), sql9`${apiKeys.revokedAt} IS NULL`));
     const subRows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq22(subscriptions.planId, plans.id)).where(eq22(subscriptions.userId, user.id));
     const plan = subRows.find((s) => s.plan)?.plan ?? null;
-    const [freeToday] = await db2.select({ n: sql8`coalesce(sum(count),0)::int` }).from(freeUsage).where(eq22(freeUsage.userId, user.id));
+    const [freeToday] = await db2.select({ n: sql9`coalesce(sum(count),0)::int` }).from(freeUsage).where(eq22(freeUsage.userId, user.id));
     const astraRows = await db2.select().from(astraEntitlements).where(and22(eq22(astraEntitlements.userId, user.id), eq22(astraEntitlements.status, "active"), gte22(astraEntitlements.expiresAt, now)));
     const astra = astraRows[0] ?? null;
     return {
@@ -9105,7 +9253,7 @@ async function dashboardRoutes(app) {
     if (q.status === "errors") conditions.push(eq14(requests.status, "error"));
     if (q.status === "success") conditions.push(eq14(requests.status, "success"));
     const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and10(...conditions)).orderBy(desc9(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
-    const [total] = await db2.select({ n: sql8`count(*)::int` }).from(requests).where(and10(...conditions));
+    const [total] = await db2.select({ n: sql9`count(*)::int` }).from(requests).where(and10(...conditions));
     return {
       total: total?.n ?? 0,
       items: rows.map((x) => ({
@@ -9177,8 +9325,8 @@ async function dashboardRoutes(app) {
     const user = await requireUser(request);
     const db2 = await getDb();
     const since = new Date(Date.now() - 30 * 864e5);
-    const byModel = await db2.select({ model: models.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql8`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and10(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql8`count(*)`));
-    const byProvider = await db2.select({ provider: providers.slug, n: sql8`count(*)::int`, tokens: sql8`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and10(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql8`count(*)`));
+    const byModel = await db2.select({ model: models.slug, n: sql9`count(*)::int`, tokens: sql9`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql9`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and10(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql9`count(*)`));
+    const byProvider = await db2.select({ provider: providers.slug, n: sql9`count(*)::int`, tokens: sql9`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and10(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql9`count(*)`));
     return { byModel: byModel.map((r) => ({ ...r, cost: Number(r.cost) })), byProvider };
   });
   app.get("/notifications", async (request) => {
@@ -9190,7 +9338,7 @@ async function dashboardRoutes(app) {
   app.post("/notifications/read", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and10(eq14(notifications.userId, user.id), sql8`${notifications.readAt} IS NULL`));
+    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and10(eq14(notifications.userId, user.id), sql9`${notifications.readAt} IS NULL`));
     return { ok: true };
   });
   app.get("/status", async () => {
@@ -9249,7 +9397,7 @@ async function planRoutes(app) {
 
 // apps/api/src/routes/usage.ts
 import { z as z7 } from "zod";
-import { and as and11, desc as desc10, eq as eq16, gte as gte4, lte, sql as sql9 } from "drizzle-orm";
+import { and as and11, desc as desc10, eq as eq16, gte as gte4, lte, sql as sql10 } from "drizzle-orm";
 var usageQuery = z7.object({
   limit: z7.coerce.number().int().min(1).max(100).default(50),
   offset: z7.coerce.number().int().min(0).default(0),
@@ -9283,7 +9431,7 @@ async function usageRoutes(app) {
     if (q.from) conditions.push(gte4(requests.createdAt, new Date(q.from)));
     if (q.to) conditions.push(lte(requests.createdAt, new Date(q.to)));
     const where = and11(...conditions);
-    const totalRows = await db2.select({ n: sql9`count(*)::int` }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).where(where);
+    const totalRows = await db2.select({ n: sql10`count(*)::int` }).from(requests).leftJoin(models, eq16(models.id, requests.modelId)).where(where);
     const rows = await db2.select({
       request: requests,
       modelSlug: models.slug,
