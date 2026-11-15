@@ -415,3 +415,4 @@ describe("Master Coding Agent & Tool Calling Regression Suite (Tests A through K
     expect(capturedMessages[5].tool_call_id).toBe("c2");
   });
 });
+
