@@ -305,6 +305,11 @@ export async function hydrateCandidates(
         if (forcedProvider && backend.provider !== forcedProvider) continue;
         const dbProvider = providerBySlug.get(backend.provider);
         if (!dbProvider) continue;
+        if (requirements?.tools) {
+          const providerSupportsTools = dbProvider.capabilities?.includes("tool_calls");
+          const backendSupportsTools = backend.capabilities.tool_calling === "supported";
+          if (!providerSupportsTools || !backendSupportsTools) continue;
+        }
         const isHealthy = ProviderHealthMonitor.isAvailable(backend.provider);
         dynamicCandidates.push({
           linkId: `dyn-${backend.id}-${i}`,
@@ -501,43 +506,122 @@ const REQUIRES_API_KEY = new Set([
 
 const credentialCursor = new Map<string, number>();
 
+/** Get ordered candidate key pool for in-request rotation and retries. */
+export async function getCandidateKeyPool(candidate: RouteCandidate): Promise<string[]> {
+  const keys: string[] = [];
+
+  try {
+    const db = await getDb();
+    const creds = await db
+      .select()
+      .from(providerCredentials)
+      .where(and(eq(providerCredentials.providerId, candidate.providerId), eq(providerCredentials.active, true)));
+    if (creds.length > 0) {
+      const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
+      credentialCursor.set(candidate.providerId, start + 1);
+      for (let offset = 0; offset < creds.length; offset++) {
+        const cred = creds[(start + offset) % creds.length];
+        try {
+          const decrypted = decryptSecret(cred.ciphertext, cred.iv, cred.authTag ?? "");
+          if (decrypted && !keys.includes(decrypted)) keys.push(decrypted);
+        } catch {
+          // ignore decrypt failure
+        }
+      }
+    }
+  } catch {
+    // db fallback
+  }
+
+  let envPool: string[] = [];
+  if (candidate.providerSlug === "prorouter-gateway") {
+    envPool = getBackendGatewayPool();
+    if (envPool.length === 0 && process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY) {
+      envPool = [process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY];
+    }
+  } else if (candidate.providerSlug === "openai") {
+    envPool = getBackendOpenAIPool();
+  } else if (candidate.providerSlug === "requesty") {
+    envPool = getBackendRequestyPool();
+  } else if (candidate.providerSlug === "groq") {
+    envPool = getBackendGroqPool();
+  } else if (candidate.providerSlug === "openrouter") {
+    envPool = getBackendOpenRouterPool();
+  } else if (candidate.providerSlug === "nabh") {
+    envPool = getBackendNabhPool();
+  } else if (ENV_KEY_MAP[candidate.providerSlug]) {
+    envPool = [ENV_KEY_MAP[candidate.providerSlug]!];
+  }
+
+  if (envPool.length > 0) {
+    let poolIndex = 0;
+    if (candidate.providerSlug === "prorouter-gateway") {
+      poolIndex = backendPoolIndex;
+      backendPoolIndex = (backendPoolIndex + 1) % envPool.length;
+    } else if (candidate.providerSlug === "openai") {
+      poolIndex = backendOpenAIPoolIndex;
+      backendOpenAIPoolIndex = (backendOpenAIPoolIndex + 1) % envPool.length;
+    } else if (candidate.providerSlug === "requesty") {
+      poolIndex = backendRequestyPoolIndex;
+      backendRequestyPoolIndex = (backendRequestyPoolIndex + 1) % envPool.length;
+    } else if (candidate.providerSlug === "groq") {
+      poolIndex = backendGroqPoolIndex;
+      backendGroqPoolIndex = (backendGroqPoolIndex + 1) % envPool.length;
+    } else if (candidate.providerSlug === "openrouter") {
+      poolIndex = backendOpenRouterPoolIndex;
+      backendOpenRouterPoolIndex = (backendOpenRouterPoolIndex + 1) % envPool.length;
+    } else if (candidate.providerSlug === "nabh") {
+      poolIndex = backendNabhPoolIndex;
+      backendNabhPoolIndex = (backendNabhPoolIndex + 1) % envPool.length;
+    }
+    for (let i = 0; i < envPool.length; i++) {
+      const k = envPool[(poolIndex + i) % envPool.length];
+      if (k && !keys.includes(k)) keys.push(k);
+    }
+  }
+
+  return keys;
+}
+
 /** Build an adapter with decrypted credentials (secrets never leave the server). */
-export async function getAdapter(candidate: RouteCandidate): Promise<ProviderAdapter> {
+export async function getAdapter(candidate: RouteCandidate, apiKeyOverride?: string): Promise<ProviderAdapter> {
   const db = await getDb();
-  const creds = await db.select().from(providerCredentials).where(and(eq(providerCredentials.providerId, candidate.providerId), eq(providerCredentials.active, true)));
   const providerRows = await db.select().from(providers).where(eq(providers.id, candidate.providerId));
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
 
-  let apiKey: string | undefined;
-  if (creds.length > 0) {
-    const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
-    credentialCursor.set(candidate.providerId, start + 1);
-    for (let offset = 0; offset < creds.length; offset++) {
-      const cred = creds[(start + offset) % creds.length];
-      try {
-        apiKey = decryptSecret(cred.ciphertext, cred.iv, cred.authTag ?? "");
-        if (apiKey) break;
-      } catch {
-        apiKey = undefined;
+  let apiKey: string | undefined = apiKeyOverride;
+  if (!apiKey) {
+    const creds = await db.select().from(providerCredentials).where(and(eq(providerCredentials.providerId, candidate.providerId), eq(providerCredentials.active, true)));
+    if (creds.length > 0) {
+      const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
+      credentialCursor.set(candidate.providerId, start + 1);
+      for (let offset = 0; offset < creds.length; offset++) {
+        const cred = creds[(start + offset) % creds.length];
+        try {
+          apiKey = decryptSecret(cred.ciphertext, cred.iv, cred.authTag ?? "");
+          if (apiKey) break;
+        } catch {
+          apiKey = undefined;
+        }
       }
     }
-  }
 
-  if (candidate.providerSlug === "prorouter-gateway") {
-    apiKey = getBackendGatewayKey() || apiKey;
-  } else if (candidate.providerSlug === "openai") {
-    apiKey = getBackendOpenAIKey() || apiKey;
-  } else if (candidate.providerSlug === "requesty") {
-    apiKey = getBackendRequestyKey() || apiKey;
-  } else if (candidate.providerSlug === "groq") {
-    apiKey = getBackendGroqKey() || apiKey;
-  } else if (candidate.providerSlug === "openrouter") {
-    apiKey = getBackendOpenRouterKey() || apiKey;
-  } else if (candidate.providerSlug === "nabh") {
-    apiKey = getBackendNabhKey() || apiKey;
-  } else if (!apiKey) {
-    apiKey = ENV_KEY_MAP[candidate.providerSlug];
+    if (candidate.providerSlug === "prorouter-gateway") {
+      apiKey = getBackendGatewayKey() || apiKey;
+    } else if (candidate.providerSlug === "openai") {
+      apiKey = getBackendOpenAIKey() || apiKey;
+    } else if (candidate.providerSlug === "requesty") {
+      apiKey = getBackendRequestyKey() || apiKey;
+    } else if (candidate.providerSlug === "groq") {
+      apiKey = getBackendGroqKey() || apiKey;
+    } else if (candidate.providerSlug === "openrouter") {
+      apiKey = getBackendOpenRouterKey() || apiKey;
+    } else if (candidate.providerSlug === "nabh") {
+      apiKey = getBackendNabhKey() || apiKey;
+    } else if (!apiKey) {
+      apiKey = ENV_KEY_MAP[candidate.providerSlug];
+    }
   }
 
   if (!apiKey && REQUIRES_API_KEY.has(candidate.providerSlug)) {
@@ -581,7 +665,7 @@ export interface ExecutionResult {
   attempts: Array<{ providerId: string; providerSlug: string; status: string; httpStatus: number | null; latencyMs: number; error: string | null }>;
 }
 
-/** Non-streaming execution with provider fallback (§54). */
+/** Non-streaming execution with provider fallback (§54) and in-request key rotation. */
 export async function executeChat(decision: RouteDecision, params: AdapterChatParams, signal?: AbortSignal): Promise<ExecutionResult> {
   const chain = [decision.primary, ...decision.fallbackChain];
   const attempts: ExecutionResult["attempts"] = [];
@@ -591,23 +675,36 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
     if (signal?.aborted) {
       throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
     }
-    const startedAt = Date.now();
-    try {
-      const adapter = await getAdapter(candidate);
-      const result = await adapter.chat({ ...params, model: candidate.upstreamModelId }, signal);
-      ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
-      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
-    } catch (err) {
-      if (signal?.aborted) {
-        throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+    const keyPool = await getCandidateKeyPool(candidate);
+    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 3) : [undefined];
+
+    let candidateFailed = false;
+    for (let kIdx = 0; kIdx < keysToTry.length; kIdx++) {
+      const currentApiKey = keysToTry[kIdx];
+      const startedAt = Date.now();
+      try {
+        const adapter = await getAdapter(candidate, currentApiKey);
+        const result = await adapter.chat({ ...params, model: candidate.upstreamModelId }, signal);
+        ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
+        attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
+        return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
+      } catch (err) {
+        if (signal?.aborted) {
+          throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
+        }
+        const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
+        lastError = pErr;
+        ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
+        attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
+        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 401 || pErr.httpStatus === 403 || pErr.httpStatus === 429 || (pErr.httpStatus !== null && pErr.httpStatus >= 500));
+        if (!canTryNextKey) {
+          candidateFailed = true;
+          break;
+        }
       }
-      const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
-      lastError = pErr;
-      ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
-      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
-      const isLast = i === chain.length - 1;
-      if (isLast || !pErr.retryable) break;
+    }
+    if (candidateFailed && !lastError?.retryable) {
+      break;
     }
   }
   throw lastError ?? new ProviderError("unknown", "no_provider", "No provider available", 503);
@@ -647,37 +744,52 @@ export async function* streamChat(
     if (signal?.aborted) {
       throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
     }
-    const startedAt = Date.now();
-    try {
-      const adapter = await getAdapter(candidate);
-      const iterator = adapter.chatStream({ ...params, model: candidate.upstreamModelId }, signal)[Symbol.asyncIterator]();
-      while (true) {
-        const { value, done } = await iterator.next();
-        if (done) break;
-        if (value.type === "usage") {
-          usage = value.usage;
-          usageSource = value.usageSource;
+    const keyPool = await getCandidateKeyPool(candidate);
+    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 3) : [undefined];
+
+    let candidateFailed = false;
+    for (let kIdx = 0; kIdx < keysToTry.length; kIdx++) {
+      const currentApiKey = keysToTry[kIdx];
+      const startedAt = Date.now();
+      try {
+        const adapter = await getAdapter(candidate, currentApiKey);
+        const iterator = adapter.chatStream({ ...params, model: candidate.upstreamModelId }, signal)[Symbol.asyncIterator]();
+        while (true) {
+          const { value, done } = await iterator.next();
+          if (done) break;
+          if (value.type === "usage") {
+            usage = value.usage;
+            usageSource = value.usageSource;
+          }
+          if (value.type === "done") finishReason = value.finishReason;
+          if ((value.type === "delta" || value.type === "tool_call_delta" || value.type === "reasoning_delta") && !started) {
+            started = true;
+          }
+          onMeta?.(value);
+          yield value;
         }
-        if (value.type === "done") finishReason = value.finishReason;
-        if ((value.type === "delta" || value.type === "tool_call_delta" || value.type === "reasoning_delta") && !started) {
-          started = true;
+        attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
+        return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
+      } catch (err) {
+        if (signal?.aborted) {
+          throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
         }
-        onMeta?.(value);
-        yield value;
+        const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
+        lastError = pErr;
+        attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
+        if (started) {
+          yield { type: "done", finishReason: "error" };
+          throw pErr;
+        }
+        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 401 || pErr.httpStatus === 403 || pErr.httpStatus === 429 || (pErr.httpStatus !== null && pErr.httpStatus >= 500));
+        if (!canTryNextKey) {
+          candidateFailed = true;
+          break;
+        }
       }
-      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-      return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
-    } catch (err) {
-      if (signal?.aborted) {
-        throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
-      }
-      const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
-      lastError = pErr;
-      attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
-      if (started || i === chain.length - 1 || !pErr.retryable) {
-        yield { type: "done", finishReason: "error" };
-        throw pErr;
-      }
+    }
+    if (candidateFailed && !lastError?.retryable) {
+      break;
     }
   }
   throw lastError ?? new ProviderError("unknown", "no_provider", "No provider available", 503);

@@ -29,6 +29,8 @@ const bodySchema = z.looseObject({
   stop: z.union([z.string(), z.array(z.string())]).optional(),
   tools: z.array(z.unknown()).optional(),
   tool_choice: z.unknown().optional(),
+  functions: z.array(z.unknown()).optional(),
+  function_call: z.unknown().optional(),
   parallel_tool_calls: z.boolean().optional(),
   response_format: z.unknown().optional(),
   seed: z.number().optional(),
@@ -81,12 +83,37 @@ export async function chatRoutes(app: FastifyInstance) {
   // misleadingly returned Pro Router Nova for every unknown model ID.
   app.get("/v1/models", async (_request, reply) => {
     const catalog = await listModels({ limit: 200, sort: "popularity" });
-    const data = catalog.items.map((model) => ({
-      id: model.slug,
-      object: "model" as const,
-      created: Math.floor(new Date(model.createdAt).getTime() / 1000) || Math.floor(Date.now() / 1000),
-      owned_by: model.providerSlug || "prorouter",
-    }));
+    const data = catalog.items.map((model) => {
+      const caps = model.capabilities as Record<string, unknown> | undefined;
+      const toolCalling = caps?.tool_calling !== false && caps?.tools !== false;
+      return {
+        id: model.slug,
+        object: "model" as const,
+        created: Math.floor(new Date(model.createdAt).getTime() / 1000) || Math.floor(Date.now() / 1000),
+        owned_by: model.providerSlug || "prorouter",
+        name: model.name,
+        context_window: model.contextWindow || 128000,
+        context_length: model.contextWindow || 128000,
+        max_output_tokens: model.maxOutputTokens || 16384,
+        max_completion_tokens: model.maxOutputTokens || 16384,
+        supported_parameters: [
+          "tools",
+          "tool_choice",
+          "temperature",
+          "top_p",
+          "max_tokens",
+          "max_completion_tokens",
+          "stream",
+          "response_format",
+        ],
+        capabilities: {
+          tool_calls: toolCalling,
+          streaming: true,
+          reasoning: Boolean(caps?.reasoning),
+          vision: Boolean(caps?.vision),
+        },
+      };
+    });
     reply.header("Access-Control-Allow-Origin", "*");
     return reply.send({ object: "list", data });
   });
@@ -111,7 +138,19 @@ export async function chatRoutes(app: FastifyInstance) {
           owned_by: "openai",
           name: profile.name,
           context_window: profile.contextWindow,
+          context_length: profile.contextWindow,
           max_output_tokens: profile.maxOutputTokens,
+          max_completion_tokens: profile.maxOutputTokens,
+          supported_parameters: [
+            "tools",
+            "tool_choice",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "stream",
+            "response_format",
+          ],
           capabilities: {
             streaming: profile.capabilities.streaming === "supported",
             tool_calls: profile.capabilities.tool_calling === "supported",
@@ -126,6 +165,8 @@ export async function chatRoutes(app: FastifyInstance) {
       });
     }
     const model = detail.model;
+    const caps = model.capabilities as Record<string, unknown> | undefined;
+    const toolCalling = caps?.tool_calling !== false && caps?.tools !== false;
     reply.header("Access-Control-Allow-Origin", "*");
     return reply.send({
       id: model.slug,
@@ -134,8 +175,25 @@ export async function chatRoutes(app: FastifyInstance) {
       owned_by: model.providerSlug || "prorouter",
       name: model.name,
       context_window: model.contextWindow,
+      context_length: model.contextWindow,
       max_output_tokens: model.maxOutputTokens,
-      capabilities: model.capabilities,
+      max_completion_tokens: model.maxOutputTokens,
+      supported_parameters: [
+        "tools",
+        "tool_choice",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "stream",
+        "response_format",
+      ],
+      capabilities: {
+        tool_calls: toolCalling,
+        streaming: true,
+        reasoning: Boolean(caps?.reasoning),
+        vision: Boolean(caps?.vision),
+      },
     });
   });
 
@@ -151,13 +209,22 @@ export async function chatRoutes(app: FastifyInstance) {
     const body = bodySchema.parse(request.body);
     const messages = body.messages as unknown as ChatMessage[];
 
+    const effectiveTools = body.tools || (body.functions ? (body.functions as any[]).map((f: any) => ({
+      type: "function",
+      function: f,
+    })) : undefined);
+    const effectiveToolChoice = body.tool_choice || (body.function_call ? (
+      typeof body.function_call === "string" ? body.function_call : { type: "function", function: body.function_call }
+    ) : undefined);
+    const requiresTools = Boolean(effectiveTools && effectiveTools.length > 0);
+
     // Resolve model (direct, provider-forced, or uno/auto)
     const resolved = await resolveModelInput(body.model);
     let slug = resolved.slug;
     if (resolved.auto) {
       const hints = extractHints(messages);
       hints.preferFree = true;
-      if (body.tools && body.tools.length > 0) {
+      if (requiresTools) {
         hints.wantsCoding = true;
       }
       const autoSlug = await resolveAutoModel(hints);
@@ -195,11 +262,11 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     const candidates = await hydrateCandidates(ctx.model.id, resolved.forcedProvider, {
-      tools: Boolean(body.tools && body.tools.length > 0),
+      tools: requiresTools,
       reasoning: Boolean(ctx.caps?.reasoning),
     });
     if (candidates.length === 0) {
-      if (body.tools?.length) {
+      if (requiresTools) {
         throw new ApiError("provider_unavailable", `No configured upstream provider for '${ctx.model.name}' is marked as supporting native tool calls. Configure a tool-capable provider/model binding; this request will not be downgraded to text-only chat.`);
       }
       throw new ApiError("provider_unavailable", `No providers are configured for '${ctx.model.name}'.`);
@@ -278,7 +345,6 @@ export async function chatRoutes(app: FastifyInstance) {
     });
 
     // Routing (§11)
-    const requiresTools = Boolean(body.tools && body.tools.length > 0);
     const decision = routeRequest(candidates, {
       planSlug: plan.slug,
       fallbackEnabled,
@@ -299,8 +365,8 @@ export async function chatRoutes(app: FastifyInstance) {
       topP: body.top_p,
       maxTokens: body.max_tokens ?? body.max_completion_tokens,
       stop: Array.isArray(body.stop) ? body.stop : body.stop ? [body.stop] : undefined,
-      tools: body.tools,
-      toolChoice: body.tool_choice,
+      tools: effectiveTools,
+      toolChoice: effectiveToolChoice,
       parallelToolCalls: (body as any).parallel_tool_calls,
       responseFormat: body.response_format,
       seed: body.seed,
@@ -444,7 +510,7 @@ export async function chatRoutes(app: FastifyInstance) {
           resolvedSlug: slug,
           stream: false,
           requiresTools,
-          toolCount: body.tools?.length ?? 0,
+          toolCount: effectiveTools?.length ?? 0,
           providerSlug: result.providerSlug,
           finishReason: normalizedFinishReason,
           latencyMs: Date.now() - startedAt,
@@ -498,7 +564,7 @@ export async function chatRoutes(app: FastifyInstance) {
       // Real queue status events (§59) — only emit non-standard uno_queue JSON
       // chunks when calling from the web dashboard without client API keys or tools.
       // Emitting non-standard chunks into coding agent tool streams breaks client SSE parsers.
-      const emitQueueEvents = !body.tools?.length && !auth.apiKey;
+      const emitQueueEvents = !effectiveTools?.length && !auth.apiKey;
       if (isFree) {
         const status = probeQueue(slug, plan.queuePriority);
         if (emitQueueEvents) {
@@ -629,7 +695,7 @@ export async function chatRoutes(app: FastifyInstance) {
         resolvedSlug: slug,
         stream: true,
         requiresTools,
-        toolCount: body.tools?.length ?? 0,
+        toolCount: effectiveTools?.length ?? 0,
         providerSlug,
         finishReason,
         latencyMs: Date.now() - startedAt,

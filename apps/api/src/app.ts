@@ -7,6 +7,7 @@ import { authRoutes } from "./routes/auth.js";
 import { keyRoutes } from "./routes/keys.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { chatRoutes } from "./routes/chat.js";
+import { messagesRoutes } from "./routes/messages.js";
 import { walletRoutes } from "./routes/wallet.js";
 import { promotionRoutes } from "./routes/promotions.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -124,6 +125,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(catalogRoutes);
   await app.register(planRoutes);
   await app.register(chatRoutes);
+  await app.register(messagesRoutes);
   await app.register(usageRoutes);
   await app.register(walletRoutes);
   await app.register(promotionRoutes);
