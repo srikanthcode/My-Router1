@@ -70,11 +70,22 @@ export const MODEL_ALIASES: Record<string, string> = {
 
   // Claude
   "claude-sonnet": "claude-sonnet",
+  "claude-sonnet-4-5": "claude-sonnet",
   "claude-3-7-sonnet": "claude-sonnet",
   "claude-3-5-sonnet": "claude-sonnet",
+  "claude-3-5-sonnet-20241022": "claude-sonnet",
+  "claude-3-7-sonnet-20250219": "claude-sonnet",
+  "claude-3-5-sonnet-latest": "claude-sonnet",
+  "claude-3-7-sonnet-latest": "claude-sonnet",
   "claude-opus": "claude-opus",
+  "claude-opus-4-5": "claude-opus",
   "claude-3-opus": "claude-opus",
+  "claude-3-opus-latest": "claude-opus",
   "claude-opus-5": "claude-opus-5",
+  "claude-haiku": "claude-sonnet",
+  "claude-haiku-4-5": "claude-sonnet",
+  "claude-3-5-haiku": "claude-sonnet",
+  "claude-3-5-haiku-latest": "claude-sonnet",
   "claude": "claude-sonnet",
 
   // Gemini
@@ -148,6 +159,9 @@ export async function resolveModelInput(input: string): Promise<{ auto: boolean;
   if (MODEL_ALIASES[normalized]) {
     return { auto: false, slug: MODEL_ALIASES[normalized] };
   }
+  if (normalized.includes("sonnet")) return { auto: false, slug: "claude-sonnet" };
+  if (normalized.includes("opus")) return { auto: false, slug: "claude-opus" };
+  if (normalized.includes("haiku")) return { auto: false, slug: "claude-sonnet" };
 
   return { auto: false, slug: raw };
 }

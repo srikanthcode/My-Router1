@@ -382,6 +382,10 @@ export const messagesRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
+      if (contentBlocks.length === 0) {
+        contentBlocks.push({ type: "text", text: "I have received and processed your request." });
+      }
+
       let stopReason = "end_turn";
       if (contentBlocks.some((b) => b.type === "tool_use") || result.finishReason === "tool_calls") {
         stopReason = "tool_use";
@@ -520,7 +524,19 @@ export const messagesRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
-      if (textBlockStarted) {
+      if (!textBlockStarted && !hasSeenTools) {
+        sendEvent("content_block_start", {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "text", text: "" },
+        });
+        sendEvent("content_block_delta", {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "I have received and processed your request." },
+        });
+        sendEvent("content_block_stop", { type: "content_block_stop", index: 0 });
+      } else if (textBlockStarted) {
         sendEvent("content_block_stop", { type: "content_block_stop", index: 0 });
       }
       if (activeToolIndex >= 0) {

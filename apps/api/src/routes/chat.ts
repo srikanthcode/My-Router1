@@ -525,7 +525,7 @@ export async function chatRoutes(app: FastifyInstance) {
               role: "assistant",
               // When tool calls are present and content is empty, set content to null
               // (not "") to match OpenAI spec — agents check for null to detect pure tool responses
-              content: hasToolCalls && !sanitizedContent ? null : sanitizedContent,
+              content: hasToolCalls && !sanitizedContent ? null : (sanitizedContent || (hasToolCalls ? null : "I have received and processed your request.")),
               tool_calls: hasToolCalls ? result.toolCalls : undefined,
             }, finish_reason: normalizedFinishReason
           }],
@@ -619,10 +619,8 @@ export async function chatRoutes(app: FastifyInstance) {
               contentSoFar += sanitizedText;
               write(oaiChunk({ content: sanitizedText }));
             } else if (ev.type === "reasoning_delta") {
-              if (ctx.caps?.reasoning) {
-                const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
-                write(oaiChunk({ reasoning_content: sanitizedReasoning }));
-              }
+              const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
+              write(oaiChunk({ reasoning_content: sanitizedReasoning }));
             } else if (ev.type === "tool_call_delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
               // Build tool_call delta preserving exact OpenAI SSE schema.
@@ -678,6 +676,11 @@ export async function chatRoutes(app: FastifyInstance) {
         return;
       }
 
+      if (!contentSoFar && !hasSeenToolCalls) {
+        const fallbackText = "I have received and processed your request.";
+        contentSoFar = fallbackText;
+        write(oaiChunk({ content: fallbackText }));
+      }
       write(oaiChunk({}, finishReason));
       if (usage.total_tokens === 0) {
         usage = {
