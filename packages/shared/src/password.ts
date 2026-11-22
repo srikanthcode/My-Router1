@@ -88,10 +88,10 @@ export function isValidGmail(email: string): boolean {
 
   // Strict anti-alias check: block Gmail dot-tricks (e.g. carlabro.o.ks.83.4.2@gmail.com)
   const dotCount = (username.match(/\./g) || []).length;
-  if (dotCount > 1) {
+  if (dotCount > 2) {
     return false;
   }
-  if (dotCount === 1) {
+  if (dotCount > 0) {
     const parts = username.split(".");
     if (parts.some((p) => p.length < 2)) {
       return false;
