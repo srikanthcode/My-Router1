@@ -135,3 +135,27 @@ export const promotionalActivations = pgTable(
     index("promo_act_user_idx").on(t.userId, t.active),
   ],
 );
+
+/**
+ * Permanent Daily Free-Token Entitlement (§Phase 5)
+ * 1,000,000 free tokens per day for registered accounts.
+ * Shared exclusively between DeepSeek V4.1 Flash & Qwen 27B (qwen3.8-27b).
+ * Resets automatically each UTC day.
+ */
+export const dailyFreeTokenUsage = pgTable(
+  "daily_free_token_usage",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    dayKey: text("day_key").notNull(),
+    tokensConsumed: integer("tokens_consumed").notNull().default(0),
+    tokensReserved: integer("tokens_reserved").notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("daily_free_token_usage_user_day_uq").on(t.userId, t.dayKey),
+    index("daily_free_token_usage_user_idx").on(t.userId),
+  ],
+);

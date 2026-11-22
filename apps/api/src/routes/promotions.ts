@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import { astraCampaigns, astraEntitlements, auditLogs, getDb, giftCodeRedemptions, giftCodes, notifications, promotionalActivations, users } from "@pro/database";
-import { ApiError, formatMoney, randomCode, PROMO_DURATION_MS, isPromotionActive, PROMOTIONAL_48H_MODELS, resolvePromotionalCanonicalId, isStrictlyPromotionalEligible, checkPromotionStatus } from "@pro/shared";
+import { ApiError, formatMoney, randomCode, PROMO_DURATION_MS, isPromotionActive, PROMOTIONAL_48H_MODELS, resolvePromotionalCanonicalId, isStrictlyPromotionalEligible, checkPromotionStatus, DAILY_FREE_ALLOWANCE_TOKENS, DAILY_FREE_ELIGIBLE_MODELS, resolveDailyFreeEligibleId, isDailyFreeEligible, getNextUtcResetTime } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
+import { getDailyFreeQuota } from "../lib/daily-entitlement.js";
 import { getFlag } from "../lib/settings.js";
 
 async function getActiveCampaign() {
@@ -156,67 +157,62 @@ export async function promotionRoutes(app: FastifyInstance) {
     };
   });
 
-  // ── 48-Hour Promotional Launch Special (§Phase 4) ──
+  // ── Permanent Daily Free-Token Entitlement (§Phase 5) ──
   const getPromoStatusHandler = async (request: any) => {
     const q = (request.query || {}) as { modelId?: string };
     const queryModel = q.modelId?.trim();
-    const isModelEligible = queryModel ? isStrictlyPromotionalEligible(queryModel) : true;
+    const isModelEligible = queryModel ? isDailyFreeEligible(queryModel) : true;
 
     let status = {
-      campaign: "launch-48h-special",
-      name: "Launch Special: 48 Hours Free",
+      campaign: "daily-free-entitlement",
+      name: "Daily Free Token Entitlement",
       eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
-      durationHours: 48,
       modelId: queryModel ?? null,
       isModelEligible,
-      activated: false,
-      active: false,
-      activatedAt: null as string | null,
-      expiresAt: null as string | null,
-      remainingMs: 0,
-      remainingFormatted: "Not activated",
+      activated: true,
+      active: true,
+      dailyAllowanceTokens: DAILY_FREE_ALLOWANCE_TOKENS,
+      tokensConsumedToday: 0,
+      tokensRemainingToday: DAILY_FREE_ALLOWANCE_TOKENS,
+      nextResetAt: getNextUtcResetTime().toISOString(),
+      remainingMs: getNextUtcResetTime().getTime() - Date.now(),
+      remainingFormatted: `${DAILY_FREE_ALLOWANCE_TOKENS.toLocaleString()} / ${DAILY_FREE_ALLOWANCE_TOKENS.toLocaleString()} free tokens remaining`,
       quota: {
-        maxRequestsPerDay: 50,
+        maxRequestsPerDay: 5000,
         requestsConsumed: 0,
-        maxTokensPerDay: 500000,
+        maxTokensPerDay: DAILY_FREE_ALLOWANCE_TOKENS,
         tokensConsumed: 0,
+        tokensRemaining: DAILY_FREE_ALLOWANCE_TOKENS,
         quotaExceeded: false,
       },
     };
 
     try {
       const user = await requireUser(request);
-      const db = await getDb();
-      const rows = await db
-        .select()
-        .from(promotionalActivations)
-        .where(
-          and(
-            eq(promotionalActivations.userId, user.id),
-            eq(promotionalActivations.campaignSlug, "launch-48h-special")
-          )
-        );
-      if (rows[0]) {
-        const promoCalc = checkPromotionStatus(rows[0].activatedAt);
-        const quotaExceeded = rows[0].requestCount >= 50 || rows[0].tokensConsumed >= 500000;
+      const quota = await getDailyFreeQuota(user.id);
+      const remainingMs = Math.max(0, new Date(quota.nextResetAt).getTime() - Date.now());
+      const hours = Math.floor(remainingMs / (1000 * 60 * 60));
+      const minutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
 
-        status = {
-          ...status,
-          activated: true,
-          active: promoCalc.active && !quotaExceeded,
-          activatedAt: rows[0].activatedAt.toISOString(),
-          expiresAt: rows[0].expiresAt.toISOString(),
-          remainingMs: promoCalc.remainingMs,
-          remainingFormatted: promoCalc.remainingFormatted,
-          quota: {
-            maxRequestsPerDay: 50,
-            requestsConsumed: rows[0].requestCount,
-            maxTokensPerDay: 500000,
-            tokensConsumed: rows[0].tokensConsumed,
-            quotaExceeded,
-          },
-        };
-      }
+      status = {
+        ...status,
+        activated: true,
+        active: quota.tokensRemaining > 0,
+        dailyAllowanceTokens: quota.dailyLimit,
+        tokensConsumedToday: quota.tokensConsumed,
+        tokensRemainingToday: quota.tokensRemaining,
+        nextResetAt: quota.nextResetAt,
+        remainingMs,
+        remainingFormatted: `${quota.tokensRemaining.toLocaleString()} tokens left · Resets in ${hours}h ${minutes}m`,
+        quota: {
+          maxRequestsPerDay: 5000,
+          requestsConsumed: 0,
+          maxTokensPerDay: quota.dailyLimit,
+          tokensConsumed: quota.tokensConsumed,
+          tokensRemaining: quota.tokensRemaining,
+          quotaExceeded: quota.tokensRemaining <= 0,
+        },
+      };
     } catch {
       // unauthenticated
     }
@@ -229,88 +225,39 @@ export async function promotionRoutes(app: FastifyInstance) {
     const body = (request.body || {}) as { canonicalModelId?: string; modelId?: string };
     const modelToActivate = body.canonicalModelId || body.modelId;
 
-    if (modelToActivate) {
-      const canonical = resolvePromotionalCanonicalId(modelToActivate);
-      if (!canonical) {
-        throw new ApiError(
-          "not_eligible",
-          `Model '${modelToActivate}' is not eligible for the 48-hour free promotion. Only DeepSeek V4.1 Flash and Qwen3.8-27B qualify.`
-        );
-      }
-    }
-
-    const db = await getDb();
-
-    // Check if user already activated
-    const existing = await db
-      .select()
-      .from(promotionalActivations)
-      .where(
-        and(
-          eq(promotionalActivations.userId, user.id),
-          eq(promotionalActivations.campaignSlug, "launch-48h-special")
-        )
+    if (modelToActivate && !isDailyFreeEligible(modelToActivate)) {
+      throw new ApiError(
+        "not_eligible",
+        `Model '${modelToActivate}' is not eligible for the daily free token entitlement. Only DeepSeek V4.1 Flash and Qwen 27B qualify.`
       );
-
-    if (existing[0]) {
-      const promoCalc = checkPromotionStatus(existing[0].activatedAt);
-      const quotaExceeded = existing[0].requestCount >= 50 || existing[0].tokensConsumed >= 500000;
-
-      return {
-        ok: true,
-        alreadyActivated: true,
-        active: promoCalc.active && !quotaExceeded,
-        activatedAt: existing[0].activatedAt.toISOString(),
-        expiresAt: existing[0].expiresAt.toISOString(),
-        remainingMs: promoCalc.remainingMs,
-        remainingFormatted: promoCalc.remainingFormatted,
-        eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
-        quota: {
-          maxRequestsPerDay: 50,
-          requestsConsumed: existing[0].requestCount,
-          maxTokensPerDay: 500000,
-          tokensConsumed: existing[0].tokensConsumed,
-          quotaExceeded,
-        },
-      };
     }
 
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + PROMO_DURATION_MS);
-
-    await db.insert(promotionalActivations).values({
-      userId: user.id,
-      campaignSlug: "launch-48h-special",
-      activatedAt: now,
-      expiresAt,
-      requestCount: 0,
-      tokensConsumed: 0,
-      active: true,
-    });
-
+    const quota = await getDailyFreeQuota(user.id);
     return {
       ok: true,
-      alreadyActivated: false,
-      active: true,
-      activatedAt: now.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      remainingMs: PROMO_DURATION_MS,
-      remainingFormatted: "48h 0m left",
+      alreadyActivated: true,
+      active: quota.tokensRemaining > 0,
+      dailyAllowanceTokens: quota.dailyLimit,
+      tokensConsumedToday: quota.tokensConsumed,
+      tokensRemainingToday: quota.tokensRemaining,
+      nextResetAt: quota.nextResetAt,
+      remainingFormatted: `${quota.tokensRemaining.toLocaleString()} / ${quota.dailyLimit.toLocaleString()} free tokens remaining`,
       eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
       quota: {
-        maxRequestsPerDay: 50,
-        requestsConsumed: 0,
-        maxTokensPerDay: 500000,
-        tokensConsumed: 0,
-        quotaExceeded: false,
+        maxTokensPerDay: quota.dailyLimit,
+        tokensConsumed: quota.tokensConsumed,
+        tokensRemaining: quota.tokensRemaining,
+        quotaExceeded: quota.tokensRemaining <= 0,
       },
     };
   };
 
+  app.get("/promotions/daily-entitlement", getPromoStatusHandler);
   app.get("/promotions/launch-48h", getPromoStatusHandler);
   app.get("/promotions/status", getPromoStatusHandler);
   app.get("/api/promotions/status", getPromoStatusHandler);
 
+  app.post("/promotions/daily-entitlement/activate", activatePromoHandler);
   app.post("/promotions/launch-48h/activate", activatePromoHandler);
   app.post("/promotions/activate", activatePromoHandler);
   app.post("/api/promotions/activate", activatePromoHandler);

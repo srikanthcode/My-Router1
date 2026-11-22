@@ -29,6 +29,13 @@
       "when": 1793890000000,
       "tag": "0003_marketplace_pricing_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795370000000,
+      "tag": "0004_daily_free_token_entitlement",
+      "breakpoints": true
     }
   ]
 }

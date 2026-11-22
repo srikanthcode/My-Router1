@@ -74,7 +74,7 @@ export async function walletRoutes(app: FastifyInstance) {
       "starter": { priceMinor: 49900, bonusPaise: 0, name: "Starter", currency: "INR" },
       "builder": { priceMinor: 99900, bonusPaise: 5100, name: "Builder", currency: "INR" },
       "pro": { priceMinor: 249900, bonusPaise: 25100, name: "Pro", currency: "INR" },
-      "power": { priceMinor: 499900, bonusPaise: 60100, name: "Power", currency: "INR" },
+      "power": { priceMinor: 499900, bonusPaise: 75100, name: "Power", currency: "INR" },
       "starter-usd-5": { priceMinor: 500, bonusPaise: 0, name: "Starter Pack", currency: "USD" },
       "pro-usd-10": { priceMinor: 1000, bonusPaise: 150, name: "Pro Pack", currency: "USD" },
       "scale-usd-25": { priceMinor: 2500, bonusPaise: 500, name: "Scale Pack", currency: "USD" },

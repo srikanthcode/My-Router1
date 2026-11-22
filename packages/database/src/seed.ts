@@ -112,16 +112,18 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
 
   // ── Credit packages (§20) ──────────────────────────────────────────────
   const packageSeeds = [
-    { slug: "starter-100", name: "Starter Pack", pricePaise: 10000, bonusPaise: 0, sortOrder: 5 },
-    { slug: "pro-500", name: "Pro Pack", pricePaise: 50000, bonusPaise: 5000, sortOrder: 6 },
-    { slug: "scale-1000", name: "Scale Pack", pricePaise: 100000, bonusPaise: 20000, sortOrder: 7 },
-    { slug: "power-2500", name: "Power Pack", pricePaise: 250000, bonusPaise: 65000, sortOrder: 8 },
-    { slug: "starter", name: "Starter", pricePaise: 49900, bonusPaise: 0, sortOrder: 10 },
-    { slug: "builder", name: "Builder", pricePaise: 99900, bonusPaise: 5100, sortOrder: 20 },
-    { slug: "pro", name: "Pro", pricePaise: 249900, bonusPaise: 25100, sortOrder: 30 },
-    { slug: "power", name: "Power", pricePaise: 499900, bonusPaise: 75100, sortOrder: 40 },
+    { slug: "starter-100", name: "Starter", pricePaise: 10000, bonusPaise: 0, currency: "INR", sortOrder: 1 },
+    { slug: "pro-500", name: "Pro", pricePaise: 50000, bonusPaise: 5000, currency: "INR", sortOrder: 2 },
+    { slug: "scale-1000", name: "Scale", pricePaise: 100000, bonusPaise: 20000, currency: "INR", sortOrder: 3 },
+    { slug: "power-2500", name: "Power", pricePaise: 250000, bonusPaise: 65000, currency: "INR", sortOrder: 4 },
+    { slug: "starter-usd-5", name: "Starter", pricePaise: 500, bonusPaise: 0, currency: "USD", sortOrder: 11 },
+    { slug: "pro-usd-10", name: "Pro", pricePaise: 1000, bonusPaise: 150, currency: "USD", sortOrder: 12 },
+    { slug: "scale-usd-25", name: "Scale", pricePaise: 2500, bonusPaise: 500, currency: "USD", sortOrder: 13 },
+    { slug: "power-usd-50", name: "Power", pricePaise: 5000, bonusPaise: 1500, currency: "USD", sortOrder: 14 },
+    { slug: "builder-usd", name: "Builder", pricePaise: 1200, bonusPaise: 100, currency: "USD", sortOrder: 15 },
+    { slug: "pro-usd", name: "Pro Plus", pricePaise: 2900, bonusPaise: 300, currency: "USD", sortOrder: 16 },
   ];
-  for (const p of packageSeeds) await upsert(creditPackages, { ...p, currency: "INR", active: true }, creditPackages.slug);
+  for (const p of packageSeeds) await upsert(creditPackages, { ...p, active: true }, creditPackages.slug);
 
   // ── Pricing tiers (§75) — retail USD prices, converted at request time ──
   for (const tier of PRICING_TIER_SEEDS) {

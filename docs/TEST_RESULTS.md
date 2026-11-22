@@ -1,22 +1,23 @@
 # Automated Test and Verification Results
 
-This document records the verified test, typecheck, and build results for the Pro Router codebase after the Phase 0 audit remediation (P1–P5).
+This document records the verified test, typecheck, and build results for the Pro Router codebase.
 
-Verified on: 2026-11-09
+Verified on: 2026-11-22
 
 ---
 
 ## 1. Test Suite Summary
 
-- **Total Test Files:** 13
-- **Total Test Cases:** 114
-- **Passed:** 114
+- **Total Test Files:** 18
+- **Total Test Cases:** 150
+- **Passed:** 150
 - **Failed:** 0
 - **Pass Rate:** 100%
 - **Execution Engine:** Vitest v5.0.3 (`npm test`, exit code 0)
 
 Additional checks:
 
+- `npm run typecheck` — passed (shared, database, providers, routing, api workspaces).
 - `npx tsc --noEmit -p apps/web` — no output (0 type errors).
 - `npm --prefix apps/web run build` — succeeded (see section 3).
 
@@ -24,99 +25,28 @@ Additional checks:
 
 ## 2. Test Suite Breakdown
 
-### A. End-to-End Acceptance Suite (`tests/e2e.test.ts`)
-- **Status:** 27 / 27 Passed
-- **Coverage Areas:**
-  - Role elevation and dynamic provider registration (OpenAI, Anthropic, TokenJuice, Requesty, Nabh Cloud)
-  - Model creation and tier-priced alias resolution
-  - Billing ledger at effective tier prices with usage tracking
-  - Atomic concurrency protection against free-quota depletion
-  - True SSE token streaming with progressive chunk validation
-  - Razorpay webhook signature verification and wallet credit lifecycle
+| Suite | Tests | Coverage Areas |
+| :--- | ---: | :--- |
+| `tests/e2e.test.ts` | 27 | Role elevation, dynamic provider registration, tier-priced aliases, billing ledger, free-quota concurrency protection, SSE streaming, Razorpay webhook and wallet lifecycle |
+| `tests/public-gateway-auth.test.ts` | 18 | Unauthenticated/invalid-key rejection, demo-mode gating, credential forwarding, Anthropic `/v1/messages` proxying, `/v1/models` catalog behavior |
+| `tests/coding-agent-full-roundtrip.test.ts` | 13 | End-to-end coding-agent request/response roundtrips, usage accounting, provider health integration |
+| `tests/fallback-gateway.test.ts` | 12 | Demo-mode gate, signed session cookies, password/registration handling, role derivation, per-user wallet isolation, Astra redemption, keys 503, Razorpay verification |
+| `tests/gateway-routing-honesty.test.ts` | 11 | Key rotation/cooldown, served-model honesty headers, `finish_reason` normalization, split-tag streaming, Anthropic SSE buffering, `tool_use` conversion |
+| `tests/routing.test.ts` | 11 | Dynamic provider selection, latency scoring, upstream failover, health-check recovery |
+| `tests/anthropic-messages-protocol.test.ts` | 8 | Anthropic Messages API request/response and streaming protocol coverage |
+| `tests/money.test.ts` | 8 | USD-to-INR paise arithmetic, reserve/margin application, floor pricing |
+| `tests/providers-contract.test.ts` | 8 | Provider adapter contract coverage (`packages/providers`) |
+| `tests/agent-coding.test.ts` | 6 | Native `tool_calls` preservation, reasoning extraction, `think` tag isolation, tool-call rejection, message sanitization |
+| `tests/wallet-atomicity.test.ts` | 6 | Concurrent debit consistency, reservation over-commit prevention, settle retry idempotency, ownership/status guards, dedupe |
+| `tests/coding-agent-compatibility.test.ts` | 5 | Coding-agent compatibility behavior across supported clients |
+| `tests/catalog-aliases.test.ts` | 4 | Canonical model resolution, shorthand aliases, database/runtime merging, tier filtering |
+| `tests/deterministic-tool-calling.test.ts` | 4 | Deterministic native tool-call streaming and non-streaming behavior |
+| `tests/pro-router-coding-agent-regression.test.ts` | 3 | Coding-agent regression coverage |
+| `tests/pro-router-instruction-following.test.ts` | 3 | Instruction-following coverage |
+| `tests/wallet-and-events.test.ts` | 2 | Ledger transaction immutability, real-time balance calculation |
+| `tests/no-hardcoded-secrets.test.ts` | 1 | No hardcoded provider/Razorpay secrets |
 
-### B. Intelligent Routing & Failover Suite (`tests/routing.test.ts`)
-- **Status:** 9 / 9 Passed
-- **Coverage Areas:**
-  - Dynamic provider selection and latency scoring
-  - Automatic fallback upon simulated upstream provider failure
-  - Health check pinging and cluster degradation recovery
-
-### C. Financial & Margin Calculation Suite (`tests/money.test.ts`)
-- **Status:** 8 / 8 Passed
-- **Coverage Areas:**
-  - USD to INR paise arithmetic without floating-point drift
-  - Operational reserve and target gross margin application
-  - Minimum floor pricing and margin enforcement
-
-### D. Agent Coding & Tool Protocol Suite (`tests/agent-coding.test.ts`)
-- **Status:** 6 / 6 Passed
-- **Coverage Areas:**
-  - Native JSON `tool_calls` preservation without synthetic XML injection into content
-  - Extraction of un-tagged meta-reasoning phrases into `reasoning_content`
-  - Extraction and isolation of `think` tags from DeepSeek/Qwen output streams
-  - Rejection of fabricated tool calls for normal assistant planning
-  - Non-streaming message sanitization with intact `tool_calls` schemas
-  - Clean asterisk stripping when requested by client or model configuration
-
-### E. Catalog & Model Aliases Suite (`tests/catalog-aliases.test.ts`)
-- **Status:** 4 / 4 Passed
-- **Coverage Areas:**
-  - Resolution of canonical model identifiers and shorthand aliases
-  - Merging of database records and runtime provider profiles
-  - Tier filtering and status flags
-
-### F. Wallet & Ledger Events Suite (`tests/wallet-and-events.test.ts`)
-- **Status:** 2 / 2 Passed
-- **Coverage Areas:**
-  - Ledger transaction immutability
-  - Real-time balance calculations across debit and credit events
-
-### G. Wallet Atomicity Suite (`tests/wallet-atomicity.test.ts`)
-- **Status:** 6 / 6 Passed
-- **Coverage Areas:**
-  - Concurrent debit ledger consistency (F-06)
-  - Reservation over-commit prevention under concurrency (F-07)
-  - Settle retry idempotency without double debit (F-04)
-  - Settlement/release ownership and status guards (F-05)
-  - Missing-reservation settle fallback and dedupe
-
-### H. Fallback Gateway Hardening Suite (`tests/fallback-gateway.test.ts`)
-- **Status:** 12 / 12 Passed
-- **Coverage Areas:**
-  - Demo-mode gate (403/503 without explicit enablement)
-  - Production missing-secret rejection
-  - HMAC-signed session cookie; tampered/unsigned/expired cookies rejected
-  - Password verification and duplicate registration handling
-  - Server-derived role (cookie role claims ignored)
-  - Per-user wallet isolation; ASTRA promo single redemption (F-02)
-  - Keys endpoint honest 503 in fallback mode (F-12)
-  - Razorpay checkout + signature verify, invalid signature 403, verify-once dedupe
-
-### I. Public Gateway Auth Suite (`tests/public-gateway-auth.test.ts`)
-- **Status:** 18 / 18 Passed
-- **Coverage Areas:**
-  - Unauthenticated/invalid-key inference rejection (F-01)
-  - Demo-mode gating of public `/v1` inference
-  - Credential forwarding to the backend
-  - Anthropic `/v1/messages` conversion and backend proxy mapping
-  - `GET /v1/models` backend catalog proxying for API-key callers, local catalog for anonymous/session callers, 503 on unreachable backend
-
-### J. Routing Honesty & Protocol Suite
-- `tests/gateway-routing-honesty.test.ts` — **11 / 11 Passed**
-  - Gateway key rotation cursor and cooldown isolation (F-13)
-  - Served-model honesty headers on substitution (F-08)
-  - `finish_reason: "tool_calls"` normalization (F-09)
-  - Split-tag streaming normalization (F-11)
-  - Split Anthropic SSE line buffering with upstream `usage` in `message_delta` (F-10)
-  - Non-streaming `/v1/messages` Requesty parity (F-10)
-  - Streaming Anthropic `tool_use` blocks with `input_json_delta` and `stop_reason: tool_use`
-  - Non-streaming tool-call conversion to Anthropic `tool_use` blocks
-- `tests/deterministic-tool-calling.test.ts` — **4 / 4 Passed**
-  - Deterministic native tool-call streaming and non-streaming behavior
-- `tests/providers-contract.test.ts` — **6 / 6 Passed**
-  - Provider adapter contract coverage (`packages/providers`)
-- `tests/no-hardcoded-secrets.test.ts` — **1 / 1 Passed**
-  - No hardcoded provider/Razorpay secrets (F-02, F-12)
+**Total:** 18 files, 150 tests, all passing.
 
 ---
 
@@ -124,8 +54,8 @@ Additional checks:
 
 - **Command:** `npm --prefix apps/web run build`
 - **Compiler:** Next.js 16.4.5 (Turbopack)
-- **Compile:** succeeded in 5.5s
-- **TypeScript:** finished in 8.3s with 0 type errors
+- **Compile:** succeeded in 13.3s
+- **TypeScript:** finished in 10.9s with 0 type errors
 - **Static generation:** 21 / 21 pages generated successfully
 - **Verified routes include:** `/v1/[...path]`, `/api/[...path]`, `/chat/completions`, `/messages`, `/models`, `/models/[slug]`
 

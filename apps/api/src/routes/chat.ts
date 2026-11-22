@@ -2,12 +2,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { apiKeys, getDb, modelProviders, models, plans, promotionalActivations, providers, requestAttempts, requests, subscriptions } from "@pro/database";
-import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput, resolvePromotionalCanonicalId } from "@pro/shared";
+import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput, resolvePromotionalCanonicalId, isDailyFreeEligible, resolveDailyFreeEligibleId } from "@pro/shared";
 import { estimateTokens, isChannelTokenToolCall, cleanSpecialTokens } from "@pro/providers";
 import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine } from "@pro/routing";
 import { getActiveAstra } from "../lib/auth.js";
 import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
+import { reserveDailyFreeTokens, settleDailyFreeTokens, releaseDailyFreeTokens } from "../lib/daily-entitlement.js";
 import { acquireSlot, probeQueue, releaseSlot, type QueueStatus } from "../lib/queue.js";
 import { assertAffordable, debitWallet, reserveBalance, settleReservation, releaseReservation } from "../lib/wallet.js";
 import { eventHub } from "../lib/events.js";
@@ -275,44 +276,48 @@ export async function chatRoutes(app: FastifyInstance) {
     const plan = await getUserPlan(auth.user.id);
     const fallbackEnabled = await getFlag("provider_fallback", true);
 
-    // Strict 48-Hour Promotional Policy: ONLY deepseek-v4.1-flash & qwen3.8-27b can ever be free
-    const canonicalPromoId = resolvePromotionalCanonicalId(slug);
-    let isPromotionalActive = false;
-    let activePromoActivationId: string | null = null;
-
-    if (canonicalPromoId !== null) {
-      const db = await getDb();
-      const promoRows = await db
-        .select()
-        .from(promotionalActivations)
-        .where(
-          and(
-            eq(promotionalActivations.userId, auth.user.id),
-            eq(promotionalActivations.campaignSlug, "launch-48h-special"),
-            eq(promotionalActivations.active, true),
-            gt(promotionalActivations.expiresAt, new Date())
-          )
-        );
-      const promo = promoRows[0];
-      // Promotional quota limit: 50 requests/day and 500,000 tokens/day per user
-      if (promo && promo.requestCount < 50 && promo.tokensConsumed < 500_000) {
-        isPromotionalActive = true;
-        activePromoActivationId = promo.id;
-      }
-    }
-
-    // Free if marked isFree in catalog OR eligible promotional model with active promo
-    const isFree = Boolean(ctx.model.isFree || isPromotionalActive);
-    const stream = body.stream === true;
-    let queueWaitMs = 0;
-    let acquired = false;
-    let acquiredKey = "";
-    let slotServiceStart = 0;
-    let sseStarted = false;
-
+    // Permanent Daily Free-Token Entitlement: DeepSeek V4.1 Flash & Qwen 27B
+    const isDailyFree = isDailyFreeEligible(slug);
+    let freeTokensReserved = 0;
     let hasReservation = false;
-    // Free model: quota + queue (§21, §22)
-    if (isFree) {
+    let isFree = Boolean(ctx.model.isFree);
+
+    const inputTokens = countMessageTokens(messages);
+    const maxOut = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 4096, ctx.model.maxOutputTokens);
+    const estimatedTotalTokens = inputTokens + maxOut;
+
+    if (isDailyFree) {
+      const freeRes = await reserveDailyFreeTokens({
+        userId: auth.user.id,
+        estimatedTokens: estimatedTotalTokens,
+      });
+      freeTokensReserved = freeRes.reservedTokens;
+
+      if (freeRes.spilloverTokens > 0) {
+        // Exceeds daily free allowance; remainder is charged to wallet at model rates
+        const spilloverRatio = freeRes.spilloverTokens / Math.max(1, estimatedTotalTokens);
+        const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
+        const totalEstimated = requestCost({
+          inputTokens,
+          outputTokens: maxOut,
+          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
+          platformFeePercent: feePercent,
+        });
+        const spilloverCost = Math.ceil(totalEstimated * spilloverRatio);
+        try {
+          await reserveBalance({ userId: auth.user.id, requestId, amountPaise: spilloverCost });
+          hasReservation = true;
+        } catch (resErr) {
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved });
+          throw resErr;
+        }
+        isFree = false;
+      } else {
+        isFree = true;
+      }
+    } else if (isFree) {
+      // Free model in catalog: standard rate limits
       const modelLimitsRow = ctx.limits;
       const quota = await consumeFreeQuota(auth.user.id, {
         perMinute: plan.freeRpm,
@@ -323,9 +328,7 @@ export async function chatRoutes(app: FastifyInstance) {
         throw new ApiError("free_quota_exceeded", `Free ${quota.window} quota reached (${quota.limit}). Upgrade your plan or try again later.`, { retryAfter: quota.retryAfterSec });
       }
     } else {
-      // Paid: affordability pre-check and atomic reservation (§54)
-      const inputTokens = countMessageTokens(messages);
-      const maxOut = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 4096, ctx.model.maxOutputTokens);
+      // Standard paid model: full wallet reservation required
       const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
       const estimated = requestCost({
         inputTokens,
@@ -337,6 +340,13 @@ export async function chatRoutes(app: FastifyInstance) {
       await reserveBalance({ userId: auth.user.id, requestId, amountPaise: estimated });
       hasReservation = true;
     }
+
+    const stream = body.stream === true;
+    let queueWaitMs = 0;
+    let acquired = false;
+    let acquiredKey = "";
+    let slotServiceStart = 0;
+    let sseStarted = false;
 
     eventHub.publish(auth.user.id, "usage.request.started", {
       requestId,
@@ -394,44 +404,71 @@ export async function chatRoutes(app: FastifyInstance) {
       const usageSource = params.usageSource ?? "none";
       const billEstimated = usageSource === "estimated" ? await getFlag("BILL_ESTIMATED_USAGE", false) : false;
       let cost = 0;
-      if (!isFree && !params.errorCode && (usage.prompt_tokens > 0 || usage.completion_tokens > 0) && (usageSource === "upstream" || billEstimated)) {
-        const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
-        cost = requestCost({
-          inputTokens: usage.prompt_tokens,
-          outputTokens: usage.completion_tokens,
-          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
-          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
-          platformFeePercent: feePercent,
-        });
-        if (hasReservation) {
-          const settlement = await settleReservation({
-            userId: auth.user.id,
-            requestId,
-            actualAmountPaise: cost,
-            reference: requestId,
-            metadata: { model: slug, provider: params.providerSlug },
-          });
-          cost = settlement.deductedPaise;
-          hasReservation = false;
-        } else {
-          const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug, provider: params.providerSlug } });
-          cost = debit.deductedPaise;
-        }
-      } else if (hasReservation) {
-        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => { });
-        hasReservation = false;
-      }
+      const totalActualTokens = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
 
-      if (activePromoActivationId && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
-        const totalToks = usage.total_tokens || (usage.prompt_tokens + usage.completion_tokens);
-        await db
-          .update(promotionalActivations)
-          .set({
-            requestCount: sql`${promotionalActivations.requestCount} + 1`,
-            tokensConsumed: sql`${promotionalActivations.tokensConsumed} + ${totalToks}`,
-          })
-          .where(eq(promotionalActivations.id, activePromoActivationId))
-          .catch(() => { });
+      if (params.errorCode) {
+        // Failed request: release free tokens and wallet reservations
+        if (freeTokensReserved > 0) {
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved }).catch(() => {});
+          freeTokensReserved = 0;
+        }
+        if (hasReservation) {
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+          hasReservation = false;
+        }
+      } else {
+        let spilloverPaidTokens = totalActualTokens;
+
+        if (freeTokensReserved > 0) {
+          const settlement = await settleDailyFreeTokens({
+            userId: auth.user.id,
+            reservedTokens: freeTokensReserved,
+            actualTokens: totalActualTokens,
+          });
+          spilloverPaidTokens = settlement.spilloverPaidTokens;
+          if (spilloverPaidTokens === 0) {
+            isFree = true;
+          }
+        }
+
+        if (spilloverPaidTokens > 0 && !isFree && (usage.prompt_tokens > 0 || usage.completion_tokens > 0) && (usageSource === "upstream" || billEstimated)) {
+          const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
+          const paidRatio = spilloverPaidTokens / Math.max(1, totalActualTokens);
+          const paidInput = Math.round(usage.prompt_tokens * paidRatio);
+          const paidOutput = Math.round(usage.completion_tokens * paidRatio);
+
+          cost = requestCost({
+            inputTokens: paidInput,
+            outputTokens: paidOutput,
+            inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+            outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
+            platformFeePercent: feePercent,
+          });
+
+          if (hasReservation) {
+            const settlement = await settleReservation({
+              userId: auth.user.id,
+              requestId,
+              actualAmountPaise: cost,
+              reference: requestId,
+              metadata: { model: slug, provider: params.providerSlug },
+            });
+            cost = settlement.deductedPaise;
+            hasReservation = false;
+          } else {
+            const debit = await debitWallet({
+              userId: auth.user.id,
+              amountPaise: cost,
+              reference: requestId,
+              idempotencyKey: `usage:${requestId}`,
+              metadata: { model: slug, provider: params.providerSlug },
+            });
+            cost = debit.deductedPaise;
+          }
+        } else if (hasReservation) {
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+          hasReservation = false;
+        }
       }
 
       await db.update(requests).set({

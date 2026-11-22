@@ -205,7 +205,7 @@ describe("demo wallet and keys", () => {
     expect(redeemed.status).toBe(200);
     const redeemedBody = await redeemed.json();
     expect(redeemedBody.success).toBe(true);
-    expect(redeemedBody.entitlement.daysLeft).toBe(30);
+    expect(redeemedBody.entitlement.daysLeft).toBe(7);
 
     const funded = await call("/wallet", { cookie: alpha.cookie });
     expect((await funded.json()).balancePaise).toBe(5000);

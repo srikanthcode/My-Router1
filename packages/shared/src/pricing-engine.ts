@@ -184,38 +184,47 @@ export function calculateModelPricing(
   };
 }
 
-// ── Strict 48-Hour Promotional Launch Policy ──
+// ── Permanent Daily Free-Token Entitlement Policy ──
 /**
- * ONLY TWO CANONICAL MODELS CAN RECEIVE THE 48-HOUR FREE PROMOTION:
+ * Daily free-token entitlement (§Phase 5)
+ * Registered users receive 1,000,000 free tokens every day, shared exclusively
+ * across the 2 eligible models:
  * 1. DeepSeek V4.1 Flash (`deepseek-v4.1-flash`)
- * 2. Qwen3.8-27B (`qwen3.8-27b`)
+ * 2. Qwen 27B model (`qwen3.8-27b` and genuine aliases including `qwen3.2-27b`)
  * 
- * Every other model must have paid pricing.
- * Do not include Qwen 2.5 Coder 32B or unrelated DeepSeek checkpoints.
+ * Resets automatically each UTC day.
+ * Unused tokens never accumulate or roll over.
+ * All other models require paid billing.
  */
-export const PROMOTIONAL_CANONICAL_MODELS = [
+export const DAILY_FREE_ALLOWANCE_TOKENS = 1_000_000;
+export const DEFAULT_DAILY_FREE_TOKENS = DAILY_FREE_ALLOWANCE_TOKENS;
+
+export const DAILY_FREE_ELIGIBLE_MODELS = [
   "deepseek-v4.1-flash",
   "qwen3.8-27b",
 ] as const;
 
-export type PromotionalCanonicalModel = (typeof PROMOTIONAL_CANONICAL_MODELS)[number];
+export type DailyFreeEligibleModel = (typeof DAILY_FREE_ELIGIBLE_MODELS)[number];
+
+export const PROMOTIONAL_CANONICAL_MODELS = DAILY_FREE_ELIGIBLE_MODELS;
+export type PromotionalCanonicalModel = DailyFreeEligibleModel;
 
 export const PROMOTIONAL_48H_MODELS = new Set<string>([
   "deepseek-v4.1-flash",
   "deepseek-v4.1-flash-1017",
   "qwen3.8-27b",
   "qwen/qwen3.8-27b",
+  "qwen3.2-27b",
 ]);
 
 /**
- * Map aliases strictly to their canonical identity for promotional checks.
- * Returns the canonical ID if and only if it resolves to one of the 2 eligible canonical models.
+ * Resolves whether an identifier belongs to one of the 2 eligible daily free models.
  */
-export function resolvePromotionalCanonicalId(identifier: string): PromotionalCanonicalModel | null {
+export function resolveDailyFreeEligibleId(identifier: string): DailyFreeEligibleModel | null {
   if (!identifier) return null;
   const clean = identifier.trim().toLowerCase();
 
-  // Explicit exclusions (never promotion eligible)
+  // Explicit exclusions (never free-eligible)
   if (
     clean.includes("qwen-2.5-coder") ||
     clean.includes("qwen2.5-coder") ||
@@ -237,12 +246,15 @@ export function resolvePromotionalCanonicalId(identifier: string): PromotionalCa
     return "deepseek-v4.1-flash";
   }
 
-  // Qwen 3.8 27B and genuine aliases
+  // Qwen 27B model (qwen3.8-27b) and genuine aliases (including qwen3.2-27b)
   if (
     clean === "qwen3.8-27b" ||
     clean === "qwen-3.8-27b" ||
     clean === "qwen/qwen3.8-27b" ||
-    clean === "groq/qwen3.8-27b"
+    clean === "groq/qwen3.8-27b" ||
+    clean === "qwen3.2-27b" ||
+    clean === "qwen-3.2-27b" ||
+    clean === "qwen/qwen3.2-27b"
   ) {
     return "qwen3.8-27b";
   }
@@ -250,11 +262,31 @@ export function resolvePromotionalCanonicalId(identifier: string): PromotionalCa
   return null;
 }
 
-export function isStrictlyPromotionalEligible(identifier: string): boolean {
-  return resolvePromotionalCanonicalId(identifier) !== null;
+export function isDailyFreeEligible(identifier: string): boolean {
+  return resolveDailyFreeEligibleId(identifier) !== null;
 }
 
-export const PROMO_DURATION_MS = 48 * 60 * 60 * 1000; // 48 Hours
+export function resolvePromotionalCanonicalId(identifier: string): PromotionalCanonicalModel | null {
+  return resolveDailyFreeEligibleId(identifier);
+}
+
+export function isStrictlyPromotionalEligible(identifier: string): boolean {
+  return resolveDailyFreeEligibleId(identifier) !== null;
+}
+
+export function getTodayUtcKey(d = new Date()): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export function getNextUtcResetTime(d = new Date()): Date {
+  const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0));
+  return next;
+}
+
+export const PROMO_DURATION_MS = 24 * 60 * 60 * 1000;
 
 export interface PromotionStatusResult {
   active: boolean;
@@ -262,34 +294,27 @@ export interface PromotionStatusResult {
   remainingFormatted: string;
   expiresAt: Date | null;
   eligibleCanonicalModels: readonly string[];
+  dailyAllowanceTokens: number;
+  tokensConsumedToday: number;
+  tokensRemainingToday: number;
 }
 
-export function checkPromotionStatus(activatedAt: Date | string | null): PromotionStatusResult {
-  if (!activatedAt) {
-    return {
-      active: false,
-      remainingMs: 0,
-      remainingFormatted: "Not activated",
-      expiresAt: null,
-      eligibleCanonicalModels: PROMOTIONAL_CANONICAL_MODELS,
-    };
-  }
-
-  const start = new Date(activatedAt).getTime();
-  const expires = start + PROMO_DURATION_MS;
-  const now = Date.now();
-  const remainingMs = Math.max(0, expires - now);
-  const active = remainingMs > 0;
-
+export function checkPromotionStatus(activatedAt?: Date | string | null): PromotionStatusResult {
+  const now = new Date();
+  const nextReset = getNextUtcResetTime(now);
+  const remainingMs = Math.max(0, nextReset.getTime() - now.getTime());
   const hours = Math.floor(remainingMs / (1000 * 60 * 60));
   const minutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
 
   return {
-    active,
+    active: true,
     remainingMs,
-    remainingFormatted: active ? `${hours}h ${minutes}m left` : "Expired",
-    expiresAt: new Date(expires),
-    eligibleCanonicalModels: PROMOTIONAL_CANONICAL_MODELS,
+    remainingFormatted: `Resets in ${hours}h ${minutes}m (00:00 UTC)`,
+    expiresAt: nextReset,
+    eligibleCanonicalModels: DAILY_FREE_ELIGIBLE_MODELS,
+    dailyAllowanceTokens: DAILY_FREE_ALLOWANCE_TOKENS,
+    tokensConsumedToday: 0,
+    tokensRemainingToday: DAILY_FREE_ALLOWANCE_TOKENS,
   };
 }
 
