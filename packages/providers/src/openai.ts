@@ -11,12 +11,20 @@ import {
   parseSse,
 } from "./adapter.js";
 
-/** Removes residual upstream markup tags (such as DeepSeek DSML tokens) from tool arguments */
+/** Removes residual upstream markup tags and channel tokens (such as DeepSeek DSML or channel tokens) */
 export function cleanSpecialTokens(text: string): string {
   if (!text) return text;
   return text
+    .replace(/(?:assistant)?<[｜|]channel[｜|]>[a-zA-Z0-9_-]*/gi, "")
+    .replace(/<[｜|][\s\S]*?[｜|]>/g, "")
     .replace(/<\/?(?:｜|\|)[^>]*>/g, "")
-    .replace(/<[｜|][\s\S]*?[｜|]>/g, "");
+    .replace(/<\|channel\|>[a-zA-Z0-9_-]*/gi, "");
+}
+
+/** Checks whether a tool name is a leaked channel token rather than an actual tool */
+export function isChannelTokenToolCall(name?: string): boolean {
+  if (!name) return false;
+  return /^(?:assistant)?<[｜|]channel[｜|]>/i.test(name) || /<\|channel\|>/i.test(name) || name.trim() === "final";
 }
 
 /** OpenAI-compatible adapter — works for OpenAI, Groq, Mistral, Ollama, OpenRouter, etc. */
@@ -120,15 +128,18 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         id?: string;
       };
       const choice = json.choices?.[0];
-      const content = choice?.message?.content ?? "";
+      const content = cleanSpecialTokens(choice?.message?.content ?? "");
       const rawToolCalls = choice?.message?.tool_calls ?? [];
-      const toolCalls = rawToolCalls.map((tc) => ({
-        ...tc,
-        function: {
-          ...tc.function,
-          arguments: tc.function?.arguments ? cleanSpecialTokens(tc.function.arguments) : tc.function?.arguments,
-        },
-      }));
+      const toolCalls = rawToolCalls
+        .filter((tc) => !isChannelTokenToolCall(tc.function?.name))
+        .map((tc) => ({
+          ...tc,
+          function: {
+            ...tc.function,
+            name: tc.function?.name ? cleanSpecialTokens(tc.function.name) : tc.function?.name,
+            arguments: tc.function?.arguments ? cleanSpecialTokens(tc.function.arguments) : tc.function?.arguments,
+          },
+        }));
       const usage = json.usage ?? estimateUsage({ messages: params.messages, completion: content });
       const usageSource: UsageSource = json.usage ? "upstream" : "estimated";
       return {
@@ -198,11 +209,19 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         const delta = choice.delta;
         const reasoning = delta?.reasoning ?? (delta as { reasoning_content?: string })?.reasoning_content;
         if (reasoning) yield { type: "reasoning_delta", text: reasoning };
-        if (delta?.content) yield { type: "delta", text: delta.content };
+        if (delta?.content) {
+          const cleanedContent = cleanSpecialTokens(delta.content);
+          if (cleanedContent) yield { type: "delta", text: cleanedContent };
+        }
         for (const tc of delta?.tool_calls ?? []) {
+          const rawName = tc.function?.name;
+          if (rawName && isChannelTokenToolCall(rawName)) {
+            continue;
+          }
+          const cleanedName = rawName !== undefined ? cleanSpecialTokens(rawName) : undefined;
           const rawArgs = tc.function?.arguments;
           const cleanedArgs = rawArgs !== undefined ? cleanSpecialTokens(rawArgs) : undefined;
-          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: cleanedArgs };
+          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: cleanedName, arguments: cleanedArgs };
         }
       }
       if (usage) yield { type: "usage", usage, usageSource: "upstream" };

@@ -16,16 +16,14 @@ import {
   executeChat,
   streamChat,
   resolveModelInput,
-  type RouteCandidate,
 } from "../lib/pipeline.js";
 import {
   routeRequest,
-  probeQueue,
-  acquireSlot,
-  type QueueStatus,
+  type RouteCandidate,
   ModelProfileRegistry,
   ModelBehaviorEngine,
 } from "@pro/routing";
+import { probeQueue, acquireSlot, type QueueStatus } from "../lib/queue.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
 import {
   reserveBalance,

@@ -6111,7 +6111,11 @@ async function* parseSse(body) {
 // packages/providers/src/openai.ts
 function cleanSpecialTokens(text7) {
   if (!text7) return text7;
-  return text7.replace(/<\/?(?:｜|\|)[^>]*>/g, "").replace(/<[｜|][\s\S]*?[｜|]>/g, "");
+  return text7.replace(/(?:assistant)?<[｜|]channel[｜|]>[a-zA-Z0-9_-]*/gi, "").replace(/<[｜|][\s\S]*?[｜|]>/g, "").replace(/<\/?(?:｜|\|)[^>]*>/g, "").replace(/<\|channel\|>[a-zA-Z0-9_-]*/gi, "");
+}
+function isChannelTokenToolCall(name) {
+  if (!name) return false;
+  return /^(?:assistant)?<[｜|]channel[｜|]>/i.test(name) || /<\|channel\|>/i.test(name) || name.trim() === "final";
 }
 var OpenAICompatibleAdapter = class {
   type = "openai";
@@ -6185,12 +6189,13 @@ var OpenAICompatibleAdapter = class {
       if (!res.ok) await this.fail(res);
       const json = await res.json();
       const choice = json.choices?.[0];
-      const content = choice?.message?.content ?? "";
+      const content = cleanSpecialTokens(choice?.message?.content ?? "");
       const rawToolCalls = choice?.message?.tool_calls ?? [];
-      const toolCalls = rawToolCalls.map((tc) => ({
+      const toolCalls = rawToolCalls.filter((tc) => !isChannelTokenToolCall(tc.function?.name)).map((tc) => ({
         ...tc,
         function: {
           ...tc.function,
+          name: tc.function?.name ? cleanSpecialTokens(tc.function.name) : tc.function?.name,
           arguments: tc.function?.arguments ? cleanSpecialTokens(tc.function.arguments) : tc.function?.arguments
         }
       }));
@@ -6252,11 +6257,19 @@ var OpenAICompatibleAdapter = class {
         const delta = choice.delta;
         const reasoning = delta?.reasoning ?? delta?.reasoning_content;
         if (reasoning) yield { type: "reasoning_delta", text: reasoning };
-        if (delta?.content) yield { type: "delta", text: delta.content };
+        if (delta?.content) {
+          const cleanedContent = cleanSpecialTokens(delta.content);
+          if (cleanedContent) yield { type: "delta", text: cleanedContent };
+        }
         for (const tc of delta?.tool_calls ?? []) {
+          const rawName = tc.function?.name;
+          if (rawName && isChannelTokenToolCall(rawName)) {
+            continue;
+          }
+          const cleanedName = rawName !== void 0 ? cleanSpecialTokens(rawName) : void 0;
           const rawArgs = tc.function?.arguments;
           const cleanedArgs = rawArgs !== void 0 ? cleanSpecialTokens(rawArgs) : void 0;
-          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: tc.function?.name, arguments: cleanedArgs };
+          yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: cleanedName, arguments: cleanedArgs };
         }
       }
       if (usage) yield { type: "usage", usage, usageSource: "upstream" };
@@ -8052,10 +8065,13 @@ async function chatRoutes(app) {
               const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
               write(oaiChunk({ reasoning_content: sanitizedReasoning }));
             } else if (ev.type === "tool_call_delta") {
+              if (ev.name !== void 0 && isChannelTokenToolCall(ev.name)) {
+                continue;
+              }
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
               const tcFunc = {};
-              if (ev.name !== void 0) tcFunc.name = ev.name;
-              if (ev.arguments !== void 0) tcFunc.arguments = ev.arguments;
+              if (ev.name !== void 0) tcFunc.name = cleanSpecialTokens(ev.name);
+              if (ev.arguments !== void 0) tcFunc.arguments = cleanSpecialTokens(ev.arguments);
               const tcEntry = { index: ev.index, function: tcFunc };
               if (ev.id !== void 0) {
                 tcEntry.id = ev.id;

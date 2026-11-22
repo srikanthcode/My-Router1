@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { OpenAICompatibleAdapter, cleanSpecialTokens } from "../packages/providers/src/openai";
+import { OpenAICompatibleAdapter, cleanSpecialTokens, isChannelTokenToolCall } from "../packages/providers/src/openai";
 import { AnthropicAdapter } from "../packages/providers/src/anthropic";
 import { routeRequest, type RouteCandidate, ModelProfileRegistry, IntelligentModelRouter, BackendModelRegistry } from "@pro/routing";
 import type { ChatMessage, ToolCall } from "@pro/shared";
@@ -253,6 +253,42 @@ describe("Master Coding Agent & Tool Calling Regression Suite (Tests A through K
     expect(assembledArgs).not.toContain("DSML");
     const parsed = JSON.parse(assembledArgs);
     expect(parsed.path).toBe(".");
+  });
+
+  // Test E2: Filtering leaked channel tokens (assistant<|channel|>final)
+  it("Test E2: filters internal channel tokens (assistant<|channel|>final) from stream and arguments", async () => {
+    expect(isChannelTokenToolCall("assistant<|channel|>final")).toBe(true);
+    expect(isChannelTokenToolCall("<|channel|>final")).toBe(true);
+    expect(isChannelTokenToolCall("<｜channel｜>final")).toBe(true);
+    expect(isChannelTokenToolCall("read_file")).toBe(false);
+    expect(cleanSpecialTokens("assistant<|channel|>final")).toBe("");
+
+    const sseLines = [
+      'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"fake_chan","type":"function","function":{"name":"assistant<|channel|>final","arguments":""}}]}}]}',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_real_1","type":"function","function":{"name":"read_file","arguments":"{\\"path\\": \\"index.html\\"}"}}]}}]}',
+      'data: {"choices":[{"finish_reason":"tool_calls"}]}',
+      'data: [DONE]',
+    ];
+
+    vi.stubGlobal("fetch", vi.fn(async () => sseResponse(sseLines)));
+
+    const adapter = new OpenAICompatibleAdapter({
+      providerSlug: "tokenjuice",
+      endpointUrl: "https://api.tokenjuice.ai/v1",
+      apiKey: "test-key",
+    });
+
+    const stream = adapter.chatStream({ model: "m", messages: [{ role: "user", content: "read" }], stream: true });
+    const receivedToolDeltas: any[] = [];
+    for await (const ev of stream) {
+      if (ev.type === "tool_call_delta") {
+        receivedToolDeltas.push(ev);
+      }
+    }
+
+    expect(receivedToolDeltas.some((d) => d.name?.includes("channel"))).toBe(false);
+    expect(receivedToolDeltas.some((d) => d.name === "read_file")).toBe(true);
   });
 
   // Test F: Anthropic tool calling

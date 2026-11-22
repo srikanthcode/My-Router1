@@ -108,7 +108,7 @@ export interface FrontendModelProfile {
 export interface BackendModel {
   id: string;
   name: string;
-  provider: "groq" | "nabh" | "requesty" | "openrouter" | "prorouter-gateway";
+  provider: "groq" | "nabh" | "requesty" | "openrouter" | "prorouter-gateway" | "openai" | "anthropic";
   upstreamModelId: string;
   contextWindow: number;
   maxOutputTokens: number;

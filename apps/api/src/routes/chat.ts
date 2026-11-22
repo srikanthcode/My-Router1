@@ -3,7 +3,7 @@ import { z } from "zod";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { apiKeys, getDb, modelProviders, models, plans, promotionalActivations, providers, requestAttempts, requests, subscriptions } from "@pro/database";
 import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput, resolvePromotionalCanonicalId } from "@pro/shared";
-import { estimateTokens } from "@pro/providers";
+import { estimateTokens, isChannelTokenToolCall, cleanSpecialTokens } from "@pro/providers";
 import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine } from "@pro/routing";
 import { getActiveAstra } from "../lib/auth.js";
 import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
@@ -84,7 +84,7 @@ export async function chatRoutes(app: FastifyInstance) {
   app.get("/v1/models", async (_request, reply) => {
     const catalog = await listModels({ limit: 200, sort: "popularity" });
     const data = catalog.items.map((model) => {
-      const caps = model.capabilities as Record<string, unknown> | undefined;
+      const caps = model.capabilities as unknown as Record<string, unknown> | undefined;
       const toolCalling = caps?.tool_calling !== false && caps?.tools !== false;
       return {
         id: model.slug,
@@ -165,7 +165,7 @@ export async function chatRoutes(app: FastifyInstance) {
       });
     }
     const model = detail.model;
-    const caps = model.capabilities as Record<string, unknown> | undefined;
+    const caps = model.capabilities as unknown as Record<string, unknown> | undefined;
     const toolCalling = caps?.tool_calling !== false && caps?.tools !== false;
     reply.header("Access-Control-Allow-Origin", "*");
     return reply.send({
@@ -622,13 +622,16 @@ export async function chatRoutes(app: FastifyInstance) {
               const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
               write(oaiChunk({ reasoning_content: sanitizedReasoning }));
             } else if (ev.type === "tool_call_delta") {
+              if (ev.name !== undefined && isChannelTokenToolCall(ev.name)) {
+                continue;
+              }
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
               // Build tool_call delta preserving exact OpenAI SSE schema.
               // Only include fields that are actually present so agents can
               // distinguish name-initialization chunks from argument chunks.
               const tcFunc: Record<string, string> = {};
-              if (ev.name !== undefined) tcFunc.name = ev.name;
-              if (ev.arguments !== undefined) tcFunc.arguments = ev.arguments;
+              if (ev.name !== undefined) tcFunc.name = cleanSpecialTokens(ev.name);
+              if (ev.arguments !== undefined) tcFunc.arguments = cleanSpecialTokens(ev.arguments);
               const tcEntry: Record<string, unknown> = { index: ev.index, function: tcFunc };
               if (ev.id !== undefined) {
                 tcEntry.id = ev.id;
