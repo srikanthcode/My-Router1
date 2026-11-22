@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, users, wallets, notifications, auditLogs, plans, subscriptions } from "@pro/database";
-import { ApiError, hashPassword, isStrongPassword, verifyPassword, isValidGmail, generateDeterministicAccountNumber } from "@pro/shared";
+import { ApiError, hashPassword, isStrongPassword, verifyPassword, isValidGmail, canonicalizeEmail, generateDeterministicAccountNumber } from "@pro/shared";
 import { createSession, destroySession, getActiveAstra, requireUser, resolveSessionUser } from "../lib/auth.js";
 import { checkRateLimit } from "../lib/ratelimit.js";
 import { getBalance } from "../lib/wallet.js";
@@ -28,12 +28,14 @@ export async function authRoutes(app: FastifyInstance) {
       throw new ApiError("invalid_request", "Password must be at least 8 characters and include a letter and a number.");
     }
     const db = await getDb();
-    const email = body.email.toLowerCase();
+    const email = body.email.toLowerCase().trim();
     if (!isValidGmail(email)) {
-      throw new ApiError("invalid_request", "Only official standard Google Gmail accounts (@gmail.com) are allowed. Temporary emails and aliases with '+' are not permitted.");
+      throw new ApiError("invalid_request", "Only official standard Google Gmail accounts (@gmail.com) are allowed. Temporary emails, dot-trick aliases, and aliases with '+' are not permitted.");
     }
-    const existing = await db.select({ id: users.id }).from(users).where(eq(users.email, email));
-    if (existing.length > 0) throw new ApiError("invalid_request", "An account with this email already exists.");
+    const canonical = canonicalizeEmail(email);
+    const allUsers = await db.select({ id: users.id, email: users.email }).from(users);
+    const existing = allUsers.find((u) => canonicalizeEmail(u.email) === canonical || u.email === email);
+    if (existing) throw new ApiError("invalid_request", "An account with this Gmail address already exists.");
 
     const inserted = await db.insert(users).values({ email, passwordHash: await hashPassword(body.password), name: body.name ?? "", emailVerified: false }).returning();
     const user = inserted[0]!;
@@ -63,8 +65,10 @@ export async function authRoutes(app: FastifyInstance) {
     if (!rl.allowed) throw new ApiError("rate_limit_exceeded", "Too many sign-in attempts. Try again shortly.");
     const body = z.object({ email: z.string().email(), password: z.string().min(1) }).parse(request.body);
     const db = await getDb();
-    const rows = await db.select().from(users).where(eq(users.email, body.email.toLowerCase()));
-    const user = rows[0];
+    const inputEmail = body.email.toLowerCase().trim();
+    const canonical = canonicalizeEmail(inputEmail);
+    const allUsers = await db.select().from(users);
+    const user = allUsers.find((u) => u.email === inputEmail || canonicalizeEmail(u.email) === canonical);
     const ok = user ? await verifyPassword(body.password, user.passwordHash) : false;
     if (!user || !ok) throw new ApiError("unauthenticated", "Invalid email or password.");
     if (user.status === "suspended") throw new ApiError("forbidden", "This account has been suspended. Contact support.");

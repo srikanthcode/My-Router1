@@ -41,10 +41,39 @@ export function isStrongPassword(pw: string): boolean {
 }
 
 /**
+ * Canonicalizes an email address for identity deduplication and quota enforcement.
+ * For Google Gmail / Googlemail accounts:
+ * - Strips all periods (dots) from the username (Google ignores dots)
+ * - Strips plus-addressing aliases (+anything)
+ * - Normalizes @googlemail.com to @gmail.com
+ */
+export function canonicalizeEmail(email: string): string {
+  if (!email || typeof email !== "string") return "";
+  const trimmed = email.trim().toLowerCase();
+  const atIndex = trimmed.lastIndexOf("@");
+  if (atIndex === -1) return trimmed;
+  let username = trimmed.slice(0, atIndex);
+  let domain = trimmed.slice(atIndex + 1);
+
+  if (domain === "googlemail.com") domain = "gmail.com";
+
+  if (domain === "gmail.com") {
+    // Strip plus-addressing
+    username = username.split("+")[0];
+    // Strip all dots from the username
+    username = username.replace(/\./g, "");
+  }
+
+  return `${username}@${domain}`;
+}
+
+/**
  * Official Google Gmail validation policy:
  * - Must strictly end in @gmail.com
  * - No Google aliases (no '+' allowed)
- * - Username between 6 and 30 characters, letters, numbers, and non-consecutive dots
+ * - No dot-trick aliases (no multiple dots, no 1-character tokens between dots)
+ * - Legitimate human users may have at most 1 separator dot (e.g. first.last)
+ * - Username between 6 and 30 characters, letters, numbers
  * - Rejects disposable/temporary emails and arbitrary domains
  */
 export function isValidGmail(email: string): boolean {
@@ -55,6 +84,20 @@ export function isValidGmail(email: string): boolean {
   if (!trimmed.endsWith("@gmail.com")) return false;
   const username = trimmed.slice(0, trimmed.length - "@gmail.com".length);
   const gmailRegex = /^[a-z0-9](?!.*\.\.)[a-z0-9.]{4,28}[a-z0-9]$/;
-  return gmailRegex.test(username);
+  if (!gmailRegex.test(username)) return false;
+
+  // Strict anti-alias check: block Gmail dot-tricks (e.g. carlabro.o.ks.83.4.2@gmail.com)
+  const dotCount = (username.match(/\./g) || []).length;
+  if (dotCount > 1) {
+    return false;
+  }
+  if (dotCount === 1) {
+    const parts = username.split(".");
+    if (parts.some((p) => p.length < 2)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 

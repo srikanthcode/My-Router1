@@ -12,6 +12,8 @@ import {
   calculateModelPricing,
   tokenCost,
   requestCost,
+  isValidGmail,
+  canonicalizeEmail,
 } from "@pro/shared";
 
 const TEST_DB = ".data/daily-entitlement-test-db";
@@ -215,5 +217,27 @@ describe("Daily Free Token Entitlement Engine", () => {
     expect(result.status).toBe("approved");
     expect(result.customerPriceUsdPer1M).toBe(0.3143);
     expect(result.marginPercent).toBeGreaterThanOrEqual(30);
+  });
+
+  it("strictly rejects aliased Gmail addresses with scattered dot tricks", () => {
+    // The exact dot-trick address tested by the user:
+    expect(isValidGmail("carlabro.o.ks.83.4.2@gmail.com")).toBe(false);
+
+    // Other multi-dot and single-character dot aliases:
+    expect(isValidGmail("c.a.r.l.a.b.r.o.o.k.s@gmail.com")).toBe(false);
+    expect(isValidGmail("john.d.oe@gmail.com")).toBe(false);
+    expect(isValidGmail("test+alias@gmail.com")).toBe(false);
+
+    // Legitimate Gmail addresses must pass:
+    expect(isValidGmail("carlabrooks8342@gmail.com")).toBe(true);
+    expect(isValidGmail("john.doe@gmail.com")).toBe(true);
+    expect(isValidGmail("srikanth.dev@gmail.com")).toBe(true);
+  });
+
+  it("canonicalizes Gmail addresses to enforce one account per real inbox", () => {
+    expect(canonicalizeEmail("carlabro.o.ks.83.4.2@gmail.com")).toBe("carlabrooks8342@gmail.com");
+    expect(canonicalizeEmail("carla.brooks8342@gmail.com")).toBe("carlabrooks8342@gmail.com");
+    expect(canonicalizeEmail("carlabrooks8342+promo@gmail.com")).toBe("carlabrooks8342@gmail.com");
+    expect(canonicalizeEmail("Carlabrooks8342@googlemail.com")).toBe("carlabrooks8342@gmail.com");
   });
 });
