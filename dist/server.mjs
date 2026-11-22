@@ -201,6 +201,20 @@ async function verifyPassword(password, stored) {
 function isStrongPassword(pw) {
   return pw.length >= 8 && /[a-zA-Z]/.test(pw) && /\d/.test(pw);
 }
+function canonicalizeEmail(email2) {
+  if (!email2 || typeof email2 !== "string") return "";
+  const trimmed = email2.trim().toLowerCase();
+  const atIndex = trimmed.lastIndexOf("@");
+  if (atIndex === -1) return trimmed;
+  let username = trimmed.slice(0, atIndex);
+  let domain = trimmed.slice(atIndex + 1);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") {
+    username = username.split("+")[0];
+    username = username.replace(/\./g, "");
+  }
+  return `${username}@${domain}`;
+}
 function isValidGmail(email2) {
   if (!email2 || typeof email2 !== "string") return false;
   const trimmed = email2.trim().toLowerCase();
@@ -209,7 +223,18 @@ function isValidGmail(email2) {
   if (!trimmed.endsWith("@gmail.com")) return false;
   const username = trimmed.slice(0, trimmed.length - "@gmail.com".length);
   const gmailRegex = /^[a-z0-9](?!.*\.\.)[a-z0-9.]{4,28}[a-z0-9]$/;
-  return gmailRegex.test(username);
+  if (!gmailRegex.test(username)) return false;
+  const dotCount = (username.match(/\./g) || []).length;
+  if (dotCount > 2) {
+    return false;
+  }
+  if (dotCount > 0) {
+    const parts = username.split(".");
+    if (parts.some((p) => p.length < 2)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // packages/shared/src/crypto.ts
@@ -364,11 +389,8 @@ function calculateModelPricing(costs, options = {}, usdToInrRate = DEFAULT_USD_T
     isCommerciallyAvailable: !isPending
   };
 }
-var PROMOTIONAL_CANONICAL_MODELS = [
-  "deepseek-v4.1-flash",
-  "qwen3.8-27b"
-];
-function resolvePromotionalCanonicalId(identifier) {
+var DAILY_FREE_ALLOWANCE_TOKENS = 1e6;
+function resolveDailyFreeEligibleId(identifier) {
   if (!identifier) return null;
   const clean = identifier.trim().toLowerCase();
   if (clean.includes("qwen-2.5-coder") || clean.includes("qwen2.5-coder") || clean.includes("deepseek-v4-pro") || clean.includes("deepseek-r1") || clean.includes("deepseek-v3")) {
@@ -377,40 +399,31 @@ function resolvePromotionalCanonicalId(identifier) {
   if (clean === "deepseek-v4.1-flash" || clean === "deepseek-v4.1-flash-1017" || clean === "deepseek-ai/deepseek-v4.1-flash-1017" || clean === "deepseek-ai/deepseek-v4.1-flash" || clean === "prorouter/deepseek-v4.1-flash") {
     return "deepseek-v4.1-flash";
   }
-  if (clean === "qwen3.8-27b" || clean === "qwen-3.8-27b" || clean === "qwen/qwen3.8-27b" || clean === "groq/qwen3.8-27b") {
+  if (clean === "qwen3.8-27b" || clean === "qwen-3.8-27b" || clean === "qwen/qwen3.8-27b" || clean === "groq/qwen3.8-27b" || clean === "qwen3.2-27b" || clean === "qwen-3.2-27b" || clean === "qwen/qwen3.2-27b") {
     return "qwen3.8-27b";
   }
   return null;
 }
+function isDailyFreeEligible(identifier) {
+  return resolveDailyFreeEligibleId(identifier) !== null;
+}
+function resolvePromotionalCanonicalId(identifier) {
+  return resolveDailyFreeEligibleId(identifier);
+}
 function isStrictlyPromotionalEligible(identifier) {
-  return resolvePromotionalCanonicalId(identifier) !== null;
+  return resolveDailyFreeEligibleId(identifier) !== null;
 }
-var PROMO_DURATION_MS = 48 * 60 * 60 * 1e3;
-function checkPromotionStatus(activatedAt) {
-  if (!activatedAt) {
-    return {
-      active: false,
-      remainingMs: 0,
-      remainingFormatted: "Not activated",
-      expiresAt: null,
-      eligibleCanonicalModels: PROMOTIONAL_CANONICAL_MODELS
-    };
-  }
-  const start = new Date(activatedAt).getTime();
-  const expires = start + PROMO_DURATION_MS;
-  const now = Date.now();
-  const remainingMs = Math.max(0, expires - now);
-  const active = remainingMs > 0;
-  const hours = Math.floor(remainingMs / (1e3 * 60 * 60));
-  const minutes = Math.floor(remainingMs % (1e3 * 60 * 60) / (1e3 * 60));
-  return {
-    active,
-    remainingMs,
-    remainingFormatted: active ? `${hours}h ${minutes}m left` : "Expired",
-    expiresAt: new Date(expires),
-    eligibleCanonicalModels: PROMOTIONAL_CANONICAL_MODELS
-  };
+function getTodayUtcKey(d = /* @__PURE__ */ new Date()) {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
+function getNextUtcResetTime(d = /* @__PURE__ */ new Date()) {
+  const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0));
+  return next;
+}
+var PROMO_DURATION_MS = 24 * 60 * 60 * 1e3;
 
 // apps/api/src/routes/auth.ts
 import { z } from "zod";
@@ -435,6 +448,7 @@ __export(schema_exports, {
   codeStatusEnum: () => codeStatusEnum,
   conversations: () => conversations,
   creditPackages: () => creditPackages,
+  dailyFreeTokenUsage: () => dailyFreeTokenUsage,
   emailLog: () => emailLog,
   entitlementStatusEnum: () => entitlementStatusEnum,
   exchangeRates: () => exchangeRates,
@@ -1211,6 +1225,21 @@ var promotionalActivations = pgTable5(
     index5("promo_act_user_idx").on(t.userId, t.active)
   ]
 );
+var dailyFreeTokenUsage = pgTable5(
+  "daily_free_token_usage",
+  {
+    id: uuid5("id").primaryKey().defaultRandom(),
+    userId: uuid5("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    dayKey: text5("day_key").notNull(),
+    tokensConsumed: integer5("tokens_consumed").notNull().default(0),
+    tokensReserved: integer5("tokens_reserved").notNull().default(0),
+    updatedAt: timestamp5("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (t) => [
+    uniqueIndex5("daily_free_token_usage_user_day_uq").on(t.userId, t.dayKey),
+    index5("daily_free_token_usage_user_idx").on(t.userId)
+  ]
+);
 
 // packages/database/src/schema/platform.ts
 import {
@@ -1546,16 +1575,18 @@ async function seedDatabase(closeAtEnd = false) {
   ];
   for (const p of planSeeds) await upsert(plans, { ...p, currency: "INR", period: "month", active: true }, plans.slug);
   const packageSeeds = [
-    { slug: "starter-100", name: "Starter Pack", pricePaise: 1e4, bonusPaise: 0, sortOrder: 5 },
-    { slug: "pro-500", name: "Pro Pack", pricePaise: 5e4, bonusPaise: 5e3, sortOrder: 6 },
-    { slug: "scale-1000", name: "Scale Pack", pricePaise: 1e5, bonusPaise: 2e4, sortOrder: 7 },
-    { slug: "power-2500", name: "Power Pack", pricePaise: 25e4, bonusPaise: 65e3, sortOrder: 8 },
-    { slug: "starter", name: "Starter", pricePaise: 49900, bonusPaise: 0, sortOrder: 10 },
-    { slug: "builder", name: "Builder", pricePaise: 99900, bonusPaise: 5100, sortOrder: 20 },
-    { slug: "pro", name: "Pro", pricePaise: 249900, bonusPaise: 25100, sortOrder: 30 },
-    { slug: "power", name: "Power", pricePaise: 499900, bonusPaise: 75100, sortOrder: 40 }
+    { slug: "starter-100", name: "Starter", pricePaise: 1e4, bonusPaise: 0, currency: "INR", sortOrder: 1 },
+    { slug: "pro-500", name: "Pro", pricePaise: 5e4, bonusPaise: 5e3, currency: "INR", sortOrder: 2 },
+    { slug: "scale-1000", name: "Scale", pricePaise: 1e5, bonusPaise: 2e4, currency: "INR", sortOrder: 3 },
+    { slug: "power-2500", name: "Power", pricePaise: 25e4, bonusPaise: 65e3, currency: "INR", sortOrder: 4 },
+    { slug: "starter-usd-5", name: "Starter", pricePaise: 500, bonusPaise: 0, currency: "USD", sortOrder: 11 },
+    { slug: "pro-usd-10", name: "Pro", pricePaise: 1e3, bonusPaise: 150, currency: "USD", sortOrder: 12 },
+    { slug: "scale-usd-25", name: "Scale", pricePaise: 2500, bonusPaise: 500, currency: "USD", sortOrder: 13 },
+    { slug: "power-usd-50", name: "Power", pricePaise: 5e3, bonusPaise: 1500, currency: "USD", sortOrder: 14 },
+    { slug: "builder-usd", name: "Builder", pricePaise: 1200, bonusPaise: 100, currency: "USD", sortOrder: 15 },
+    { slug: "pro-usd", name: "Pro Plus", pricePaise: 2900, bonusPaise: 300, currency: "USD", sortOrder: 16 }
   ];
-  for (const p of packageSeeds) await upsert(creditPackages, { ...p, currency: "INR", active: true }, creditPackages.slug);
+  for (const p of packageSeeds) await upsert(creditPackages, { ...p, active: true }, creditPackages.slug);
   for (const tier of PRICING_TIER_SEEDS) {
     await db2.insert(pricingTiers).values({ ...tier, active: true }).onConflictDoNothing({ target: pricingTiers.slug });
   }
@@ -2884,12 +2915,14 @@ async function authRoutes(app) {
       throw new ApiError("invalid_request", "Password must be at least 8 characters and include a letter and a number.");
     }
     const db2 = await getDb();
-    const email2 = body.email.toLowerCase();
+    const email2 = body.email.toLowerCase().trim();
     if (!isValidGmail(email2)) {
-      throw new ApiError("invalid_request", "Only official standard Google Gmail accounts (@gmail.com) are allowed. Temporary emails and aliases with '+' are not permitted.");
+      throw new ApiError("invalid_request", "Only official standard Google Gmail accounts (@gmail.com) are allowed. Temporary emails, dot-trick aliases, and aliases with '+' are not permitted.");
     }
-    const existing = await db2.select({ id: users.id }).from(users).where(eq4(users.email, email2));
-    if (existing.length > 0) throw new ApiError("invalid_request", "An account with this email already exists.");
+    const canonical = canonicalizeEmail(email2);
+    const allUsers = await db2.select({ id: users.id, email: users.email }).from(users);
+    const existing = allUsers.find((u) => canonicalizeEmail(u.email) === canonical || u.email === email2);
+    if (existing) throw new ApiError("invalid_request", "An account with this Gmail address already exists.");
     const inserted = await db2.insert(users).values({ email: email2, passwordHash: await hashPassword(body.password), name: body.name ?? "", emailVerified: false }).returning();
     const user = inserted[0];
     await db2.insert(wallets).values({ userId: user.id, balancePaise: 0 }).onConflictDoNothing({ target: wallets.userId });
@@ -2915,8 +2948,10 @@ async function authRoutes(app) {
     if (!rl.allowed) throw new ApiError("rate_limit_exceeded", "Too many sign-in attempts. Try again shortly.");
     const body = z.object({ email: z.string().email(), password: z.string().min(1) }).parse(request.body);
     const db2 = await getDb();
-    const rows = await db2.select().from(users).where(eq4(users.email, body.email.toLowerCase()));
-    const user = rows[0];
+    const inputEmail = body.email.toLowerCase().trim();
+    const canonical = canonicalizeEmail(inputEmail);
+    const allUsers = await db2.select().from(users);
+    const user = allUsers.find((u) => u.email === inputEmail || canonicalizeEmail(u.email) === canonical);
     const ok = user ? await verifyPassword(body.password, user.passwordHash) : false;
     if (!user || !ok) throw new ApiError("unauthenticated", "Invalid email or password.");
     if (user.status === "suspended") throw new ApiError("forbidden", "This account has been suspended. Contact support.");
@@ -6045,7 +6080,7 @@ async function catalogRoutes(app) {
 
 // apps/api/src/routes/chat.ts
 import { z as z3 } from "zod";
-import { and as and7, eq as eq10, gt as gt3, sql as sql6 } from "drizzle-orm";
+import { eq as eq11, sql as sql7 } from "drizzle-orm";
 
 // packages/providers/src/adapter.ts
 var ProviderError = class extends Error {
@@ -6789,6 +6824,94 @@ async function consumeFreeQuota(userId, limits) {
   return { allowed: true, window: null, used: 0, limit: limits.perMinute, retryAfterSec: 0 };
 }
 
+// apps/api/src/lib/daily-entitlement.ts
+import { and as and6, eq as eq9, sql as sql5 } from "drizzle-orm";
+async function getDailyAllowanceLimit() {
+  return await getNumber("DAILY_FREE_TOKENS_ENTITLEMENT", DAILY_FREE_ALLOWANCE_TOKENS);
+}
+async function getDailyFreeQuota(userId) {
+  const db2 = await getDb();
+  const dayKey = getTodayUtcKey();
+  const dailyLimit = await getDailyAllowanceLimit();
+  const rows = await db2.select().from(dailyFreeTokenUsage).where(and6(eq9(dailyFreeTokenUsage.userId, userId), eq9(dailyFreeTokenUsage.dayKey, dayKey)));
+  const consumed = rows[0]?.tokensConsumed ?? 0;
+  const reserved = rows[0]?.tokensReserved ?? 0;
+  const tokensRemaining = Math.max(0, dailyLimit - consumed - reserved);
+  return {
+    dailyLimit,
+    tokensConsumed: consumed,
+    tokensReserved: reserved,
+    tokensRemaining,
+    dayKey,
+    nextResetAt: getNextUtcResetTime().toISOString()
+  };
+}
+async function reserveDailyFreeTokens(params) {
+  const db2 = await getDb();
+  const dayKey = getTodayUtcKey();
+  const dailyLimit = await getDailyAllowanceLimit();
+  await db2.execute(sql5`
+    INSERT INTO daily_free_token_usage (user_id, day_key, tokens_consumed, tokens_reserved, updated_at)
+    VALUES (${params.userId}, ${dayKey}, 0, 0, now())
+    ON CONFLICT (user_id, day_key) DO NOTHING
+  `);
+  const currentRows = await db2.select({
+    consumed: dailyFreeTokenUsage.tokensConsumed,
+    reserved: dailyFreeTokenUsage.tokensReserved
+  }).from(dailyFreeTokenUsage).where(and6(eq9(dailyFreeTokenUsage.userId, params.userId), eq9(dailyFreeTokenUsage.dayKey, dayKey)));
+  const consumedBefore = currentRows[0]?.consumed ?? 0;
+  const reservedBefore = currentRows[0]?.reserved ?? 0;
+  const remainingBefore = Math.max(0, dailyLimit - consumedBefore - reservedBefore);
+  const actualToReserve = Math.min(remainingBefore, params.estimatedTokens);
+  if (actualToReserve > 0) {
+    await db2.execute(sql5`
+      UPDATE daily_free_token_usage
+      SET 
+        tokens_reserved = tokens_reserved + ${actualToReserve},
+        updated_at = now()
+      WHERE user_id = ${params.userId} AND day_key = ${dayKey}
+    `);
+  }
+  const spilloverTokens = Math.max(0, params.estimatedTokens - actualToReserve);
+  const tokensRemaining = Math.max(0, remainingBefore - actualToReserve);
+  return {
+    reservedTokens: actualToReserve,
+    spilloverTokens,
+    tokensRemaining
+  };
+}
+async function settleDailyFreeTokens(params) {
+  const db2 = await getDb();
+  const dayKey = getTodayUtcKey();
+  const freeTokensSettled = Math.min(params.reservedTokens, params.actualTokens);
+  const spilloverPaidTokens = Math.max(0, params.actualTokens - freeTokensSettled);
+  await db2.execute(sql5`
+    UPDATE daily_free_token_usage
+    SET 
+      tokens_consumed = tokens_consumed + ${freeTokensSettled},
+      tokens_reserved = GREATEST(tokens_reserved - ${params.reservedTokens}, 0),
+      updated_at = now()
+    WHERE user_id = ${params.userId} AND day_key = ${dayKey}
+  `);
+  return {
+    freeTokensSettled,
+    spilloverPaidTokens
+  };
+}
+async function releaseDailyFreeTokens(params) {
+  if (params.reservedTokens <= 0) return;
+  const db2 = await getDb();
+  const dayKey = getTodayUtcKey();
+  await db2.execute(sql5`
+    UPDATE daily_free_token_usage
+    SET 
+      tokens_reserved = GREATEST(tokens_reserved - ${params.reservedTokens}, 0),
+      updated_at = now()
+    WHERE user_id = ${params.userId} AND day_key = ${dayKey}
+  `).catch(() => {
+  });
+}
+
 // apps/api/src/lib/queue.ts
 var nextId = 1;
 var states = /* @__PURE__ */ new Map();
@@ -6847,7 +6970,7 @@ function queueSnapshot() {
 }
 
 // apps/api/src/lib/pipeline.ts
-import { and as and6, desc as desc4, eq as eq9, inArray, or as or2, sql as sql5 } from "drizzle-orm";
+import { and as and7, desc as desc4, eq as eq10, inArray, or as or2, sql as sql6 } from "drizzle-orm";
 var MODEL_ALIASES = {
   // Pro Router Official Tiered Models
   "pr-zenith": "claude-opus-5",
@@ -6993,16 +7116,16 @@ async function resolveModelInput(input) {
 async function loadModelContext(slug2) {
   const db2 = await getDb();
   const lowerSlug = slug2.toLowerCase();
-  const rows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(or2(
-    eq9(models.slug, slug2),
-    sql5`lower(${models.slug}) = ${lowerSlug}`,
-    sql5`lower(${models.name}) = ${lowerSlug}`
+  const rows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq10(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq10(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq10(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq10(modelLimits.modelId, models.id)).where(or2(
+    eq10(models.slug, slug2),
+    sql6`lower(${models.slug}) = ${lowerSlug}`,
+    sql6`lower(${models.name}) = ${lowerSlug}`
   ));
   let r = rows[0];
   if (!r) {
     const profile = ModelProfileRegistry.get(slug2) || ModelProfileRegistry.get(lowerSlug);
     if (profile) {
-      const fallbackRows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq9(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq9(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq9(modelLimits.modelId, models.id)).where(eq9(models.slug, "deepseek-v4.1-flash-1017"));
+      const fallbackRows = await db2.select({ model: models, pricing: modelPricing, tier: pricingTiers, caps: modelCapabilities, limits: modelLimits }).from(models).leftJoin(modelPricing, eq10(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq10(pricingTiers.slug, models.pricingTier)).leftJoin(modelCapabilities, eq10(modelCapabilities.modelId, models.id)).leftJoin(modelLimits, eq10(modelLimits.modelId, models.id)).where(eq10(models.slug, "deepseek-v4.1-flash-1017"));
       const baseRow = fallbackRows[0];
       const inPriceUsd = profile.customerPricingUsd?.inputPerMillion ?? 0.2;
       const outPriceUsd = profile.customerPricingUsd?.outputPerMillion ?? 0.8;
@@ -7080,12 +7203,12 @@ async function loadModelContext(slug2) {
 }
 async function hydrateCandidates(modelId, forcedProvider, requirements) {
   const db2 = await getDb();
-  const linkRows = await db2.select({ link: modelProviders, provider: providers }).from(modelProviders).innerJoin(providers, eq9(providers.id, modelProviders.providerId)).where(eq9(modelProviders.modelId, modelId));
-  const modelRows = await db2.select().from(models).where(eq9(models.id, modelId));
+  const linkRows = await db2.select({ link: modelProviders, provider: providers }).from(modelProviders).innerJoin(providers, eq10(providers.id, modelProviders.providerId)).where(eq10(modelProviders.modelId, modelId));
+  const modelRows = await db2.select().from(models).where(eq10(models.id, modelId));
   const model = modelRows[0];
-  const pricingRows = await db2.select().from(modelPricing).where(eq9(modelPricing.modelId, modelId));
+  const pricingRows = await db2.select().from(modelPricing).where(eq10(modelPricing.modelId, modelId));
   const pricing = pricingRows[0];
-  const tier = model?.pricingTier ? (await db2.select().from(pricingTiers).where(eq9(pricingTiers.slug, model.pricingTier)))[0] ?? null : null;
+  const tier = model?.pricingTier ? (await db2.select().from(pricingTiers).where(eq10(pricingTiers.slug, model.pricingTier)))[0] ?? null : null;
   const effective = model ? resolveEffectivePricing(model, pricing ?? null, tier, await getUsdToInrRate()) : null;
   const providerIds = linkRows.map((l) => l.provider.id);
   const healthRows = providerIds.length ? await db2.select().from(providerHealth).where(inArray(providerHealth.providerId, providerIds)).orderBy(desc4(providerHealth.checkedAt)) : [];
@@ -7270,7 +7393,7 @@ async function getCandidateKeyPool(candidate) {
   const keys = [];
   try {
     const db2 = await getDb();
-    const creds = await db2.select().from(providerCredentials).where(and6(eq9(providerCredentials.providerId, candidate.providerId), eq9(providerCredentials.active, true)));
+    const creds = await db2.select().from(providerCredentials).where(and7(eq10(providerCredentials.providerId, candidate.providerId), eq10(providerCredentials.active, true)));
     if (creds.length > 0) {
       const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
       credentialCursor.set(candidate.providerId, start + 1);
@@ -7334,12 +7457,12 @@ async function getCandidateKeyPool(candidate) {
 }
 async function getAdapter(candidate, apiKeyOverride) {
   const db2 = await getDb();
-  const providerRows = await db2.select().from(providers).where(eq9(providers.id, candidate.providerId));
+  const providerRows = await db2.select().from(providers).where(eq10(providers.id, candidate.providerId));
   const provider = providerRows[0];
   if (!provider) throw new ApiError("provider_unavailable", "Provider configuration missing.");
   let apiKey = apiKeyOverride;
   if (!apiKey) {
-    const creds = await db2.select().from(providerCredentials).where(and6(eq9(providerCredentials.providerId, candidate.providerId), eq9(providerCredentials.active, true)));
+    const creds = await db2.select().from(providerCredentials).where(and7(eq10(providerCredentials.providerId, candidate.providerId), eq10(providerCredentials.active, true)));
     if (creds.length > 0) {
       const start = (credentialCursor.get(candidate.providerId) ?? 0) % creds.length;
       credentialCursor.set(candidate.providerId, start + 1);
@@ -7500,7 +7623,7 @@ async function* streamChat(decision, params, onMeta, signal) {
 }
 async function resolveAutoModel(hints) {
   const db2 = await getDb();
-  const all = await db2.select({ model: models, caps: modelCapabilities }).from(models).leftJoin(modelCapabilities, eq9(modelCapabilities.modelId, models.id)).where(eq9(models.status, "active"));
+  const all = await db2.select({ model: models, caps: modelCapabilities }).from(models).leftJoin(modelCapabilities, eq10(modelCapabilities.modelId, models.id)).where(eq10(models.status, "active"));
   const links = await db2.select().from(modelProviders);
   const providerRows = await db2.select().from(providers);
   const providerById = new Map(providerRows.map((p) => [p.id, p]));
@@ -7559,7 +7682,7 @@ var bodySchema = z3.looseObject({
 });
 async function getUserPlan(userId) {
   const db2 = await getDb();
-  const rows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq10(subscriptions.planId, plans.id)).where(eq10(subscriptions.userId, userId));
+  const rows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq11(subscriptions.planId, plans.id)).where(eq11(subscriptions.userId, userId));
   const sub = rows.find((r) => r.plan && r.plan.active);
   if (sub) return { slug: sub.plan.slug, name: sub.plan.name, freeRpm: sub.plan.freeRpm, freeRph: sub.plan.freeRph, freeRpd: sub.plan.freeRpd, concurrency: sub.plan.concurrency, queuePriority: sub.plan.queuePriority };
   return { slug: "free", name: "Free", freeRpm: 1, freeRph: 20, freeRpd: 100, concurrency: 1, queuePriority: 5 };
@@ -7753,34 +7876,42 @@ async function chatRoutes(app) {
     }
     const plan = await getUserPlan(auth.user.id);
     const fallbackEnabled = await getFlag("provider_fallback", true);
-    const canonicalPromoId = resolvePromotionalCanonicalId(slug2);
-    let isPromotionalActive = false;
-    let activePromoActivationId = null;
-    if (canonicalPromoId !== null) {
-      const db3 = await getDb();
-      const promoRows = await db3.select().from(promotionalActivations).where(
-        and7(
-          eq10(promotionalActivations.userId, auth.user.id),
-          eq10(promotionalActivations.campaignSlug, "launch-48h-special"),
-          eq10(promotionalActivations.active, true),
-          gt3(promotionalActivations.expiresAt, /* @__PURE__ */ new Date())
-        )
-      );
-      const promo = promoRows[0];
-      if (promo && promo.requestCount < 50 && promo.tokensConsumed < 5e5) {
-        isPromotionalActive = true;
-        activePromoActivationId = promo.id;
-      }
-    }
-    const isFree = Boolean(ctx.model.isFree || isPromotionalActive);
-    const stream = body.stream === true;
-    let queueWaitMs = 0;
-    let acquired = false;
-    let acquiredKey = "";
-    let slotServiceStart = 0;
-    let sseStarted = false;
+    const isDailyFree = isDailyFreeEligible(slug2);
+    let freeTokensReserved = 0;
     let hasReservation = false;
-    if (isFree) {
+    let isFree = Boolean(ctx.model.isFree);
+    const inputTokens = countMessageTokens(messages2);
+    const maxOut = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 4096, ctx.model.maxOutputTokens);
+    const estimatedTotalTokens = inputTokens + maxOut;
+    if (isDailyFree) {
+      const freeRes = await reserveDailyFreeTokens({
+        userId: auth.user.id,
+        estimatedTokens: estimatedTotalTokens
+      });
+      freeTokensReserved = freeRes.reservedTokens;
+      if (freeRes.spilloverTokens > 0) {
+        const spilloverRatio = freeRes.spilloverTokens / Math.max(1, estimatedTotalTokens);
+        const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
+        const totalEstimated = requestCost({
+          inputTokens,
+          outputTokens: maxOut,
+          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
+          platformFeePercent: feePercent
+        });
+        const spilloverCost = Math.ceil(totalEstimated * spilloverRatio);
+        try {
+          await reserveBalance({ userId: auth.user.id, requestId, amountPaise: spilloverCost });
+          hasReservation = true;
+        } catch (resErr) {
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved });
+          throw resErr;
+        }
+        isFree = false;
+      } else {
+        isFree = true;
+      }
+    } else if (isFree) {
       const modelLimitsRow = ctx.limits;
       const quota = await consumeFreeQuota(auth.user.id, {
         perMinute: plan.freeRpm,
@@ -7791,8 +7922,6 @@ async function chatRoutes(app) {
         throw new ApiError("free_quota_exceeded", `Free ${quota.window} quota reached (${quota.limit}). Upgrade your plan or try again later.`, { retryAfter: quota.retryAfterSec });
       }
     } else {
-      const inputTokens = countMessageTokens(messages2);
-      const maxOut = Math.min(body.max_tokens ?? body.max_completion_tokens ?? 4096, ctx.model.maxOutputTokens);
       const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
       const estimated = requestCost({
         inputTokens,
@@ -7804,6 +7933,12 @@ async function chatRoutes(app) {
       await reserveBalance({ userId: auth.user.id, requestId, amountPaise: estimated });
       hasReservation = true;
     }
+    const stream = body.stream === true;
+    let queueWaitMs = 0;
+    let acquired = false;
+    let acquiredKey = "";
+    let slotServiceStart = 0;
+    let sseStarted = false;
     eventHub.publish(auth.user.id, "usage.request.started", {
       requestId,
       model: slug2,
@@ -7854,41 +7989,68 @@ async function chatRoutes(app) {
       const usageSource = params.usageSource ?? "none";
       const billEstimated = usageSource === "estimated" ? await getFlag("BILL_ESTIMATED_USAGE", false) : false;
       let cost = 0;
-      if (!isFree && !params.errorCode && (usage.prompt_tokens > 0 || usage.completion_tokens > 0) && (usageSource === "upstream" || billEstimated)) {
-        const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
-        cost = requestCost({
-          inputTokens: usage.prompt_tokens,
-          outputTokens: usage.completion_tokens,
-          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
-          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
-          platformFeePercent: feePercent
-        });
-        if (hasReservation) {
-          const settlement = await settleReservation({
-            userId: auth.user.id,
-            requestId,
-            actualAmountPaise: cost,
-            reference: requestId,
-            metadata: { model: slug2, provider: params.providerSlug }
+      const totalActualTokens = usage.total_tokens || usage.prompt_tokens + usage.completion_tokens;
+      if (params.errorCode) {
+        if (freeTokensReserved > 0) {
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved }).catch(() => {
           });
-          cost = settlement.deductedPaise;
-          hasReservation = false;
-        } else {
-          const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug2, provider: params.providerSlug } });
-          cost = debit.deductedPaise;
+          freeTokensReserved = 0;
         }
-      } else if (hasReservation) {
-        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
-        });
-        hasReservation = false;
-      }
-      if (activePromoActivationId && (usage.prompt_tokens > 0 || usage.completion_tokens > 0)) {
-        const totalToks = usage.total_tokens || usage.prompt_tokens + usage.completion_tokens;
-        await db2.update(promotionalActivations).set({
-          requestCount: sql6`${promotionalActivations.requestCount} + 1`,
-          tokensConsumed: sql6`${promotionalActivations.tokensConsumed} + ${totalToks}`
-        }).where(eq10(promotionalActivations.id, activePromoActivationId)).catch(() => {
-        });
+        if (hasReservation) {
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+          });
+          hasReservation = false;
+        }
+      } else {
+        let spilloverPaidTokens = totalActualTokens;
+        if (freeTokensReserved > 0) {
+          const settlement = await settleDailyFreeTokens({
+            userId: auth.user.id,
+            reservedTokens: freeTokensReserved,
+            actualTokens: totalActualTokens
+          });
+          spilloverPaidTokens = settlement.spilloverPaidTokens;
+          if (spilloverPaidTokens === 0) {
+            isFree = true;
+          }
+        }
+        if (spilloverPaidTokens > 0 && !isFree && (usage.prompt_tokens > 0 || usage.completion_tokens > 0) && (usageSource === "upstream" || billEstimated)) {
+          const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
+          const paidRatio = spilloverPaidTokens / Math.max(1, totalActualTokens);
+          const paidInput = Math.round(usage.prompt_tokens * paidRatio);
+          const paidOutput = Math.round(usage.completion_tokens * paidRatio);
+          cost = requestCost({
+            inputTokens: paidInput,
+            outputTokens: paidOutput,
+            inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+            outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
+            platformFeePercent: feePercent
+          });
+          if (hasReservation) {
+            const settlement = await settleReservation({
+              userId: auth.user.id,
+              requestId,
+              actualAmountPaise: cost,
+              reference: requestId,
+              metadata: { model: slug2, provider: params.providerSlug }
+            });
+            cost = settlement.deductedPaise;
+            hasReservation = false;
+          } else {
+            const debit = await debitWallet({
+              userId: auth.user.id,
+              amountPaise: cost,
+              reference: requestId,
+              idempotencyKey: `usage:${requestId}`,
+              metadata: { model: slug2, provider: params.providerSlug }
+            });
+            cost = debit.deductedPaise;
+          }
+        } else if (hasReservation) {
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+          });
+          hasReservation = false;
+        }
       }
       await db2.update(requests).set({
         status: params.status ?? (params.errorCode ? "error" : "success"),
@@ -7904,9 +8066,9 @@ async function chatRoutes(app) {
         errorCode: params.errorCode ?? null,
         errorMessage: params.errorMessage ?? null,
         providerId: params.providerId
-      }).where(eq10(requests.id, requestId));
+      }).where(eq11(requests.id, requestId));
       if (auth.apiKey) {
-        await db2.update(apiKeys).set({ requestCount: sql6`${apiKeys.requestCount} + 1`, spendPaise: sql6`${apiKeys.spendPaise} + ${cost}`, lastUsedAt: /* @__PURE__ */ new Date() }).where(eq10(apiKeys.id, auth.apiKey.id));
+        await db2.update(apiKeys).set({ requestCount: sql7`${apiKeys.requestCount} + 1`, spendPaise: sql7`${apiKeys.spendPaise} + ${cost}`, lastUsedAt: /* @__PURE__ */ new Date() }).where(eq11(apiKeys.id, auth.apiKey.id));
       }
       if (params.errorCode) {
         eventHub.publish(auth.user.id, "usage.request.failed", {
@@ -8181,7 +8343,7 @@ async function chatRoutes(app) {
 
 // apps/api/src/routes/messages.ts
 import { z as z4 } from "zod";
-import { eq as eq11 } from "drizzle-orm";
+import { eq as eq12 } from "drizzle-orm";
 import { randomBytes as randomBytes4 } from "node:crypto";
 var anthropicBodySchema = z4.looseObject({
   model: z4.string().min(1),
@@ -8346,7 +8508,7 @@ var messagesRoutes = async (app) => {
       throw new ApiError("provider_unavailable", `No providers are configured for '${ctx.model.name}'.`);
     }
     const db2 = await getDb();
-    const rows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq11(subscriptions.planId, plans.id)).where(eq11(subscriptions.userId, auth.user.id));
+    const rows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq12(subscriptions.planId, plans.id)).where(eq12(subscriptions.userId, auth.user.id));
     const sub = rows.find((r) => r.plan && r.plan.active);
     const plan = sub ? { slug: sub.plan.slug, freeRpm: sub.plan.freeRpm, concurrency: sub.plan.concurrency, queuePriority: sub.plan.queuePriority } : { slug: "free", freeRpm: 1, concurrency: 1, queuePriority: 5 };
     const fallbackEnabled = await getFlag("provider_fallback", true);
@@ -8446,7 +8608,7 @@ var messagesRoutes = async (app) => {
         errorCode: params.errorCode ?? null,
         errorMessage: params.errorMessage ?? null,
         providerId: params.providerId
-      }).where(eq11(requests.id, requestId));
+      }).where(eq12(requests.id, requestId));
       return cost;
     };
     const msgId = `msg_${requestId.replace(/^req_/, "").slice(0, 20)}`;
@@ -8646,12 +8808,12 @@ data: ${JSON.stringify(data)}
 // apps/api/src/routes/wallet.ts
 import { z as z5 } from "zod";
 import { createHmac, randomUUID, timingSafeEqual as timingSafeEqual3 } from "node:crypto";
-import { desc as desc6, eq as eq12 } from "drizzle-orm";
+import { desc as desc6, eq as eq13 } from "drizzle-orm";
 async function walletRoutes(app) {
   app.get("/wallet", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(walletTransactions).where(eq12(walletTransactions.userId, user.id)).orderBy(desc6(walletTransactions.createdAt)).limit(50);
+    const rows = await db2.select().from(walletTransactions).where(eq13(walletTransactions.userId, user.id)).orderBy(desc6(walletTransactions.createdAt)).limit(50);
     const balance = await getBalance(user.id);
     return {
       balancePaise: balance,
@@ -8670,7 +8832,7 @@ async function walletRoutes(app) {
   });
   app.get("/wallet/packages", async () => {
     const db2 = await getDb();
-    const rows = await db2.select().from(creditPackages).where(eq12(creditPackages.active, true));
+    const rows = await db2.select().from(creditPackages).where(eq13(creditPackages.active, true));
     return {
       items: rows.sort((a, b) => a.sortOrder - b.sortOrder).map((p) => ({
         id: p.id,
@@ -8695,7 +8857,7 @@ async function walletRoutes(app) {
       idempotencyKey: z5.string().min(8).max(128).optional()
     }).parse(request.body);
     const db2 = await getDb();
-    const dbPkg = (await db2.select().from(creditPackages).where(eq12(creditPackages.slug, body.packageSlug)))[0];
+    const dbPkg = (await db2.select().from(creditPackages).where(eq13(creditPackages.slug, body.packageSlug)))[0];
     const STATIC_PACKAGES = {
       "starter-100": { priceMinor: 1e4, bonusPaise: 0, name: "Starter Pack", currency: "INR" },
       "pro-500": { priceMinor: 5e4, bonusPaise: 5e3, name: "Pro Pack", currency: "INR" },
@@ -8704,7 +8866,7 @@ async function walletRoutes(app) {
       "starter": { priceMinor: 49900, bonusPaise: 0, name: "Starter", currency: "INR" },
       "builder": { priceMinor: 99900, bonusPaise: 5100, name: "Builder", currency: "INR" },
       "pro": { priceMinor: 249900, bonusPaise: 25100, name: "Pro", currency: "INR" },
-      "power": { priceMinor: 499900, bonusPaise: 60100, name: "Power", currency: "INR" },
+      "power": { priceMinor: 499900, bonusPaise: 75100, name: "Power", currency: "INR" },
       "starter-usd-5": { priceMinor: 500, bonusPaise: 0, name: "Starter Pack", currency: "USD" },
       "pro-usd-10": { priceMinor: 1e3, bonusPaise: 150, name: "Pro Pack", currency: "USD" },
       "scale-usd-25": { priceMinor: 2500, bonusPaise: 500, name: "Scale Pack", currency: "USD" },
@@ -8719,7 +8881,7 @@ async function walletRoutes(app) {
     const bonusPaise = dbPkg ? dbPkg.bonusPaise : fallbackPkg.bonusPaise;
     const selectedCurrency = isUSD ? "USD" : dbPkg?.currency || fallbackPkg?.currency || "INR";
     if (body.idempotencyKey) {
-      const existing = await db2.select().from(payments).where(eq12(payments.idempotencyKey, body.idempotencyKey));
+      const existing = await db2.select().from(payments).where(eq13(payments.idempotencyKey, body.idempotencyKey));
       if (existing.length > 0) {
         const p = existing[0];
         return reply.send({ paymentId: p.id, invoice: p.invoiceNumber, amountPaise: p.amountPaise, status: p.status, gateway: p.gateway, gatewayOrderId: p.gatewayOrderId });
@@ -8751,7 +8913,7 @@ async function walletRoutes(app) {
       throw new ApiError("provider_error", `Payment gateway error: ${text7.slice(0, 200)}`);
     }
     const order = await res.json();
-    await db2.update(payments).set({ gatewayOrderId: order.id, updatedAt: /* @__PURE__ */ new Date() }).where(eq12(payments.id, payment.id));
+    await db2.update(payments).set({ gatewayOrderId: order.id, updatedAt: /* @__PURE__ */ new Date() }).where(eq13(payments.id, payment.id));
     return reply.send({ paymentId: payment.id, invoice, amountPaise: priceMinor, currency: selectedCurrency, gateway: "razorpay", gatewayOrderId: order.id, keyId: env.razorpayKeyId });
   });
   app.post("/wallet/verify", async (request, reply) => {
@@ -8773,7 +8935,7 @@ async function walletRoutes(app) {
       throw new ApiError("forbidden", "Payment verification failed: invalid signature.");
     }
     const db2 = await getDb();
-    const paymentRows = await db2.select().from(payments).where(eq12(payments.id, body.paymentId));
+    const paymentRows = await db2.select().from(payments).where(eq13(payments.id, body.paymentId));
     const payment = paymentRows[0];
     if (!payment) {
       throw new ApiError("not_found", "Payment record not found.");
@@ -8801,7 +8963,7 @@ async function walletRoutes(app) {
       gatewayPaymentId: body.razorpayPaymentId,
       creditedAt: /* @__PURE__ */ new Date(),
       updatedAt: /* @__PURE__ */ new Date()
-    }).where(eq12(payments.id, payment.id));
+    }).where(eq13(payments.id, payment.id));
     eventHub.publish(user.id, "payment.completed", {
       paymentId: payment.id,
       invoice: payment.invoiceNumber,
@@ -8833,7 +8995,7 @@ async function walletRoutes(app) {
     const orderId = paymentEntity?.order_id || event.payload?.order?.entity?.id;
     const eventId = `${event.event}:${paymentEntity?.id ?? "unknown"}:${orderId ?? ""}`;
     const db2 = await getDb();
-    const existingEvents = await db2.select().from(paymentWebhooks).where(eq12(paymentWebhooks.eventId, eventId));
+    const existingEvents = await db2.select().from(paymentWebhooks).where(eq13(paymentWebhooks.eventId, eventId));
     if (existingEvents.length > 0) return reply.send({ status: "duplicate_ignored" });
     await db2.insert(paymentWebhooks).values({
       eventId,
@@ -8844,7 +9006,7 @@ async function walletRoutes(app) {
     if (event.event !== "payment.captured" && event.event !== "order.paid") {
       return reply.send({ status: "ignored" });
     }
-    const paymentRows = orderId ? await db2.select().from(payments).where(eq12(payments.gatewayOrderId, orderId)) : [];
+    const paymentRows = orderId ? await db2.select().from(payments).where(eq13(payments.gatewayOrderId, orderId)) : [];
     const payment = paymentRows[0];
     if (!payment) throw new ApiError("not_found", "Payment not found for order.");
     if (payment.creditedAt || payment.status === "captured") {
@@ -8867,7 +9029,7 @@ async function walletRoutes(app) {
       gatewayPaymentId: paymentEntity?.id ?? null,
       creditedAt: /* @__PURE__ */ new Date(),
       updatedAt: /* @__PURE__ */ new Date()
-    }).where(eq12(payments.id, payment.id));
+    }).where(eq13(payments.id, payment.id));
     eventHub.publish(payment.userId, "payment.completed", {
       paymentId: payment.id,
       invoice: payment.invoiceNumber,
@@ -8883,7 +9045,7 @@ async function walletRoutes(app) {
     const user = await requireUser(request);
     const { id } = request.params;
     const db2 = await getDb();
-    const rows = await db2.select().from(payments).where(eq12(payments.id, id));
+    const rows = await db2.select().from(payments).where(eq13(payments.id, id));
     const p = rows[0];
     if (!p || p.userId !== user.id) throw new ApiError("not_found", "Payment not found.");
     return {
@@ -8900,7 +9062,7 @@ async function walletRoutes(app) {
   app.get("/payments", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(payments).where(eq12(payments.userId, user.id)).orderBy(desc6(payments.createdAt)).limit(50);
+    const rows = await db2.select().from(payments).where(eq13(payments.userId, user.id)).orderBy(desc6(payments.createdAt)).limit(50);
     return {
       items: rows.map((p) => ({
         id: p.id,
@@ -8917,20 +9079,20 @@ async function walletRoutes(app) {
 
 // apps/api/src/routes/promotions.ts
 import { z as z6 } from "zod";
-import { and as and9, desc as desc7, eq as eq13, gt as gt5, lt, sql as sql8 } from "drizzle-orm";
+import { and as and10, desc as desc7, eq as eq14, gt as gt5, lt, sql as sql9 } from "drizzle-orm";
 async function getActiveCampaign() {
   const db2 = await getDb();
   const now = /* @__PURE__ */ new Date();
-  const rows = await db2.select().from(astraCampaigns).where(and9(eq13(astraCampaigns.active, true), lt(astraCampaigns.startsAt, now))).orderBy(desc7(astraCampaigns.startsAt));
+  const rows = await db2.select().from(astraCampaigns).where(and10(eq14(astraCampaigns.active, true), lt(astraCampaigns.startsAt, now))).orderBy(desc7(astraCampaigns.startsAt));
   return rows.find((c) => !c.endsAt || c.endsAt > now) ?? null;
 }
 async function getOrCreatePersonalCode(userId, campaignId) {
   const db2 = await getDb();
-  const existing = await db2.select().from(giftCodes).where(and9(eq13(giftCodes.ownerUserId, userId), eq13(giftCodes.campaignId, campaignId)));
+  const existing = await db2.select().from(giftCodes).where(and10(eq14(giftCodes.ownerUserId, userId), eq14(giftCodes.campaignId, campaignId)));
   if (existing[0]) return existing[0].code;
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = `PRO-${randomCode(6)}`;
-    const clash = await db2.select({ id: giftCodes.id }).from(giftCodes).where(eq13(giftCodes.code, code));
+    const clash = await db2.select({ id: giftCodes.id }).from(giftCodes).where(eq14(giftCodes.code, code));
     if (clash.length === 0) {
       await db2.insert(giftCodes).values({ campaignId, code, ownerUserId: userId, status: "active" });
       return code;
@@ -8948,7 +9110,7 @@ async function promotionRoutes(app) {
     try {
       const user = await requireUser(request);
       const db2 = await getDb();
-      const ent = await db2.select().from(astraEntitlements).where(and9(eq13(astraEntitlements.userId, user.id), eq13(astraEntitlements.status, "active"), gt5(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()))).orderBy(desc7(astraEntitlements.activatedAt));
+      const ent = await db2.select().from(astraEntitlements).where(and10(eq14(astraEntitlements.userId, user.id), eq14(astraEntitlements.status, "active"), gt5(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()))).orderBy(desc7(astraEntitlements.activatedAt));
       if (ent[0]) {
         const msLeft = ent[0].expiresAt.getTime() - Date.now();
         entitlement = { activatedAt: ent[0].activatedAt.toISOString(), expiresAt: ent[0].expiresAt.toISOString(), daysLeft: Math.max(0, Math.ceil(msLeft / 864e5)) };
@@ -8982,7 +9144,7 @@ async function promotionRoutes(app) {
     const db2 = await getDb();
     const campaign = await getActiveCampaign();
     if (!campaign) throw new ApiError("campaign_inactive", "No active Astra campaign.");
-    const codes = await db2.select().from(giftCodes).where(eq13(giftCodes.code, rawCode));
+    const codes = await db2.select().from(giftCodes).where(eq14(giftCodes.code, rawCode));
     const code = codes[0];
     if (!code) throw new ApiError("invalid_code", "This code is not valid.");
     if (code.status !== "active") throw new ApiError("invalid_code", "This code has been suspended or revoked.");
@@ -8990,7 +9152,7 @@ async function promotionRoutes(app) {
     if (code.ownerUserId && code.ownerUserId === user.id) {
       throw new ApiError("self_redemption_not_allowed", "You cannot redeem your own referral code. Share it with a friend instead.");
     }
-    const already = await db2.select().from(giftCodeRedemptions).where(and9(eq13(giftCodeRedemptions.codeId, code.id), eq13(giftCodeRedemptions.redeemerUserId, user.id)));
+    const already = await db2.select().from(giftCodeRedemptions).where(and10(eq14(giftCodeRedemptions.codeId, code.id), eq14(giftCodeRedemptions.redeemerUserId, user.id)));
     if (already.length > 0) throw new ApiError("already_redeemed", "You have already redeemed this code.");
     const maxPerCode = code.maxRedemptions ?? campaign.maxRedemptionsPerCode ?? null;
     if (!campaign.allowMultiRedeem && code.redemptionCount > 0) {
@@ -9004,7 +9166,7 @@ async function promotionRoutes(app) {
     try {
       await db2.transaction(async (tx) => {
         await tx.insert(giftCodeRedemptions).values({ campaignId: campaign.id, codeId: code.id, redeemerUserId: user.id });
-        await tx.update(giftCodes).set({ redemptionCount: sql8`${giftCodes.redemptionCount} + 1` }).where(eq13(giftCodes.id, code.id));
+        await tx.update(giftCodes).set({ redemptionCount: sql9`${giftCodes.redemptionCount} + 1` }).where(eq14(giftCodes.id, code.id));
         await tx.insert(astraEntitlements).values({ userId: user.id, campaignId: campaign.id, sourceCodeId: code.id, activatedAt, expiresAt, status: "active" });
         await tx.insert(notifications).values({
           userId: user.id,
@@ -9038,10 +9200,10 @@ async function promotionRoutes(app) {
     if (!campaign) throw new ApiError("campaign_inactive", "No active campaign.");
     const db2 = await getDb();
     const code = await getOrCreatePersonalCode(user.id, campaign.id);
-    const codes = await db2.select().from(giftCodes).where(eq13(giftCodes.code, code));
+    const codes = await db2.select().from(giftCodes).where(eq14(giftCodes.code, code));
     const codeRow = codes[0];
-    const redemptions = await db2.select({ count: sql8`count(*)::int` }).from(giftCodeRedemptions).where(eq13(giftCodeRedemptions.codeId, codeRow.id));
-    const activeCount = await db2.select({ count: sql8`count(*)::int` }).from(astraEntitlements).where(and9(eq13(astraEntitlements.sourceCodeId, codeRow.id), eq13(astraEntitlements.status, "active"), gt5(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const redemptions = await db2.select({ count: sql9`count(*)::int` }).from(giftCodeRedemptions).where(eq14(giftCodeRedemptions.codeId, codeRow.id));
+    const activeCount = await db2.select({ count: sql9`count(*)::int` }).from(astraEntitlements).where(and10(eq14(astraEntitlements.sourceCodeId, codeRow.id), eq14(astraEntitlements.status, "active"), gt5(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
     return {
       code,
       sharePath: `/redeem?code=${code}`,
@@ -9053,57 +9215,55 @@ async function promotionRoutes(app) {
   const getPromoStatusHandler = async (request) => {
     const q = request.query || {};
     const queryModel = q.modelId?.trim();
-    const isModelEligible = queryModel ? isStrictlyPromotionalEligible(queryModel) : true;
+    const isModelEligible = queryModel ? isDailyFreeEligible(queryModel) : true;
     let status = {
-      campaign: "launch-48h-special",
-      name: "Launch Special: 48 Hours Free",
+      campaign: "daily-free-entitlement",
+      name: "Daily Free Token Entitlement",
       eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
-      durationHours: 48,
       modelId: queryModel ?? null,
       isModelEligible,
-      activated: false,
-      active: false,
-      activatedAt: null,
-      expiresAt: null,
-      remainingMs: 0,
-      remainingFormatted: "Not activated",
+      activated: true,
+      active: true,
+      dailyAllowanceTokens: DAILY_FREE_ALLOWANCE_TOKENS,
+      tokensConsumedToday: 0,
+      tokensRemainingToday: DAILY_FREE_ALLOWANCE_TOKENS,
+      nextResetAt: getNextUtcResetTime().toISOString(),
+      remainingMs: getNextUtcResetTime().getTime() - Date.now(),
+      remainingFormatted: `${DAILY_FREE_ALLOWANCE_TOKENS.toLocaleString()} / ${DAILY_FREE_ALLOWANCE_TOKENS.toLocaleString()} free tokens remaining`,
       quota: {
-        maxRequestsPerDay: 50,
+        maxRequestsPerDay: 5e3,
         requestsConsumed: 0,
-        maxTokensPerDay: 5e5,
+        maxTokensPerDay: DAILY_FREE_ALLOWANCE_TOKENS,
         tokensConsumed: 0,
+        tokensRemaining: DAILY_FREE_ALLOWANCE_TOKENS,
         quotaExceeded: false
       }
     };
     try {
       const user = await requireUser(request);
-      const db2 = await getDb();
-      const rows = await db2.select().from(promotionalActivations).where(
-        and9(
-          eq13(promotionalActivations.userId, user.id),
-          eq13(promotionalActivations.campaignSlug, "launch-48h-special")
-        )
-      );
-      if (rows[0]) {
-        const promoCalc = checkPromotionStatus(rows[0].activatedAt);
-        const quotaExceeded = rows[0].requestCount >= 50 || rows[0].tokensConsumed >= 5e5;
-        status = {
-          ...status,
-          activated: true,
-          active: promoCalc.active && !quotaExceeded,
-          activatedAt: rows[0].activatedAt.toISOString(),
-          expiresAt: rows[0].expiresAt.toISOString(),
-          remainingMs: promoCalc.remainingMs,
-          remainingFormatted: promoCalc.remainingFormatted,
-          quota: {
-            maxRequestsPerDay: 50,
-            requestsConsumed: rows[0].requestCount,
-            maxTokensPerDay: 5e5,
-            tokensConsumed: rows[0].tokensConsumed,
-            quotaExceeded
-          }
-        };
-      }
+      const quota = await getDailyFreeQuota(user.id);
+      const remainingMs = Math.max(0, new Date(quota.nextResetAt).getTime() - Date.now());
+      const hours = Math.floor(remainingMs / (1e3 * 60 * 60));
+      const minutes = Math.floor(remainingMs % (1e3 * 60 * 60) / (1e3 * 60));
+      status = {
+        ...status,
+        activated: true,
+        active: quota.tokensRemaining > 0,
+        dailyAllowanceTokens: quota.dailyLimit,
+        tokensConsumedToday: quota.tokensConsumed,
+        tokensRemainingToday: quota.tokensRemaining,
+        nextResetAt: quota.nextResetAt,
+        remainingMs,
+        remainingFormatted: `${quota.tokensRemaining.toLocaleString()} tokens left \xB7 Resets in ${hours}h ${minutes}m`,
+        quota: {
+          maxRequestsPerDay: 5e3,
+          requestsConsumed: 0,
+          maxTokensPerDay: quota.dailyLimit,
+          tokensConsumed: quota.tokensConsumed,
+          tokensRemaining: quota.tokensRemaining,
+          quotaExceeded: quota.tokensRemaining <= 0
+        }
+      };
     } catch {
     }
     return status;
@@ -9112,75 +9272,36 @@ async function promotionRoutes(app) {
     const user = await requireUser(request);
     const body = request.body || {};
     const modelToActivate = body.canonicalModelId || body.modelId;
-    if (modelToActivate) {
-      const canonical = resolvePromotionalCanonicalId(modelToActivate);
-      if (!canonical) {
-        throw new ApiError(
-          "not_eligible",
-          `Model '${modelToActivate}' is not eligible for the 48-hour free promotion. Only DeepSeek V4.1 Flash and Qwen3.8-27B qualify.`
-        );
-      }
+    if (modelToActivate && !isDailyFreeEligible(modelToActivate)) {
+      throw new ApiError(
+        "not_eligible",
+        `Model '${modelToActivate}' is not eligible for the daily free token entitlement. Only DeepSeek V4.1 Flash and Qwen 27B qualify.`
+      );
     }
-    const db2 = await getDb();
-    const existing = await db2.select().from(promotionalActivations).where(
-      and9(
-        eq13(promotionalActivations.userId, user.id),
-        eq13(promotionalActivations.campaignSlug, "launch-48h-special")
-      )
-    );
-    if (existing[0]) {
-      const promoCalc = checkPromotionStatus(existing[0].activatedAt);
-      const quotaExceeded = existing[0].requestCount >= 50 || existing[0].tokensConsumed >= 5e5;
-      return {
-        ok: true,
-        alreadyActivated: true,
-        active: promoCalc.active && !quotaExceeded,
-        activatedAt: existing[0].activatedAt.toISOString(),
-        expiresAt: existing[0].expiresAt.toISOString(),
-        remainingMs: promoCalc.remainingMs,
-        remainingFormatted: promoCalc.remainingFormatted,
-        eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
-        quota: {
-          maxRequestsPerDay: 50,
-          requestsConsumed: existing[0].requestCount,
-          maxTokensPerDay: 5e5,
-          tokensConsumed: existing[0].tokensConsumed,
-          quotaExceeded
-        }
-      };
-    }
-    const now = /* @__PURE__ */ new Date();
-    const expiresAt = new Date(now.getTime() + PROMO_DURATION_MS);
-    await db2.insert(promotionalActivations).values({
-      userId: user.id,
-      campaignSlug: "launch-48h-special",
-      activatedAt: now,
-      expiresAt,
-      requestCount: 0,
-      tokensConsumed: 0,
-      active: true
-    });
+    const quota = await getDailyFreeQuota(user.id);
     return {
       ok: true,
-      alreadyActivated: false,
-      active: true,
-      activatedAt: now.toISOString(),
-      expiresAt: expiresAt.toISOString(),
-      remainingMs: PROMO_DURATION_MS,
-      remainingFormatted: "48h 0m left",
+      alreadyActivated: true,
+      active: quota.tokensRemaining > 0,
+      dailyAllowanceTokens: quota.dailyLimit,
+      tokensConsumedToday: quota.tokensConsumed,
+      tokensRemainingToday: quota.tokensRemaining,
+      nextResetAt: quota.nextResetAt,
+      remainingFormatted: `${quota.tokensRemaining.toLocaleString()} / ${quota.dailyLimit.toLocaleString()} free tokens remaining`,
       eligibleModels: ["deepseek-v4.1-flash", "qwen3.8-27b"],
       quota: {
-        maxRequestsPerDay: 50,
-        requestsConsumed: 0,
-        maxTokensPerDay: 5e5,
-        tokensConsumed: 0,
-        quotaExceeded: false
+        maxTokensPerDay: quota.dailyLimit,
+        tokensConsumed: quota.tokensConsumed,
+        tokensRemaining: quota.tokensRemaining,
+        quotaExceeded: quota.tokensRemaining <= 0
       }
     };
   };
+  app.get("/promotions/daily-entitlement", getPromoStatusHandler);
   app.get("/promotions/launch-48h", getPromoStatusHandler);
   app.get("/promotions/status", getPromoStatusHandler);
   app.get("/api/promotions/status", getPromoStatusHandler);
+  app.post("/promotions/daily-entitlement/activate", activatePromoHandler);
   app.post("/promotions/launch-48h/activate", activatePromoHandler);
   app.post("/promotions/activate", activatePromoHandler);
   app.post("/api/promotions/activate", activatePromoHandler);
@@ -9188,13 +9309,13 @@ async function promotionRoutes(app) {
 
 // apps/api/src/routes/admin.ts
 import { z as z7 } from "zod";
-import { and as and10, desc as desc8, eq as eq14, gte as gte2, sql as sql9 } from "drizzle-orm";
+import { and as and11, desc as desc8, eq as eq15, gte as gte2, sql as sql10 } from "drizzle-orm";
 async function runHealthCheck(providerId) {
   const db2 = await getDb();
-  const rows = await db2.select().from(providers).where(eq14(providers.id, providerId));
+  const rows = await db2.select().from(providers).where(eq15(providers.id, providerId));
   const provider = rows[0];
   if (!provider) throw new ApiError("not_found", "Provider not found.");
-  const creds = await db2.select().from(providerCredentials).where(eq14(providerCredentials.providerId, providerId));
+  const creds = await db2.select().from(providerCredentials).where(eq15(providerCredentials.providerId, providerId));
   const candidate = {
     linkId: "",
     providerId: provider.id,
@@ -9216,7 +9337,7 @@ async function runHealthCheck(providerId) {
   const result = await adapter.healthCheck();
   const status = result.available ? "active" : creds.length > 0 ? "degraded" : "unknown";
   await db2.insert(providerHealth).values({ providerId, available: result.available, latencyMs: result.latencyMs, successRateBp: result.available ? 1e4 : 0, errorRateBp: result.available ? 0 : 1e4, message: result.message ?? null });
-  await db2.update(providers).set({ status, healthMessage: result.message ?? null, lastHealthAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date() }).where(eq14(providers.id, providerId));
+  await db2.update(providers).set({ status, healthMessage: result.message ?? null, lastHealthAt: /* @__PURE__ */ new Date(), updatedAt: /* @__PURE__ */ new Date() }).where(eq15(providers.id, providerId));
   return { available: result.available, latencyMs: result.latencyMs, message: result.message ?? null, status };
 }
 var providerSchema = z7.object({
@@ -9272,7 +9393,7 @@ var pricingTierPatchSchema = z7.object({
 });
 async function assertPricingTier(slug2) {
   const db2 = await getDb();
-  const rows = await db2.select({ id: pricingTiers.id }).from(pricingTiers).where(eq14(pricingTiers.slug, slug2));
+  const rows = await db2.select({ id: pricingTiers.id }).from(pricingTiers).where(eq15(pricingTiers.slug, slug2));
   if (!rows[0]) throw new ApiError("invalid_request", `Unknown pricing tier '${slug2}'.`);
 }
 async function adminRoutes(app) {
@@ -9280,14 +9401,14 @@ async function adminRoutes(app) {
     await requireRole(request, ["admin", "support"]);
     const db2 = await getDb();
     const since = new Date(Date.now() - 30 * 864e5);
-    const [userCount] = await db2.select({ n: sql9`count(*)::int` }).from(users);
-    const [reqCount] = await db2.select({ n: sql9`count(*)::int` }).from(requests).where(gte2(requests.createdAt, since));
-    const revenue = await db2.select({ total: sql9`coalesce(sum(${payments.amountPaise}),0)::bigint` }).from(payments).where(eq14(payments.status, "captured"));
-    const spend = await db2.select({ total: sql9`coalesce(sum(-${walletTransactions.amountPaise}),0)::bigint` }).from(walletTransactions).where(eq14(walletTransactions.type, "usage"));
-    const balance = await db2.select({ total: sql9`coalesce(sum(${wallets.balancePaise}),0)::bigint` }).from(wallets);
-    const [redemptions] = await db2.select({ n: sql9`count(*)::int` }).from(giftCodeRedemptions);
-    const [ents] = await db2.select({ n: sql9`count(*)::int` }).from(astraEntitlements).where(gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()));
-    const [freeReqs] = await db2.select({ n: sql9`count(*)::int` }).from(requests).where(and10(gte2(requests.createdAt, since), eq14(requests.isFree, true)));
+    const [userCount] = await db2.select({ n: sql10`count(*)::int` }).from(users);
+    const [reqCount] = await db2.select({ n: sql10`count(*)::int` }).from(requests).where(gte2(requests.createdAt, since));
+    const revenue = await db2.select({ total: sql10`coalesce(sum(${payments.amountPaise}),0)::bigint` }).from(payments).where(eq15(payments.status, "captured"));
+    const spend = await db2.select({ total: sql10`coalesce(sum(-${walletTransactions.amountPaise}),0)::bigint` }).from(walletTransactions).where(eq15(walletTransactions.type, "usage"));
+    const balance = await db2.select({ total: sql10`coalesce(sum(${wallets.balancePaise}),0)::bigint` }).from(wallets);
+    const [redemptions] = await db2.select({ n: sql10`count(*)::int` }).from(giftCodeRedemptions);
+    const [ents] = await db2.select({ n: sql10`count(*)::int` }).from(astraEntitlements).where(gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date()));
+    const [freeReqs] = await db2.select({ n: sql10`count(*)::int` }).from(requests).where(and11(gte2(requests.createdAt, since), eq15(requests.isFree, true)));
     return {
       users: userCount?.n ?? 0,
       requests30d: reqCount?.n ?? 0,
@@ -9304,7 +9425,7 @@ async function adminRoutes(app) {
     await requireRole(request, ["admin", "support"]);
     const q = request.query;
     const db2 = await getDb();
-    const rows = await db2.select({ r: requests, u: email(users), m: slug(models), p: slug(providers) }).from(requests).leftJoin(users, eq14(users.id, requests.userId)).leftJoin(models, eq14(models.id, requests.modelId)).leftJoin(providers, eq14(providers.id, requests.providerId)).orderBy(desc8(requests.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
+    const rows = await db2.select({ r: requests, u: email(users), m: slug(models), p: slug(providers) }).from(requests).leftJoin(users, eq15(users.id, requests.userId)).leftJoin(models, eq15(models.id, requests.modelId)).leftJoin(providers, eq15(providers.id, requests.providerId)).orderBy(desc8(requests.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     return { items: rows.map((x) => ({ id: x.r.id, createdAt: x.r.createdAt.toISOString(), user: x.u, model: x.m, provider: x.p, status: x.r.status, httpStatus: x.r.httpStatus, latencyMs: x.r.latencyMs, costPaise: x.r.costPaise, tokens: x.r.totalTokens, errorCode: x.r.errorCode })) };
   });
   app.get("/admin/providers", async (request) => {
@@ -9327,7 +9448,7 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = providerSchema.partial().partial().parse(request.body);
     const db2 = await getDb();
-    const rows = await db2.update(providers).set({ ...body, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(providers.id, id)).returning();
+    const rows = await db2.update(providers).set({ ...body, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(providers.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Provider not found.");
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "provider.update", targetType: "provider", targetId: id, metadata: body });
     return { provider: rows[0] };
@@ -9337,7 +9458,7 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = z7.object({ apiKey: z7.string().min(1).max(512) }).parse(request.body);
     const db2 = await getDb();
-    const prov = await db2.select().from(providers).where(eq14(providers.id, id));
+    const prov = await db2.select().from(providers).where(eq15(providers.id, id));
     if (!prov[0]) throw new ApiError("not_found", "Provider not found.");
     const enc = encryptSecret(body.apiKey);
     await db2.insert(providerCredentials).values({ providerId: id, keyName: "default", ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true }).onConflictDoUpdate({ target: [providerCredentials.providerId, providerCredentials.keyName], set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true } });
@@ -9352,14 +9473,14 @@ async function adminRoutes(app) {
   app.get("/admin/models", async (request) => {
     await requireRole(request, ["admin", "support"]);
     const db2 = await getDb();
-    const rows = await db2.select({ m: models, p: modelPricing, t: pricingTiers }).from(models).leftJoin(modelPricing, eq14(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq14(pricingTiers.slug, models.pricingTier)).orderBy(models.rank);
+    const rows = await db2.select({ m: models, p: modelPricing, t: pricingTiers }).from(models).leftJoin(modelPricing, eq15(modelPricing.modelId, models.id)).leftJoin(pricingTiers, eq15(pricingTiers.slug, models.pricingTier)).orderBy(models.rank);
     return { items: rows.map((r) => ({ ...r.m, pricing: r.p, tier: r.t })) };
   });
   app.post("/admin/models", async (request, reply) => {
     const admin = await requireRole(request, ["admin"]);
     const body = modelSchema.parse(request.body);
     const db2 = await getDb();
-    const exists = await db2.select({ id: models.id }).from(models).where(eq14(models.slug, body.slug));
+    const exists = await db2.select({ id: models.id }).from(models).where(eq15(models.slug, body.slug));
     if (exists[0]) throw new ApiError("invalid_request", "A model with this slug already exists.");
     const pricingTier = body.pricingTier ?? null;
     if (pricingTier) await assertPricingTier(pricingTier);
@@ -9370,7 +9491,7 @@ async function adminRoutes(app) {
     await db2.insert(modelCapabilities).values({ modelId: model.id, reasoning: body.reasoning, toolCalls: body.toolCalls, vision: body.vision, structuredOutputs: body.structuredOutputs, streaming: true, jsonMode: true });
     if (body.isFree) await db2.insert(modelLimits).values({ modelId: model.id, perMinute: 1, perHour: 30, perDay: 200, concurrency: 1, queuePriority: 5 });
     for (const link of body.links) {
-      const prov = (await db2.select().from(providers).where(eq14(providers.slug, link.providerSlug)))[0];
+      const prov = (await db2.select().from(providers).where(eq15(providers.slug, link.providerSlug)))[0];
       if (!prov) continue;
       await db2.insert(modelProviders).values({ modelId: model.id, providerId: prov.id, providerModelId: link.providerModelId, priority: link.priority, status: "active" }).onConflictDoNothing();
     }
@@ -9394,10 +9515,10 @@ async function adminRoutes(app) {
     const db2 = await getDb();
     const { inputPerMillion, outputPerMillion, pricingTier, ...modelFields } = body;
     if (pricingTier) await assertPricingTier(pricingTier);
-    const updated = await db2.update(models).set({ ...modelFields, ...pricingTier !== void 0 && { pricingTier }, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(models.id, id)).returning();
+    const updated = await db2.update(models).set({ ...modelFields, ...pricingTier !== void 0 && { pricingTier }, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(models.id, id)).returning();
     if (!updated[0]) throw new ApiError("not_found", "Model not found.");
     if (inputPerMillion !== void 0 || outputPerMillion !== void 0) {
-      await db2.update(modelPricing).set({ ...inputPerMillion !== void 0 && { inputPerMillion }, ...outputPerMillion !== void 0 && { outputPerMillion } }).where(eq14(modelPricing.modelId, id));
+      await db2.update(modelPricing).set({ ...inputPerMillion !== void 0 && { inputPerMillion }, ...outputPerMillion !== void 0 && { outputPerMillion } }).where(eq15(modelPricing.modelId, id));
     }
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "model.update", targetType: "model", targetId: id, metadata: body });
     return { model: updated[0] };
@@ -9413,7 +9534,7 @@ async function adminRoutes(app) {
     const admin = await requireRole(request, ["admin"]);
     const body = pricingTierSchema.parse(request.body);
     const db2 = await getDb();
-    const exists = await db2.select({ id: pricingTiers.id }).from(pricingTiers).where(eq14(pricingTiers.slug, body.slug));
+    const exists = await db2.select({ id: pricingTiers.id }).from(pricingTiers).where(eq15(pricingTiers.slug, body.slug));
     if (exists[0]) throw new ApiError("invalid_request", "A pricing tier with this slug already exists.");
     const [tier] = await db2.insert(pricingTiers).values(body).returning();
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "pricing_tier.create", targetType: "pricing_tier", targetId: tier.id, metadata: { slug: body.slug } });
@@ -9424,7 +9545,7 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = pricingTierPatchSchema.parse(request.body);
     const db2 = await getDb();
-    const rows = await db2.update(pricingTiers).set({ ...body, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(pricingTiers.id, id)).returning();
+    const rows = await db2.update(pricingTiers).set({ ...body, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(pricingTiers.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Pricing tier not found.");
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "pricing_tier.update", targetType: "pricing_tier", targetId: id, metadata: body });
     return { tier: rows[0] };
@@ -9436,7 +9557,7 @@ async function adminRoutes(app) {
     let rows;
     if (q.q) {
       const pattern = `%${q.q.toLowerCase()}%`;
-      rows = await db2.select().from(users).where(sql9`lower(${users.email}) LIKE ${pattern}`).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
+      rows = await db2.select().from(users).where(sql10`lower(${users.email}) LIKE ${pattern}`).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     } else {
       rows = await db2.select().from(users).orderBy(desc8(users.createdAt)).limit(Math.min(Number(q.limit ?? 50), 200));
     }
@@ -9449,7 +9570,7 @@ async function adminRoutes(app) {
     if (body.role && admin.role !== "admin") throw new ApiError("forbidden", "Only admins can change roles.");
     if (body.role && id === admin.id) throw new ApiError("invalid_request", "You cannot change your own role.");
     const db2 = await getDb();
-    const rows = await db2.update(users).set({ ...body, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(users.id, id)).returning();
+    const rows = await db2.update(users).set({ ...body, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(users.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "User not found.");
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "user.update", targetType: "user", targetId: id, metadata: body });
     return { user: { id: rows[0].id, email: rows[0].email, status: rows[0].status, role: rows[0].role } };
@@ -9459,16 +9580,16 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = z7.object({ amountPaise: z7.number().int().min(-1e9).max(1e9).refine((n) => n !== 0, "Amount cannot be zero"), reason: z7.string().min(3).max(200) }).parse(request.body);
     const db2 = await getDb();
-    const target = await db2.select().from(users).where(eq14(users.id, id));
+    const target = await db2.select().from(users).where(eq15(users.id, id));
     if (!target[0]) throw new ApiError("not_found", "User not found.");
     if (body.amountPaise > 0) {
       await creditWallet({ userId: id, amountPaise: body.amountPaise, type: "adjustment", reference: `admin:${admin.id}`, idempotencyKey: `adj:${admin.id}:${Date.now()}`, metadata: { reason: body.reason } });
     } else if (body.amountPaise < 0) {
       await db2.insert(walletTransactions).values({ userId: id, type: "adjustment", amountPaise: body.amountPaise, balanceAfterPaise: -1, reference: `admin:${admin.id}`, metadata: { reason: body.reason } });
-      await db2.update(wallets).set({ balancePaise: sql9`GREATEST(${wallets.balancePaise} + ${body.amountPaise}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(wallets.userId, id));
+      await db2.update(wallets).set({ balancePaise: sql10`GREATEST(${wallets.balancePaise} + ${body.amountPaise}, 0)`, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(wallets.userId, id));
     }
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "wallet.adjust", targetType: "user", targetId: id, metadata: { amountPaise: body.amountPaise, reason: body.reason } });
-    const w = await db2.select().from(wallets).where(eq14(wallets.userId, id));
+    const w = await db2.select().from(wallets).where(eq15(wallets.userId, id));
     return { balancePaise: w[0]?.balancePaise ?? 0 };
   });
   app.get("/admin/promotions/astra", async (request) => {
@@ -9476,10 +9597,10 @@ async function adminRoutes(app) {
     const db2 = await getDb();
     const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) return { campaign: null, stats: null, codes: [] };
-    const [codeCount] = await db2.select({ n: sql9`count(*)::int` }).from(giftCodes).where(eq14(giftCodes.campaignId, campaign.id));
-    const [redCount] = await db2.select({ n: sql9`count(*)::int` }).from(giftCodeRedemptions).where(eq14(giftCodeRedemptions.campaignId, campaign.id));
-    const [activeUsers] = await db2.select({ n: sql9`count(*)::int` }).from(astraEntitlements).where(and10(eq14(astraEntitlements.campaignId, campaign.id), eq14(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
-    const codes = await db2.select().from(giftCodes).where(eq14(giftCodes.campaignId, campaign.id)).orderBy(desc8(giftCodes.createdAt)).limit(200);
+    const [codeCount] = await db2.select({ n: sql10`count(*)::int` }).from(giftCodes).where(eq15(giftCodes.campaignId, campaign.id));
+    const [redCount] = await db2.select({ n: sql10`count(*)::int` }).from(giftCodeRedemptions).where(eq15(giftCodeRedemptions.campaignId, campaign.id));
+    const [activeUsers] = await db2.select({ n: sql10`count(*)::int` }).from(astraEntitlements).where(and11(eq15(astraEntitlements.campaignId, campaign.id), eq15(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, /* @__PURE__ */ new Date())));
+    const codes = await db2.select().from(giftCodes).where(eq15(giftCodes.campaignId, campaign.id)).orderBy(desc8(giftCodes.createdAt)).limit(200);
     return {
       campaign,
       stats: { totalCodes: codeCount?.n ?? 0, totalRedemptions: redCount?.n ?? 0, activeAstraUsers: activeUsers?.n ?? 0, conversions: codeCount?.n ? Math.round((redCount?.n ?? 0) / codeCount.n * 100) : 0 },
@@ -9501,7 +9622,7 @@ async function adminRoutes(app) {
     const db2 = await getDb();
     const campaign = (await db2.select().from(astraCampaigns).orderBy(desc8(astraCampaigns.createdAt)))[0];
     if (!campaign) throw new ApiError("not_found", "No campaign configured.");
-    const rows = await db2.update(astraCampaigns).set({ ...body, endsAt: body.endsAt === null ? null : body.endsAt ? new Date(body.endsAt) : void 0, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(astraCampaigns.id, campaign.id)).returning();
+    const rows = await db2.update(astraCampaigns).set({ ...body, endsAt: body.endsAt === null ? null : body.endsAt ? new Date(body.endsAt) : void 0, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(astraCampaigns.id, campaign.id)).returning();
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "campaign.update", targetType: "astra_campaign", targetId: campaign.id, metadata: body });
     await loadSettings(true);
     return { campaign: rows[0] };
@@ -9517,7 +9638,7 @@ async function adminRoutes(app) {
       let code = "";
       for (let attempt = 0; attempt < 10; attempt++) {
         code = `PRO-${randomCode(6)}`;
-        const clash = await db2.select({ id: giftCodes.id }).from(giftCodes).where(eq14(giftCodes.code, code));
+        const clash = await db2.select({ id: giftCodes.id }).from(giftCodes).where(eq15(giftCodes.code, code));
         if (!clash[0]) break;
       }
       await db2.insert(giftCodes).values({ campaignId: campaign.id, code, ownerUserId: body.ownerUserId ?? null, maxRedemptions: body.maxRedemptions ?? null, status: "active" });
@@ -9531,7 +9652,7 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = z7.object({ status: z7.enum(["active", "suspended", "revoked"]) }).parse(request.body);
     const db2 = await getDb();
-    const rows = await db2.update(giftCodes).set({ status: body.status }).where(eq14(giftCodes.id, id)).returning();
+    const rows = await db2.update(giftCodes).set({ status: body.status }).where(eq15(giftCodes.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Code not found.");
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "code.status", targetType: "gift_code", targetId: id, metadata: { status: body.status } });
     return { code: rows[0] };
@@ -9546,7 +9667,7 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = z7.object({ pricePaise: z7.number().int().min(0).optional(), freeRpm: z7.number().int().min(1).optional(), freeRph: z7.number().int().min(1).optional(), freeRpd: z7.number().int().min(1).optional(), concurrency: z7.number().int().min(1).optional(), queuePriority: z7.number().int().min(1).max(10).optional(), active: z7.boolean().optional(), features: z7.array(z7.string()).optional() }).parse(request.body);
     const db2 = await getDb();
-    const rows = await db2.update(plans).set(body).where(eq14(plans.id, id)).returning();
+    const rows = await db2.update(plans).set(body).where(eq15(plans.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Plan not found.");
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "plan.update", targetType: "plan", targetId: id, metadata: body });
     return { plan: rows[0] };
@@ -9561,7 +9682,7 @@ async function adminRoutes(app) {
     const { id } = request.params;
     const body = z7.object({ name: z7.string().optional(), pricePaise: z7.number().int().min(0).optional(), bonusPaise: z7.number().int().min(0).optional(), active: z7.boolean().optional() }).parse(request.body);
     const db2 = await getDb();
-    const rows = await db2.update(creditPackages).set(body).where(eq14(creditPackages.id, id)).returning();
+    const rows = await db2.update(creditPackages).set(body).where(eq15(creditPackages.id, id)).returning();
     if (!rows[0]) throw new ApiError("not_found", "Package not found.");
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "package.update", targetType: "credit_package", targetId: id, metadata: body });
     return { package: rows[0] };
@@ -9577,7 +9698,7 @@ async function adminRoutes(app) {
     const { key } = request.params;
     const body = z7.object({ value: z7.unknown() }).parse(request.body);
     const db2 = await getDb();
-    await db2.update(systemSettings).set({ value: body.value, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(systemSettings.key, key));
+    await db2.update(systemSettings).set({ value: body.value, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(systemSettings.key, key));
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "setting.update", targetType: "system_setting", targetId: key });
     await loadSettings(true);
     return { ok: true };
@@ -9587,7 +9708,7 @@ async function adminRoutes(app) {
     const { key } = request.params;
     const body = z7.object({ enabled: z7.boolean() }).parse(request.body);
     const db2 = await getDb();
-    await db2.update(featureFlags).set({ enabled: body.enabled, updatedAt: /* @__PURE__ */ new Date() }).where(eq14(featureFlags.key, key));
+    await db2.update(featureFlags).set({ enabled: body.enabled, updatedAt: /* @__PURE__ */ new Date() }).where(eq15(featureFlags.key, key));
     await db2.insert(auditLogs).values({ actorUserId: admin.id, action: "flag.update", targetType: "feature_flag", targetId: key, metadata: { enabled: body.enabled } });
     await loadSettings(true);
     return { ok: true };
@@ -9864,7 +9985,7 @@ async function adminRoutes(app) {
       totalTokens: requests.totalTokens,
       costPaise: requests.costPaise,
       createdAt: requests.createdAt
-    }).from(requests).where(user.role === "admin" ? void 0 : eq14(requests.userId, user.id)).orderBy(desc8(requests.createdAt)).limit(200);
+    }).from(requests).where(user.role === "admin" ? void 0 : eq15(requests.userId, user.id)).orderBy(desc8(requests.createdAt)).limit(200);
     return {
       items: rows.map((r) => ({
         ...r,
@@ -9875,7 +9996,7 @@ async function adminRoutes(app) {
   app.get("/api/billing/transactions", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(walletTransactions).where(user.role === "admin" ? void 0 : eq14(walletTransactions.userId, user.id)).orderBy(desc8(walletTransactions.createdAt)).limit(200);
+    const rows = await db2.select().from(walletTransactions).where(user.role === "admin" ? void 0 : eq15(walletTransactions.userId, user.id)).orderBy(desc8(walletTransactions.createdAt)).limit(200);
     return {
       items: rows.map((r) => ({
         ...r,
@@ -9898,7 +10019,7 @@ function slug(m) {
 }
 
 // apps/api/src/routes/dashboard.ts
-import { and as and11, desc as desc9, eq as eq15, gte as gte3, sql as sql10 } from "drizzle-orm";
+import { and as and12, desc as desc9, eq as eq16, gte as gte3, sql as sql11 } from "drizzle-orm";
 import { and as and22, eq as eq22, gte as gte22 } from "drizzle-orm";
 async function dashboardRoutes(app) {
   app.get("/dashboard/overview", async (request) => {
@@ -9908,19 +10029,100 @@ async function dashboardRoutes(app) {
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const balance = await getBalance(user.id);
-    const [today] = await db2.select({ n: sql10`count(*)::int`, tokens: sql10`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql10`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and11(eq15(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
-    const [month] = await db2.select({ n: sql10`count(*)::int`, tokens: sql10`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql10`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and11(eq15(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
-    const [keys] = await db2.select({ n: sql10`count(*)::int` }).from(apiKeys).where(and11(eq15(apiKeys.userId, user.id), sql10`${apiKeys.revokedAt} IS NULL`));
+    const [today] = await db2.select({ n: sql11`count(*)::int`, tokens: sql11`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql11`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and12(eq16(requests.userId, user.id), gte3(requests.createdAt, startOfDay)));
+    const [monthStats] = await db2.select({
+      n: sql11`count(*)::int`,
+      tokens: sql11`coalesce(sum(${requests.totalTokens}),0)::int`,
+      cost: sql11`coalesce(sum(${requests.costPaise}),0)::bigint`,
+      avgLatencyMs: sql11`coalesce(avg(${requests.latencyMs}),0)::float`
+    }).from(requests).where(and12(eq16(requests.userId, user.id), gte3(requests.createdAt, startOfMonth)));
+    const [keys] = await db2.select({ n: sql11`count(*)::int` }).from(apiKeys).where(and12(eq16(apiKeys.userId, user.id), sql11`${apiKeys.revokedAt} IS NULL`));
     const subRows = await db2.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq22(subscriptions.planId, plans.id)).where(eq22(subscriptions.userId, user.id));
     const plan = subRows.find((s) => s.plan)?.plan ?? null;
-    const [freeToday] = await db2.select({ n: sql10`coalesce(sum(count),0)::int` }).from(freeUsage).where(eq22(freeUsage.userId, user.id));
+    const [freeToday] = await db2.select({ n: sql11`coalesce(sum(count),0)::int` }).from(freeUsage).where(eq22(freeUsage.userId, user.id));
     const astraRows = await db2.select().from(astraEntitlements).where(and22(eq22(astraEntitlements.userId, user.id), eq22(astraEntitlements.status, "active"), gte22(astraEntitlements.expiresAt, now)));
     const astra = astraRows[0] ?? null;
+    const totalMonthRequests = monthStats?.n ?? 0;
+    const modelUsageRows = await db2.select({
+      id: models.slug,
+      requests: sql11`count(*)::int`,
+      tokens: sql11`coalesce(sum(${requests.totalTokens}),0)::int`,
+      costPaise: sql11`coalesce(sum(${requests.costPaise}),0)::bigint`
+    }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and12(eq22(requests.userId, user.id), gte22(requests.createdAt, startOfMonth))).groupBy(models.slug).orderBy(desc9(sql11`count(*)`));
+    const PALETTE = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#06b6d4", "#ec4899", "#6366f1", "#14b8a6", "#f97316", "#84cc16"];
+    const modelsList = modelUsageRows.filter((r) => r.id).map((r, idx) => ({
+      id: r.id,
+      spend: Number((Number(r.costPaise) / 8e3).toFixed(2)),
+      requests: r.requests,
+      tokens: r.tokens,
+      sharePercent: totalMonthRequests > 0 ? Number((r.requests / totalMonthRequests * 100).toFixed(1)) : 0,
+      color: PALETTE[idx % PALETTE.length]
+    }));
+    const daysToShow = 4;
+    const since4Days = new Date(Date.now() - (daysToShow - 1) * 864e5);
+    const recentRows = await db2.select({
+      createdAt: requests.createdAt,
+      model: models.slug,
+      totalTokens: requests.totalTokens,
+      costPaise: requests.costPaise
+    }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and12(eq22(requests.userId, user.id), gte22(requests.createdAt, since4Days)));
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const dailySeries = [];
+    for (let i = daysToShow - 1; i >= 0; i--) {
+      const targetDate = new Date(now.getTime() - i * 864e5);
+      const yyyy = targetDate.getUTCFullYear();
+      const mm = String(targetDate.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(targetDate.getUTCDate()).padStart(2, "0");
+      const dateKey = `${yyyy}-${mm}-${dd}`;
+      const dateLabel = `${monthNames[targetDate.getUTCMonth()]} ${targetDate.getUTCDate()}`;
+      const dayRecords = recentRows.filter((r) => r.createdAt.toISOString().startsWith(dateKey));
+      const breakdown = {};
+      let dayReqs = 0;
+      let dayTokens = 0;
+      let daySpend = 0;
+      for (const r of dayRecords) {
+        dayReqs += 1;
+        dayTokens += r.totalTokens || 0;
+        const spend = (r.costPaise || 0) / 8e3;
+        daySpend += spend;
+        const mKey = r.model || "unknown";
+        if (!breakdown[mKey]) {
+          breakdown[mKey] = { requests: 0, tokens: 0, spend: 0 };
+        }
+        breakdown[mKey].requests += 1;
+        breakdown[mKey].tokens += r.totalTokens || 0;
+        breakdown[mKey].spend += spend;
+      }
+      dailySeries.push({
+        dateLabel,
+        dateKey,
+        totalRequests: dayReqs,
+        totalTokens: dayTokens,
+        totalSpend: Number(daySpend.toFixed(2)),
+        breakdown
+      });
+    }
+    const sinceYear = new Date(Date.now() - 365 * 864e5);
+    const yearRows = await db2.select({
+      createdAt: requests.createdAt
+    }).from(requests).where(and12(eq22(requests.userId, user.id), gte22(requests.createdAt, sinceYear)));
+    const activeDaysMap = {};
+    for (const r of yearRows) {
+      const dateKey = r.createdAt.toISOString().slice(0, 10);
+      activeDaysMap[dateKey] = (activeDaysMap[dateKey] || 0) + 1;
+    }
+    const activeDaysCount = Object.keys(activeDaysMap).length;
+    const avgLatencySec = totalMonthRequests > 0 ? Number(((monthStats?.avgLatencyMs ?? 0) / 1e3).toFixed(2)) : 0;
     return {
       balancePaise: balance,
       balanceFormatted: formatMoney(balance),
       today: { requests: today?.n ?? 0, tokens: today?.tokens ?? 0, costPaise: Number(today?.cost ?? 0) },
-      month: { requests: month?.n ?? 0, tokens: month?.tokens ?? 0, costPaise: Number(month?.cost ?? 0) },
+      month: { requests: totalMonthRequests, tokens: monthStats?.tokens ?? 0, costPaise: Number(monthStats?.cost ?? 0) },
+      avgLatencySec,
+      models: modelsList,
+      dailySeries,
+      activeDaysCount,
+      activeDaysMap,
       activeKeys: keys?.n ?? 0,
       freeUsed: freeToday?.n ?? 0,
       plan: plan ? { slug: plan.slug, name: plan.name, freeRpm: plan.freeRpm, queuePriority: plan.queuePriority } : null,
@@ -9934,7 +10136,7 @@ async function dashboardRoutes(app) {
     const days = Math.min(Math.max(Number(q.days ?? 7), 1), 90);
     const db2 = await getDb();
     const since = new Date(Date.now() - days * 864e5);
-    const rows = await db2.select().from(requests).where(and11(eq15(requests.userId, user.id), gte3(requests.createdAt, since)));
+    const rows = await db2.select().from(requests).where(and12(eq16(requests.userId, user.id), gte3(requests.createdAt, since)));
     const buckets2 = /* @__PURE__ */ new Map();
     for (let i = 0; i < days; i++) {
       const d = new Date(Date.now() - (days - 1 - i) * 864e5);
@@ -9956,11 +10158,11 @@ async function dashboardRoutes(app) {
     const user = await requireUser(request);
     const q = request.query;
     const db2 = await getDb();
-    const conditions = [eq15(requests.userId, user.id)];
-    if (q.status === "errors") conditions.push(eq15(requests.status, "error"));
-    if (q.status === "success") conditions.push(eq15(requests.status, "success"));
-    const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and11(...conditions)).orderBy(desc9(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
-    const [total] = await db2.select({ n: sql10`count(*)::int` }).from(requests).where(and11(...conditions));
+    const conditions = [eq16(requests.userId, user.id)];
+    if (q.status === "errors") conditions.push(eq16(requests.status, "error"));
+    if (q.status === "success") conditions.push(eq16(requests.status, "success"));
+    const rows = await db2.select({ r: requests, m: models, p: providers }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and12(...conditions)).orderBy(desc9(requests.createdAt)).limit(Math.min(Number(q.limit ?? 25), 100)).offset(Number(q.offset ?? 0));
+    const [total] = await db2.select({ n: sql11`count(*)::int` }).from(requests).where(and12(...conditions));
     return {
       total: total?.n ?? 0,
       items: rows.map((x) => ({
@@ -10032,20 +10234,20 @@ async function dashboardRoutes(app) {
     const user = await requireUser(request);
     const db2 = await getDb();
     const since = new Date(Date.now() - 30 * 864e5);
-    const byModel = await db2.select({ model: models.slug, n: sql10`count(*)::int`, tokens: sql10`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql10`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and11(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql10`count(*)`));
-    const byProvider = await db2.select({ provider: providers.slug, n: sql10`count(*)::int`, tokens: sql10`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and11(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql10`count(*)`));
+    const byModel = await db2.select({ model: models.slug, n: sql11`count(*)::int`, tokens: sql11`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql11`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).leftJoin(models, eq22(models.id, requests.modelId)).where(and12(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(models.slug).orderBy(desc9(sql11`count(*)`));
+    const byProvider = await db2.select({ provider: providers.slug, n: sql11`count(*)::int`, tokens: sql11`coalesce(sum(${requests.totalTokens}),0)::int` }).from(requests).leftJoin(providers, eq22(providers.id, requests.providerId)).where(and12(eq22(requests.userId, user.id), gte22(requests.createdAt, since))).groupBy(providers.slug).orderBy(desc9(sql11`count(*)`));
     return { byModel: byModel.map((r) => ({ ...r, cost: Number(r.cost) })), byProvider };
   });
   app.get("/notifications", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(notifications).where(eq15(notifications.userId, user.id)).orderBy(desc9(notifications.createdAt)).limit(30);
+    const rows = await db2.select().from(notifications).where(eq16(notifications.userId, user.id)).orderBy(desc9(notifications.createdAt)).limit(30);
     return { items: rows.map((n) => ({ ...n, createdAt: n.createdAt.toISOString(), readAt: n.readAt?.toISOString() ?? null })) };
   });
   app.post("/notifications/read", async (request) => {
     const user = await requireUser(request);
     const db2 = await getDb();
-    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and11(eq15(notifications.userId, user.id), sql10`${notifications.readAt} IS NULL`));
+    await db2.update(notifications).set({ readAt: /* @__PURE__ */ new Date() }).where(and12(eq16(notifications.userId, user.id), sql11`${notifications.readAt} IS NULL`));
     return { ok: true };
   });
   app.get("/status", async () => {
@@ -10075,11 +10277,11 @@ async function dashboardRoutes(app) {
 }
 
 // apps/api/src/routes/plans.ts
-import { eq as eq16 } from "drizzle-orm";
+import { eq as eq17 } from "drizzle-orm";
 async function planRoutes(app) {
   app.get("/plans", async () => {
     const db2 = await getDb();
-    const rows = await db2.select().from(plans).where(eq16(plans.active, true)).orderBy(plans.sortOrder);
+    const rows = await db2.select().from(plans).where(eq17(plans.active, true)).orderBy(plans.sortOrder);
     return {
       items: rows.map((p) => ({
         id: p.id,
@@ -10104,7 +10306,7 @@ async function planRoutes(app) {
 
 // apps/api/src/routes/usage.ts
 import { z as z8 } from "zod";
-import { and as and12, desc as desc10, eq as eq17, gte as gte4, lte, sql as sql11 } from "drizzle-orm";
+import { and as and13, desc as desc10, eq as eq18, gte as gte4, lte, sql as sql12 } from "drizzle-orm";
 var usageQuery = z8.object({
   limit: z8.coerce.number().int().min(1).max(100).default(50),
   offset: z8.coerce.number().int().min(0).default(0),
@@ -10117,7 +10319,7 @@ async function usageRoutes(app) {
   app.get("/v1/account/balance", async (request) => {
     const auth = await authenticateRequest(request);
     const db2 = await getDb();
-    const rows = await db2.select().from(wallets).where(eq17(wallets.userId, auth.user.id));
+    const rows = await db2.select().from(wallets).where(eq18(wallets.userId, auth.user.id));
     const wallet = rows[0];
     const balancePaise = wallet?.balancePaise ?? 0;
     return {
@@ -10132,18 +10334,18 @@ async function usageRoutes(app) {
     const auth = await authenticateRequest(request);
     const q = usageQuery.parse(request.query);
     const db2 = await getDb();
-    const conditions = [eq17(requests.userId, auth.user.id)];
-    if (q.model) conditions.push(eq17(models.slug, q.model));
-    if (q.status) conditions.push(eq17(requests.status, q.status));
+    const conditions = [eq18(requests.userId, auth.user.id)];
+    if (q.model) conditions.push(eq18(models.slug, q.model));
+    if (q.status) conditions.push(eq18(requests.status, q.status));
     if (q.from) conditions.push(gte4(requests.createdAt, new Date(q.from)));
     if (q.to) conditions.push(lte(requests.createdAt, new Date(q.to)));
-    const where = and12(...conditions);
-    const totalRows = await db2.select({ n: sql11`count(*)::int` }).from(requests).leftJoin(models, eq17(models.id, requests.modelId)).where(where);
+    const where = and13(...conditions);
+    const totalRows = await db2.select({ n: sql12`count(*)::int` }).from(requests).leftJoin(models, eq18(models.id, requests.modelId)).where(where);
     const rows = await db2.select({
       request: requests,
       modelSlug: models.slug,
       providerSlug: providers.slug
-    }).from(requests).leftJoin(models, eq17(models.id, requests.modelId)).leftJoin(providers, eq17(providers.id, requests.providerId)).where(where).orderBy(desc10(requests.createdAt)).limit(q.limit).offset(q.offset);
+    }).from(requests).leftJoin(models, eq18(models.id, requests.modelId)).leftJoin(providers, eq18(providers.id, requests.providerId)).where(where).orderBy(desc10(requests.createdAt)).limit(q.limit).offset(q.offset);
     return {
       object: "list",
       data: rows.map(toUsageRecord),
@@ -10156,7 +10358,7 @@ async function usageRoutes(app) {
     const auth = await authenticateRequest(request);
     const params = z8.object({ request_id: z8.string().min(1) }).parse(request.params);
     const db2 = await getDb();
-    const rows = await db2.select({ request: requests, modelSlug: models.slug, providerSlug: providers.slug }).from(requests).leftJoin(models, eq17(models.id, requests.modelId)).leftJoin(providers, eq17(providers.id, requests.providerId)).where(and12(eq17(requests.id, params.request_id), eq17(requests.userId, auth.user.id)));
+    const rows = await db2.select({ request: requests, modelSlug: models.slug, providerSlug: providers.slug }).from(requests).leftJoin(models, eq18(models.id, requests.modelId)).leftJoin(providers, eq18(providers.id, requests.providerId)).where(and13(eq18(requests.id, params.request_id), eq18(requests.userId, auth.user.id)));
     const row = rows[0];
     if (!row) throw new ApiError("not_found", "Usage record not found.");
     return { ...toUsageRecord(row), route: row.request.route, queue_wait_ms: row.request.queueWaitMs };

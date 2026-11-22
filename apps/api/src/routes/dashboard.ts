@@ -20,7 +20,13 @@ export async function dashboardRoutes(app: FastifyInstance) {
 
     const balance = await getBalance(user.id);
     const [today] = await db.select({ n: sql<number>`count(*)::int`, tokens: sql<number>`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql<number>`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and(eq(requests.userId, user.id), gte(requests.createdAt, startOfDay)));
-    const [month] = await db.select({ n: sql<number>`count(*)::int`, tokens: sql<number>`coalesce(sum(${requests.totalTokens}),0)::int`, cost: sql<number>`coalesce(sum(${requests.costPaise}),0)::bigint` }).from(requests).where(and(eq(requests.userId, user.id), gte(requests.createdAt, startOfMonth)));
+    const [monthStats] = await db.select({
+      n: sql<number>`count(*)::int`,
+      tokens: sql<number>`coalesce(sum(${requests.totalTokens}),0)::int`,
+      cost: sql<number>`coalesce(sum(${requests.costPaise}),0)::bigint`,
+      avgLatencyMs: sql<number>`coalesce(avg(${requests.latencyMs}),0)::float`,
+    }).from(requests).where(and(eq(requests.userId, user.id), gte(requests.createdAt, startOfMonth)));
+
     const [keys] = await db.select({ n: sql<number>`count(*)::int` }).from(apiKeys).where(and(eq(apiKeys.userId, user.id), sql`${apiKeys.revokedAt} IS NULL`));
     const subRows = await db.select({ plan: plans }).from(subscriptions).innerJoin(plans, eq2(subscriptions.planId, plans.id)).where(eq2(subscriptions.userId, user.id));
     const plan = subRows.find((s) => s.plan)?.plan ?? null;
@@ -28,11 +34,114 @@ export async function dashboardRoutes(app: FastifyInstance) {
     const astraRows = await db.select().from(astraEntitlements).where(and2(eq2(astraEntitlements.userId, user.id), eq2(astraEntitlements.status, "active"), gte2(astraEntitlements.expiresAt, now)));
     const astra = astraRows[0] ?? null;
 
+    const totalMonthRequests = monthStats?.n ?? 0;
+    const modelUsageRows = await db.select({
+      id: models.slug,
+      requests: sql<number>`count(*)::int`,
+      tokens: sql<number>`coalesce(sum(${requests.totalTokens}),0)::int`,
+      costPaise: sql<number>`coalesce(sum(${requests.costPaise}),0)::bigint`,
+    }).from(requests)
+      .leftJoin(models, eq2(models.id, requests.modelId))
+      .where(and(eq2(requests.userId, user.id), gte2(requests.createdAt, startOfMonth)))
+      .groupBy(models.slug)
+      .orderBy(desc(sql`count(*)`));
+
+    const PALETTE = ["#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#06b6d4", "#ec4899", "#6366f1", "#14b8a6", "#f97316", "#84cc16"];
+    const modelsList = modelUsageRows
+      .filter((r) => r.id)
+      .map((r, idx) => ({
+        id: r.id!,
+        spend: Number(((Number(r.costPaise) / 8000)).toFixed(2)),
+        requests: r.requests,
+        tokens: r.tokens,
+        sharePercent: totalMonthRequests > 0 ? Number(((r.requests / totalMonthRequests) * 100).toFixed(1)) : 0,
+        color: PALETTE[idx % PALETTE.length],
+      }));
+
+    // Last 4 days series
+    const daysToShow = 4;
+    const since4Days = new Date(Date.now() - (daysToShow - 1) * 86400_000);
+    const recentRows = await db.select({
+      createdAt: requests.createdAt,
+      model: models.slug,
+      totalTokens: requests.totalTokens,
+      costPaise: requests.costPaise,
+    }).from(requests)
+      .leftJoin(models, eq2(models.id, requests.modelId))
+      .where(and(eq2(requests.userId, user.id), gte2(requests.createdAt, since4Days)));
+
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const dailySeries: Array<{
+      dateLabel: string;
+      dateKey: string;
+      totalRequests: number;
+      totalTokens: number;
+      totalSpend: number;
+      breakdown: Record<string, { requests: number; tokens: number; spend: number }>;
+    }> = [];
+
+    for (let i = daysToShow - 1; i >= 0; i--) {
+      const targetDate = new Date(now.getTime() - i * 86400_000);
+      const yyyy = targetDate.getUTCFullYear();
+      const mm = String(targetDate.getUTCMonth() + 1).padStart(2, "0");
+      const dd = String(targetDate.getUTCDate()).padStart(2, "0");
+      const dateKey = `${yyyy}-${mm}-${dd}`;
+      const dateLabel = `${monthNames[targetDate.getUTCMonth()]} ${targetDate.getUTCDate()}`;
+
+      const dayRecords = recentRows.filter((r) => r.createdAt.toISOString().startsWith(dateKey));
+      const breakdown: Record<string, { requests: number; tokens: number; spend: number }> = {};
+      let dayReqs = 0;
+      let dayTokens = 0;
+      let daySpend = 0;
+
+      for (const r of dayRecords) {
+        dayReqs += 1;
+        dayTokens += r.totalTokens || 0;
+        const spend = (r.costPaise || 0) / 8000;
+        daySpend += spend;
+        const mKey = r.model || "unknown";
+        if (!breakdown[mKey]) {
+          breakdown[mKey] = { requests: 0, tokens: 0, spend: 0 };
+        }
+        breakdown[mKey].requests += 1;
+        breakdown[mKey].tokens += r.totalTokens || 0;
+        breakdown[mKey].spend += spend;
+      }
+
+      dailySeries.push({
+        dateLabel,
+        dateKey,
+        totalRequests: dayReqs,
+        totalTokens: dayTokens,
+        totalSpend: Number(daySpend.toFixed(2)),
+        breakdown,
+      });
+    }
+
+    // Heatmap: past 365 days
+    const sinceYear = new Date(Date.now() - 365 * 86400_000);
+    const yearRows = await db.select({
+      createdAt: requests.createdAt,
+    }).from(requests).where(and(eq2(requests.userId, user.id), gte2(requests.createdAt, sinceYear)));
+
+    const activeDaysMap: Record<string, number> = {};
+    for (const r of yearRows) {
+      const dateKey = r.createdAt.toISOString().slice(0, 10);
+      activeDaysMap[dateKey] = (activeDaysMap[dateKey] || 0) + 1;
+    }
+    const activeDaysCount = Object.keys(activeDaysMap).length;
+    const avgLatencySec = totalMonthRequests > 0 ? Number(((monthStats?.avgLatencyMs ?? 0) / 1000).toFixed(2)) : 0;
+
     return {
       balancePaise: balance,
       balanceFormatted: formatMoney(balance),
       today: { requests: today?.n ?? 0, tokens: today?.tokens ?? 0, costPaise: Number(today?.cost ?? 0) },
-      month: { requests: month?.n ?? 0, tokens: month?.tokens ?? 0, costPaise: Number(month?.cost ?? 0) },
+      month: { requests: totalMonthRequests, tokens: monthStats?.tokens ?? 0, costPaise: Number(monthStats?.cost ?? 0) },
+      avgLatencySec,
+      models: modelsList,
+      dailySeries,
+      activeDaysCount,
+      activeDaysMap,
       activeKeys: keys?.n ?? 0,
       freeUsed: freeToday?.n ?? 0,
       plan: plan ? { slug: plan.slug, name: plan.name, freeRpm: plan.freeRpm, queuePriority: plan.queuePriority } : null,
