@@ -333,7 +333,7 @@ export const messagesRoutes: FastifyPluginAsync = async (app) => {
           cost = debit.deductedPaise;
         }
       } else if (hasReservation) {
-        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => { });
         hasReservation = false;
       }
 
@@ -373,7 +373,7 @@ export const messagesRoutes: FastifyPluginAsync = async (app) => {
         let parsedInput = {};
         try {
           parsedInput = typeof tc.function?.arguments === "string" ? JSON.parse(tc.function.arguments) : (tc.function?.arguments || {});
-        } catch {}
+        } catch { }
         contentBlocks.push({
           type: "tool_use",
           id: tc.id || `toolu_${randomBytes(8).toString("hex")}`,
@@ -559,7 +559,7 @@ export const messagesRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Upstream provider error.";
       sendEvent("error", { type: "error", error: { type: "api_error", message } });
-      await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: "provider_error", errorMessage: message }).catch(() => {});
+      await finalize({ usage, usageSource, providerId: decision.primary.providerId, providerSlug, ttftMs, errorCode: "provider_error", errorMessage: message }).catch(() => { });
       res.end();
     }
   });
