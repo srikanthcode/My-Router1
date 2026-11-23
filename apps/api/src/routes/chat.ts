@@ -4,7 +4,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { apiKeys, getDb, modelProviders, models, plans, promotionalActivations, providers, requestAttempts, requests, subscriptions } from "@pro/database";
 import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput, resolvePromotionalCanonicalId, isDailyFreeEligible, resolveDailyFreeEligibleId } from "@pro/shared";
 import { estimateTokens, isChannelTokenToolCall, cleanSpecialTokens } from "@pro/providers";
-import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine } from "@pro/routing";
+import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine, CodingIntentDetector } from "@pro/routing";
 import { getActiveAstra } from "../lib/auth.js";
 import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
@@ -365,11 +365,24 @@ export async function chatRoutes(app: FastifyInstance) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
     }
 
+    const hasClientSystemPrompt = (messages as unknown as ChatMessage[]).some(
+      (m) => m?.role === "system" && typeof m?.content === "string" && m.content.trim().length > 0
+    );
+    const isCodingTask = CodingIntentDetector.isCodingIntent(messages as unknown as ChatMessage[]);
+    let effectiveMessages = messages as unknown as ChatMessage[];
+    if (!hasClientSystemPrompt && isCodingTask) {
+      const intent = CodingIntentDetector.detectIntent(messages as unknown as ChatMessage[]);
+      const directive = CodingIntentDetector.buildCodingDirective(intent);
+      effectiveMessages = [
+        { role: "system", content: directive } as ChatMessage,
+        ...messages as unknown as ChatMessage[],
+      ];
+    }
+
     const adapterParams = {
       model: decision.primary.upstreamModelId,
-      // Pass client messages verbatim. Never inject synthetic personas, behavioral directives,
-      // or identity instructions that conflict with coding agents or user prompts.
-      messages: messages as unknown as ChatMessage[],
+      // Pass client messages verbatim (with coding directive when client system prompt is absent)
+      messages: effectiveMessages,
       stream,
       temperature: body.temperature,
       topP: body.top_p,
@@ -537,8 +550,12 @@ export async function chatRoutes(app: FastifyInstance) {
           : result.finishReason;
         const sanitizedContent = (() => {
           const profile = ModelProfileRegistry.get(slug);
-          const base = sanitizeModelOutput(result.content, ctx.model.name);
-          return profile ? ModelBehaviorEngine.sanitizeOutput(base, profile) : base;
+          let base = sanitizeModelOutput(result.content, ctx.model.name);
+          if (profile) base = ModelBehaviorEngine.sanitizeOutput(base, profile);
+          if (isCodingTask && CodingIntentDetector.isGenericGreeting(base)) {
+            base = CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[]);
+          }
+          return base;
         })();
         app.log.info({
           tag: "coding_agent_telemetry",

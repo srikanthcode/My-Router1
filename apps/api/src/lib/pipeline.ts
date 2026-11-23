@@ -841,7 +841,7 @@ export function extractHints(messages: ChatMessage[]): AutoHints {
   const last = [...messages].reverse().find((m) => m.role === "user");
   const text = typeof last?.content === "string" ? last.content : Array.isArray(last?.content) ? last.content.map((p) => p.text ?? "").join(" ") : "";
   return {
-    wantsCoding: /\b(code|coding|function|bug|debug|implement|refactor|typescript|python|sql)\b/i.test(text),
+    wantsCoding: /\b(code|coding|function|bug|debug|implement|refactor|typescript|python|sql|react|jsx|tsx|html|css|javascript|component|script|app\.jsx|node|express|api|endpoint|database|repo|repository|create.*file)\b/i.test(text),
     wantsReasoning: /\b(reason|think step|analy[sz]e|prove|logic|puzzle|strategy)\b/i.test(text),
   };
 }
