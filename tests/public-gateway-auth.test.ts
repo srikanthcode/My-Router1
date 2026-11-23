@@ -572,7 +572,7 @@ describe("demo gateway switch", () => {
 });
 
 describe("missing backend configuration", () => {
-  it("returns 503 for an authenticated request when no backend base is set", async () => {
+  it("returns 503 for an authenticated request when no backend base is set and demo is disabled", async () => {
     const previousApiBase = process.env.API_BASE_URL;
     const previousPublicBase = process.env.NEXT_PUBLIC_API_URL;
     process.env.API_BASE_URL = "";
@@ -595,6 +595,28 @@ describe("missing backend configuration", () => {
       process.env.API_BASE_URL = previousApiBase;
       if (previousPublicBase === undefined) delete process.env.NEXT_PUBLIC_API_URL;
       else process.env.NEXT_PUBLIC_API_URL = previousPublicBase;
+      vi.resetModules();
+    }
+  });
+
+  it("defaults demo gateway to enabled on standalone deployments when no backend base is set", async () => {
+    const previousApiBase = process.env.API_BASE_URL;
+    const previousPublicBase = process.env.NEXT_PUBLIC_API_URL;
+    const previousDemo = process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
+    process.env.API_BASE_URL = "";
+    delete process.env.NEXT_PUBLIC_API_URL;
+    delete process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
+    vi.resetModules();
+    try {
+      const fresh = await import("../apps/web/app/v1/[...path]/route");
+      expect(fresh.isExternalBackendAvailable()).toBe(false);
+      expect(fresh.isDemoGatewayEnabled()).toBe(true);
+    } finally {
+      process.env.API_BASE_URL = previousApiBase;
+      if (previousPublicBase === undefined) delete process.env.NEXT_PUBLIC_API_URL;
+      else process.env.NEXT_PUBLIC_API_URL = previousPublicBase;
+      if (previousDemo === undefined) delete process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
+      else process.env.PROROUTER_ENABLE_DEMO_GATEWAY = previousDemo;
       vi.resetModules();
     }
   });
