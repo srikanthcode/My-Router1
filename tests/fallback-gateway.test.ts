@@ -228,12 +228,31 @@ describe("demo wallet and keys", () => {
     expect((await betaWallet.json()).balancePaise).toBe(0);
   });
 
-  it("does not fabricate API keys", async () => {
+  it("issues, lists, rotates and revokes API keys", async () => {
     const user = await register("fallback.keys1@gmail.com");
     const list = await call("/keys", { cookie: user.cookie });
-    expect(list.status).toBe(503);
+    expect(list.status).toBe(200);
+    const listBody = await list.json();
+    expect(listBody.items).toEqual([]);
+
     const create = await call("/keys", { method: "POST", cookie: user.cookie, body: { name: "test" } });
-    expect(create.status).toBe(503);
+    expect(create.status).toBe(201);
+    const createBody = await create.json();
+    expect(createBody.key.name).toBe("test");
+    expect(createBody.secret).toMatch(/^pr_live_/);
+    expect(createBody.key.prefix).toMatch(/^pr_live_/);
+
+    const rotate = await call(`/keys/${createBody.key.id}/rotate`, { method: "POST", cookie: user.cookie });
+    expect(rotate.status).toBe(200);
+    const rotateBody = await rotate.json();
+    expect(rotateBody.secret).toMatch(/^pr_live_/);
+
+    const revoke = await call(`/keys/${createBody.key.id}`, { method: "DELETE", cookie: user.cookie });
+    expect(revoke.status).toBe(200);
+
+    const afterList = await call("/keys", { cookie: user.cookie });
+    const afterBody = await afterList.json();
+    expect(afterBody.items[0].revokedAt).not.toBeNull();
   });
 
   it("rejects checkout and verification without Razorpay configuration", async () => {
