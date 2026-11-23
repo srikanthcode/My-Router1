@@ -387,4 +387,54 @@ describe("demo wallet and keys", () => {
       delete process.env.RAZORPAY_KEY_SECRET;
     }
   });
+
+  it("subscribes user to builder plan on successful payment verification", async () => {
+    process.env.RAZORPAY_KEY_ID = "rzp_test_key";
+    process.env.RAZORPAY_KEY_SECRET = RAZORPAY_SECRET;
+    mockRazorpayOrder("order_builder_plan_test");
+
+    try {
+      const user = await register("fallback.plan.builder1@gmail.com");
+      const meBefore = await call("/auth/me", { cookie: user.cookie });
+      expect((await meBefore.json()).plan.slug).toBe("free");
+
+      const checkout = await call("/wallet/checkout", {
+        method: "POST",
+        cookie: user.cookie,
+        body: { packageSlug: "builder" },
+      });
+      expect(checkout.status).toBe(200);
+      const order = await checkout.json();
+      expect(order.amountPaise).toBe(99900);
+
+      const paymentId = "pay_builder_test";
+      const signature = createHmac("sha256", RAZORPAY_SECRET)
+        .update(`${order.gatewayOrderId}|${paymentId}`)
+        .digest("hex");
+
+      const verified = await call("/wallet/verify", {
+        method: "POST",
+        cookie: user.cookie,
+        body: {
+          paymentId: order.paymentId,
+          razorpayPaymentId: paymentId,
+          razorpayOrderId: order.gatewayOrderId,
+          razorpaySignature: signature,
+        },
+      });
+      expect(verified.status).toBe(200);
+
+      const meAfter = await call("/auth/me", { cookie: user.cookie });
+      const meData = await meAfter.json();
+      expect(meData.plan.slug).toBe("builder");
+      expect(meData.plan.freeRpm).toBe(30);
+
+      const overview = await call("/dashboard/overview", { cookie: user.cookie });
+      const overviewData = await overview.json();
+      expect(overviewData.plan.slug).toBe("builder");
+    } finally {
+      delete process.env.RAZORPAY_KEY_ID;
+      delete process.env.RAZORPAY_KEY_SECRET;
+    }
+  });
 });

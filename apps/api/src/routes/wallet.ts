@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { desc, eq } from "drizzle-orm";
-import { creditPackages, getDb, payments, paymentWebhooks, walletTransactions } from "@pro/database";
+import { creditPackages, getDb, payments, paymentWebhooks, walletTransactions, plans, subscriptions } from "@pro/database";
 import { ApiError, env, formatMoney } from "@pro/shared";
 import { requireUser } from "../lib/auth.js";
 import { creditWallet, getBalance } from "../lib/wallet.js";
@@ -200,6 +200,34 @@ export async function walletRoutes(app: FastifyInstance) {
       updatedAt: new Date(),
     }).where(eq(payments.id, payment.id));
 
+    // Activate subscription if this was a plan package
+    const planSlug = paymentMeta?.packageSlug;
+    if (planSlug && (planSlug === "builder" || planSlug === "pro" || planSlug === "builder-usd" || planSlug === "pro-usd")) {
+      const targetSlug = planSlug.replace("-usd", "");
+      const planRows = await db.select().from(plans).where(eq(plans.slug, targetSlug));
+      const planRow = planRows[0];
+      if (planRow) {
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const existingSub = await db.select().from(subscriptions).where(eq(subscriptions.userId, user.id));
+        if (existingSub.length > 0) {
+          await db.update(subscriptions).set({
+            planId: planRow.id,
+            status: "active",
+            startedAt: new Date(),
+            expiresAt,
+          }).where(eq(subscriptions.userId, user.id));
+        } else {
+          await db.insert(subscriptions).values({
+            userId: user.id,
+            planId: planRow.id,
+            status: "active",
+            startedAt: new Date(),
+            expiresAt,
+          });
+        }
+      }
+    }
+
     eventHub.publish(user.id, "payment.completed", {
       paymentId: payment.id,
       invoice: payment.invoiceNumber,
@@ -287,6 +315,34 @@ export async function walletRoutes(app: FastifyInstance) {
       creditedAt: new Date(),
       updatedAt: new Date(),
     }).where(eq(payments.id, payment.id));
+
+    // Activate subscription if this was a plan package
+    const planSlug = paymentMeta?.packageSlug;
+    if (planSlug && (planSlug === "builder" || planSlug === "pro" || planSlug === "builder-usd" || planSlug === "pro-usd")) {
+      const targetSlug = planSlug.replace("-usd", "");
+      const planRows = await db.select().from(plans).where(eq(plans.slug, targetSlug));
+      const planRow = planRows[0];
+      if (planRow) {
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+        const existingSub = await db.select().from(subscriptions).where(eq(subscriptions.userId, payment.userId));
+        if (existingSub.length > 0) {
+          await db.update(subscriptions).set({
+            planId: planRow.id,
+            status: "active",
+            startedAt: new Date(),
+            expiresAt,
+          }).where(eq(subscriptions.userId, payment.userId));
+        } else {
+          await db.insert(subscriptions).values({
+            userId: payment.userId,
+            planId: planRow.id,
+            status: "active",
+            startedAt: new Date(),
+            expiresAt,
+          });
+        }
+      }
+    }
 
     eventHub.publish(payment.userId, "payment.completed", {
       paymentId: payment.id,

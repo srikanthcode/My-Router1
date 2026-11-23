@@ -93,18 +93,28 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
   // ── Plans (§23) — all values admin-configurable ────────────────────────
   const planSeeds = [
     {
-      slug: "free", name: "Free", tagline: "Start building with free models",
-      pricePaise: 0, freeRpm: 1, freeRph: 20, freeRpd: 100, concurrency: 1, queuePriority: 5, sortOrder: 10,
-      features: ["1 free-model request / minute", "Standard free queue", "Basic API access", "Community support"],
+      slug: "free", name: "Free", tagline: "Explore frontier AI models with zero upfront commitment.",
+      pricePaise: 0, freeRpm: 10, freeRph: 100, freeRpd: 1000, concurrency: 2, queuePriority: 10, sortOrder: 10,
+      features: ["Access to all 500+ AI models", "1,000,000 free tokens/day (DeepSeek V4.1 & Qwen 27B)", "Standard queue priority", "Streaming SSE responses", "OpenAI SDK compatible endpoint"],
+    },
+    {
+      slug: "builder", name: "Builder", tagline: "For developers and early-stage products building with AI.",
+      pricePaise: 99900, freeRpm: 30, freeRph: 500, freeRpd: 5000, concurrency: 5, queuePriority: 20, sortOrder: 20,
+      features: ["Higher rate limits (30 req/min)", "High-priority queue routing", "Pay-as-you-go balance rollover", "Multiple API keys", "Detailed latency & usage breakdown"],
+    },
+    {
+      slug: "pro", name: "Pro", tagline: "Maximum throughput, dedicated priority queue, and high concurrency.",
+      pricePaise: 249900, freeRpm: 60, freeRph: 1500, freeRpd: 15000, concurrency: 15, queuePriority: 30, sortOrder: 30,
+      features: ["Ultra-high rate limits (60 req/min)", "VIP priority queue routing", "Unlimited API keys", "Reasoning & thought token support", "Priority customer support"],
     },
     {
       slug: "boost", name: "Boost", tagline: "Faster free-model access",
-      pricePaise: 199900, freeRpm: 5, freeRph: 120, freeRpd: 1500, concurrency: 3, queuePriority: 3, sortOrder: 20,
+      pricePaise: 199900, freeRpm: 5, freeRph: 120, freeRpd: 1500, concurrency: 3, queuePriority: 3, sortOrder: 40,
       features: ["5 free-model requests / minute", "Faster queue", "Higher concurrency", "Email support"],
     },
     {
       slug: "ultra", name: "Ultra", tagline: "Priority routing for serious workloads",
-      pricePaise: 499900, freeRpm: 10, freeRph: 300, freeRpd: 5000, concurrency: 5, queuePriority: 1, sortOrder: 30,
+      pricePaise: 499900, freeRpm: 10, freeRph: 300, freeRpd: 5000, concurrency: 5, queuePriority: 1, sortOrder: 50,
       features: ["10 free-model requests / minute", "Priority routing — no scheduled queue delay", "Highest concurrency", "Premium support"],
     },
   ];
