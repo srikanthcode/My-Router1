@@ -421,12 +421,12 @@ describe("Anthropic /v1/messages compatibility proxy", () => {
     const encoder = new TextEncoder();
     const chunks = [
       'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n' +
-        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n' +
-        'data: {"choices":[{"delta":{"content":" wo',
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n' +
+      'data: {"choices":[{"delta":{"content":" wo',
       'rld"}}]}\n\n' +
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
-        'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}\n\n' +
-        "data: [DONE]\n\n",
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2,"total_tokens":9}}\n\n' +
+      "data: [DONE]\n\n",
     ];
     const stream = new ReadableStream({
       start(controller) {
