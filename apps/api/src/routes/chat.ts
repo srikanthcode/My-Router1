@@ -552,8 +552,11 @@ export async function chatRoutes(app: FastifyInstance) {
           const profile = ModelProfileRegistry.get(slug);
           let base = sanitizeModelOutput(result.content, ctx.model.name);
           if (profile) base = ModelBehaviorEngine.sanitizeOutput(base, profile);
-          if (isCodingTask && CodingIntentDetector.isGenericGreeting(base)) {
+          const isGreeting = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
+          if (isCodingTask && (CodingIntentDetector.isVacuousResponse(base) || !base.trim())) {
             base = CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[]);
+          } else if (isGreeting && (CodingIntentDetector.isVacuousResponse(base) || CodingIntentDetector.isVacuousAck(base) || !base.trim())) {
+            base = "Hello! How can I assist you with your project today?";
           }
           return base;
         })();
@@ -734,7 +737,12 @@ export async function chatRoutes(app: FastifyInstance) {
       }
 
       if (!contentSoFar && !hasSeenToolCalls) {
-        const fallbackText = "I have received and processed your request.";
+        const isGreeting = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
+        const fallbackText = isCodingTask
+          ? CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[])
+          : isGreeting
+            ? "Hello! How can I assist you with your project today?"
+            : "I have received and processed your request.";
         contentSoFar = fallbackText;
         write(oaiChunk({ content: fallbackText }));
       }

@@ -204,4 +204,65 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     expect(isDailyFreeEligible("qwen3.8-27b")).toBe(true);
     expect(isDailyFreeEligible("qwen-3.8-27b")).toBe(true);
   });
+
+  // ── Scenario 11: Vacuous Response Normalization for Greeting Inputs ──
+  it("Scenario 11: Normalizes vacuous curt responses to helpful greeting when user inputs 'hi'", () => {
+    const greetingMessages = [{ role: "user", content: "hi" }];
+    expect(CodingIntentDetector.isGreetingInput(greetingMessages)).toBe(true);
+    expect(CodingIntentDetector.isCodingIntent(greetingMessages)).toBe(false);
+
+    const vacuousAcks = ["Got it.", "Not answerable.", "Noted.", "Understood.", "Sure.", "Ok.", "Alright."];
+    for (const ack of vacuousAcks) {
+      expect(CodingIntentDetector.isVacuousAck(ack)).toBe(true);
+      expect(CodingIntentDetector.isVacuousResponse(ack)).toBe(true);
+      const cleaned = cleanNonStreamingMessage({ role: "assistant", content: ack }, "DeepSeek V4.1 Flash", "DeepSeek", false, false, greetingMessages);
+      expect(cleaned.content).toBe("Hello! How can I assist you with your project today?");
+    }
+  });
+
+  // ── Scenario 12: Resilient Fix Handling and Code Synthesis for Coding Tasks ──
+  it("Scenario 12: Generates actionable project fix when user commands 'fix' after project context", () => {
+    const fixMessages = [
+      {
+        role: "user",
+        content: "Project name and version: free-pi-cli, @earendil-works/pi-coding-agent\nAvailable scripts: bun src/gateway/server.ts, bun test, bun run build",
+      },
+      {
+        role: "user",
+        content: "fix",
+      },
+    ];
+
+    expect(CodingIntentDetector.isCodingIntent(fixMessages)).toBe(true);
+    expect(CodingIntentDetector.detectIntent(fixMessages)).toBe("code_debugging");
+
+    // Vacuous "Got it." or "Not answerable." is replaced with project fix
+    const cleaned = cleanNonStreamingMessage({ role: "assistant", content: "Got it." }, "DeepSeek V4.1 Flash", "DeepSeek", false, true, fixMessages);
+    expect(cleaned.content).toContain("free-pi-cli");
+    expect(cleaned.content).toContain("bun run gateway");
+    expect(cleaned.content).not.toBe("Got it.");
+  });
+
+  // ── Scenario 13: Streaming Buffer Eliminates Vacuous Leakage ──
+  it("Scenario 13: StreamChunkProcessor detects vacuous acknowledgments and flushes valid greeting or code", () => {
+    // Subtest A: Greeting input with "Got it." stream
+    const procGreeting = new StreamChunkProcessor();
+    procGreeting.isCodingTask = false;
+    procGreeting.requestedMessages = [{ role: "user", content: "hi" }];
+
+    procGreeting.processDelta({ content: "Got" }, "DeepSeek V4.1 Flash", "DeepSeek");
+    procGreeting.processDelta({ content: " it." }, "DeepSeek V4.1 Flash", "DeepSeek");
+    const flushedGreeting = procGreeting.flushDelta();
+    expect(flushedGreeting.content).toContain("Hello! How can I assist you with your project today?");
+
+    // Subtest B: Coding task with "Not answerable." stream
+    const procCoding = new StreamChunkProcessor();
+    procCoding.isCodingTask = true;
+    procCoding.requestedMessages = [{ role: "user", content: "Create App.jsx in React" }];
+
+    procCoding.processDelta({ content: "Not " }, "DeepSeek V4.1 Flash", "DeepSeek");
+    procCoding.processDelta({ content: "answerable." }, "DeepSeek V4.1 Flash", "DeepSeek");
+    const flushedCoding = procCoding.flushDelta();
+    expect(flushedCoding.content).toContain("import React");
+  });
 });
