@@ -621,3 +621,60 @@ describe("missing backend configuration", () => {
     }
   });
 });
+
+describe("responses api endpoint", () => {
+  it("forwards authenticated responses requests to the backend with a bearer token", async () => {
+    const fetchMock = vi.fn(async () => completionResponse());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await route.handleV1(
+      jsonRequest(
+        "/responses",
+        { model: "pr-echo", input: "hi", stream: false },
+        { authorization: "Bearer pro_sk_test_valid" },
+      ),
+      ["responses"],
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [target, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(target).toBe("https://backend.test/v1/responses");
+    const headers = init.headers as Headers;
+    expect(headers.get("authorization")).toBe("Bearer pro_sk_test_valid");
+    expect(res.status).toBe(200);
+  });
+
+  it("normalizes and serves openai responses api requests in standalone mode", async () => {
+    const previousApiBase = process.env.API_BASE_URL;
+    const previousDemo = process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
+    process.env.API_BASE_URL = "";
+    process.env.PROROUTER_ENABLE_DEMO_GATEWAY = "true";
+    vi.resetModules();
+    try {
+      const fresh = await import("../apps/web/app/v1/[...path]/route");
+      const res = await fresh.handleV1(
+        jsonRequest(
+          "/responses",
+          {
+            model: "deepseek-v4.1-flash",
+            input: "Create a single React JS file named App.jsx",
+          },
+          { authorization: "Bearer pr_test_key" },
+        ),
+        ["responses"],
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.object).toBe("response");
+      expect(body.status).toBe("completed");
+      expect(Array.isArray(body.output)).toBe(true);
+      expect(typeof body.output_text).toBe("string");
+      expect(body.output_text.length).toBeGreaterThan(0);
+    } finally {
+      process.env.API_BASE_URL = previousApiBase;
+      if (previousDemo === undefined) delete process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
+      else process.env.PROROUTER_ENABLE_DEMO_GATEWAY = previousDemo;
+      vi.resetModules();
+    }
+  });
+});
