@@ -422,11 +422,11 @@ export async function chatRoutes(app: FastifyInstance) {
       if (params.errorCode) {
         // Failed request: release free tokens and wallet reservations
         if (freeTokensReserved > 0) {
-          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved }).catch(() => {});
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved }).catch(() => { });
           freeTokensReserved = 0;
         }
         if (hasReservation) {
-          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => { });
           hasReservation = false;
         }
       } else {
@@ -479,7 +479,7 @@ export async function chatRoutes(app: FastifyInstance) {
             cost = debit.deductedPaise;
           }
         } else if (hasReservation) {
-          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {});
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => { });
           hasReservation = false;
         }
       }
