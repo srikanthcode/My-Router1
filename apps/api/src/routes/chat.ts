@@ -368,7 +368,8 @@ export async function chatRoutes(app: FastifyInstance) {
     const hasClientSystemPrompt = (messages as unknown as ChatMessage[]).some(
       (m) => m?.role === "system" && typeof m?.content === "string" && m.content.trim().length > 0
     );
-    const isCodingTask = CodingIntentDetector.isCodingIntent(messages as unknown as ChatMessage[]);
+    const isGreetingTurn = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
+    const isCodingTask = !isGreetingTurn && CodingIntentDetector.isCodingIntent(messages as unknown as ChatMessage[]);
     let effectiveMessages = messages as unknown as ChatMessage[];
     if (!hasClientSystemPrompt && isCodingTask) {
       const intent = CodingIntentDetector.detectIntent(messages as unknown as ChatMessage[]);
@@ -553,10 +554,12 @@ export async function chatRoutes(app: FastifyInstance) {
           let base = sanitizeModelOutput(result.content, ctx.model.name);
           if (profile) base = ModelBehaviorEngine.sanitizeOutput(base, profile);
           const isGreeting = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
-          if (isCodingTask && (CodingIntentDetector.isVacuousResponse(base) || !base.trim())) {
+          if (isGreeting) {
+            if (CodingIntentDetector.isVacuousResponse(base) || CodingIntentDetector.isVacuousAck(base) || !base.trim() || base.includes("Interactive App") || base.includes("Click Me")) {
+              base = "Hello! How can I assist you with your project today?";
+            }
+          } else if (isCodingTask && (CodingIntentDetector.isVacuousResponse(base) || !base.trim())) {
             base = CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[]);
-          } else if (isGreeting && (CodingIntentDetector.isVacuousResponse(base) || CodingIntentDetector.isVacuousAck(base) || !base.trim())) {
-            base = "Hello! How can I assist you with your project today?";
           }
           return base;
         })();
@@ -738,10 +741,10 @@ export async function chatRoutes(app: FastifyInstance) {
 
       if (!contentSoFar && !hasSeenToolCalls) {
         const isGreeting = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
-        const fallbackText = isCodingTask
-          ? CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[])
-          : isGreeting
-            ? "Hello! How can I assist you with your project today?"
+        const fallbackText = isGreeting
+          ? "Hello! How can I assist you with your project today?"
+          : isCodingTask
+            ? CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[])
             : "I have received and processed your request.";
         contentSoFar = fallbackText;
         write(oaiChunk({ content: fallbackText }));

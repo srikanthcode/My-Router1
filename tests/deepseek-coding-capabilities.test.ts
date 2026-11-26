@@ -265,4 +265,45 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     const flushedCoding = procCoding.flushDelta();
     expect(flushedCoding.content).toContain("import React");
   });
+
+  // ── Scenario 14: Greeting Turn Precedence in Multi-Turn Coding Sessions ──
+  it("Scenario 14: Greeting input in multi-turn coding session takes precedence and never returns HTML fallback code", () => {
+    const multiTurnSession = [
+      { role: "user", content: "Create a complete HTML, CSS and JavaScript website with interactive components." },
+      { role: "assistant", content: "<!DOCTYPE html><html><body><h1>Website</h1></body></html>" },
+      { role: "user", content: "hi" },
+    ];
+
+    expect(CodingIntentDetector.isGreetingInput(multiTurnSession)).toBe(true);
+    expect(CodingIntentDetector.detectIntent(multiTurnSession)).toBe("normal_conversation");
+    expect(CodingIntentDetector.isCodingIntent(multiTurnSession)).toBe(false);
+
+    // generateFallbackCode returns polite greeting, never Interactive App
+    const fallback = CodingIntentDetector.generateFallbackCode(multiTurnSession);
+    expect(fallback).toBe("Hello! How can I assist you with your project today?");
+    expect(fallback).not.toContain("Interactive App");
+    expect(fallback).not.toContain("Click Me");
+
+    // cleanNonStreamingMessage never leaves HTML fallback on greeting
+    const htmlLeakMsg = {
+      role: "assistant",
+      content: '<div class="card"><h2>Interactive App</h2><p id="status">Ready</p><button>Click Me</button></div>',
+    };
+    const cleaned = cleanNonStreamingMessage(htmlLeakMsg, "DeepSeek V4.1 Flash", "DeepSeek", false, false, multiTurnSession);
+    expect(cleaned.content).toBe("Hello! How can I assist you with your project today?");
+
+    // StreamChunkProcessor flushes greeting when user sends 'hi' even if isCodingTask was set
+    const proc = new StreamChunkProcessor();
+    proc.isCodingTask = false;
+    proc.requestedMessages = multiTurnSession;
+    proc.processDelta({ content: "Got it." }, "DeepSeek V4.1 Flash", "DeepSeek");
+    const tail = proc.flushDelta();
+    expect(tail.content).toContain("Hello! How can I assist you with your project today?");
+    expect(tail.content).not.toContain("Interactive App");
+
+    // Natural greeting variations
+    expect(CodingIntentDetector.isGreetingInput([{ role: "user", content: "hi there" }])).toBe(true);
+    expect(CodingIntentDetector.isGreetingInput([{ role: "user", content: "hello there!" }])).toBe(true);
+    expect(CodingIntentDetector.isGreetingInput([{ role: "user", content: "hey there" }])).toBe(true);
+  });
 });

@@ -137,6 +137,11 @@ export class CodingIntentDetector {
   public static detectIntent(messages: Array<{ role: string; content?: unknown }>): CodingIntentType {
     if (!messages || messages.length === 0) return "normal_conversation";
 
+    // A pure greeting turn always takes precedence over prior conversation history
+    if (this.isGreetingInput(messages)) {
+      return "normal_conversation";
+    }
+
     for (const m of messages) {
       if ((m as any).tool_calls || (m as any).function_call || m.role === "tool") {
         return "tool_execution";
@@ -243,7 +248,7 @@ export class CodingIntentDetector {
     const trimmed = text.trim();
     if (!trimmed) return false;
     return (
-      /^(?:hi|hello|hey|hiya|howdy|sup|yo|greetings)[\s\.,!?:-]*(?:how\s+(?:are\s+you|are\s+things|is\s+it\s+going|are\s+you\s+doing))?[\s\.,!\?]*$/i.test(trimmed) ||
+      /^(?:hi|hello|hey|hiya|howdy|sup|yo|greetings)(?:\s+there)?[\s\.,!?:-]*(?:how\s+(?:are\s+you|are\s+things|is\s+it\s+going|are\s+you\s+doing)|what'?s\s+up)?[\s\.,!\?]*$/i.test(trimmed) ||
       /^good\s+(?:morning|afternoon|evening|day)[\s\.,!?:-]*$/i.test(trimmed)
     );
   }
@@ -274,6 +279,10 @@ export class CodingIntentDetector {
   }
 
   public static generateFallbackCode(messages: Array<{ role: string; content?: unknown }>): string {
+    if (this.isGreetingInput(messages)) {
+      return "Hello! How can I assist you with your project today?";
+    }
+
     const userMessages = messages.filter((m) => m.role === "user");
     const lastUserMsg = userMessages[userMessages.length - 1];
     const text = typeof lastUserMsg?.content === "string"
