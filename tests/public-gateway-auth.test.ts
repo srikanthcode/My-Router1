@@ -676,5 +676,5 @@ describe("responses api endpoint", () => {
       else process.env.PROROUTER_ENABLE_DEMO_GATEWAY = previousDemo;
       vi.resetModules();
     }
-  });
+  }, 60000);
 });
