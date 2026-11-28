@@ -125,7 +125,7 @@ export function getTelemetryOverview(timeFilter = "This month", modelFilter = "B
     const existing = modelMap.get(r.model) || { spend: 0, requests: 0, tokens: 0 };
     existing.requests += 1;
     existing.tokens += r.totalTokens || 0;
-    existing.spend += (r.costPaise || 0) / 8000; // in USD
+    existing.spend += (r.costPaise || 0) / 8500; // in USD
     modelMap.set(r.model, existing);
   }
 
@@ -169,7 +169,7 @@ export function getTelemetryOverview(timeFilter = "This month", modelFilter = "B
     for (const r of dayRecords) {
       dayReqs += 1;
       dayTokens += r.totalTokens || 0;
-      const spend = (r.costPaise || 0) / 8000;
+      const spend = (r.costPaise || 0) / 8500;
       daySpend += spend;
       if (!breakdown[r.model]) {
         breakdown[r.model] = { requests: 0, tokens: 0, spend: 0 };

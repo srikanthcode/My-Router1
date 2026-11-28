@@ -133,13 +133,13 @@ export function ModelsTable({
         return scoreB - scoreA;
       }
       if (sortBy === "lowest_input") {
-        const inA = a.customerPricingUsd?.inputPerMillion ?? (a.pricing.inputPerMillion / 8000);
-        const inB = b.customerPricingUsd?.inputPerMillion ?? (b.pricing.inputPerMillion / 8000);
+        const inA = a.customerPricingUsd?.inputPerMillion ?? (a.pricing.inputPerMillion / 8500);
+        const inB = b.customerPricingUsd?.inputPerMillion ?? (b.pricing.inputPerMillion / 8500);
         return inA - inB;
       }
       if (sortBy === "lowest_output") {
-        const outA = a.customerPricingUsd?.outputPerMillion ?? (a.pricing.outputPerMillion / 8000);
-        const outB = b.customerPricingUsd?.outputPerMillion ?? (b.pricing.outputPerMillion / 8000);
+        const outA = a.customerPricingUsd?.outputPerMillion ?? (a.pricing.outputPerMillion / 8500);
+        const outB = b.customerPricingUsd?.outputPerMillion ?? (b.pricing.outputPerMillion / 8500);
         return outA - outB;
       }
       if (sortBy === "highest_context") {
@@ -206,7 +206,7 @@ export function ModelsTable({
                 setSearchQuery(e.target.value);
                 setCurrentPage(1);
               }}
-              placeholder="Search 500+ models by official name, canonical ID, provider, or architecture…"
+              placeholder="Search models by official name, canonical ID, provider, or capability…"
               className="w-full rounded-xl border border-line bg-panel2/60 pl-10 pr-4 py-2.5 text-xs sm:text-sm text-fg placeholder:text-mut2 focus:outline-hidden focus:border-accent/80 transition-colors font-mono"
             />
             {searchQuery && (
@@ -305,7 +305,7 @@ export function ModelsTable({
                     : "text-mut hover:text-fg"
                 )}
               >
-                Paid ({initialModels.length - 2})
+                Paid ({Math.max(initialModels.length - 2, 0)})
               </button>
             </div>
 
@@ -359,7 +359,7 @@ export function ModelsTable({
                 <option value={25} className="bg-panel text-fg">25</option>
                 <option value={50} className="bg-panel text-fg">50</option>
                 <option value={100} className="bg-panel text-fg">100</option>
-                <option value={600} className="bg-panel text-fg">All (500+)</option>
+                <option value={600} className="bg-panel text-fg">All ({initialModels.length})</option>
               </select>
             </div>
           </div>
@@ -434,8 +434,8 @@ export function ModelsTable({
                   const canonicalId = m.canonicalModelId || m.slug;
 
                   // Extract prices
-                  const inputUsd = m.customerPricingUsd?.inputPerMillion ?? (m.pricing.inputPerMillion / 8000);
-                  const outputUsd = m.customerPricingUsd?.outputPerMillion ?? (m.pricing.outputPerMillion / 8000);
+                  const inputUsd = m.customerPricingUsd?.inputPerMillion ?? (m.pricing.inputPerMillion / 8500);
+                  const outputUsd = m.customerPricingUsd?.outputPerMillion ?? (m.pricing.outputPerMillion / 8500);
                   const cachedUsd = m.customerPricingUsd?.cachedInputPerMillion ?? (inputUsd * 0.5);
                   const inputInr = (m.pricing.inputPerMillion / 100);
                   const outputInr = (m.pricing.outputPerMillion / 100);

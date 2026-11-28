@@ -82,12 +82,19 @@ export async function listModels(filters: ModelFilters = {}): Promise<{ items: M
   if (filters.sort === "price_desc") items.sort((a, b) => b.pricing.inputPerMillion - a.pricing.inputPerMillion);
   if (filters.sort === "latency") items.sort((a, b) => (a.latencyMs ?? 9e9) - (b.latencyMs ?? 9e9));
 
-  // Blend in model profiles if catalog has fewer than 100 items
-  if (items.length < 100) {
+  // Fall back to curated static profiles only if the database catalog is unseeded
+  const dbCuratedRows = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(models)
+    .where(sql`${models.status} IN ('active','coming_soon')`);
+  if ((dbCuratedRows[0]?.n ?? 0) === 0) {
     const existingSlugs = new Set(items.map((i) => i.slug.toLowerCase()));
     const allProfiles = ModelProfileRegistry.getAll();
     for (const p of allProfiles) {
       if (existingSlugs.has(p.id.toLowerCase())) continue;
+      if (filters.free && !p.isFree) continue;
+      if (filters.paid && p.isFree) continue;
+      if (filters.minContext && p.contextWindow < filters.minContext) continue;
       if (filters.q) {
         const qL = filters.q.toLowerCase();
         if (!p.id.toLowerCase().includes(qL) && !p.name.toLowerCase().includes(qL) && !p.description.toLowerCase().includes(qL)) continue;

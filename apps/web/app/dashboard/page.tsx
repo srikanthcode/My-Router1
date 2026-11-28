@@ -98,7 +98,7 @@ export default function DashboardOverviewPage() {
 
   const spendFormatted = useMemo(() => {
     const cost = telemetry?.month?.costPaise ?? 0;
-    const usd = cost > 0 ? cost / 8000 : 0;
+    const usd = cost > 0 ? cost / 8500 : 0;
     return `$${usd.toFixed(2)}`;
   }, [telemetry]);
 

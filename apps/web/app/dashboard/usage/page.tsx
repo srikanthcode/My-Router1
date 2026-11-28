@@ -33,7 +33,7 @@ export default function UsagePage() {
   const [metric, setMetric] = useState<Metric>("requests");
   const [error, setError] = useState<string | null>(null);
 
-  
+
   const exportUsageCsv = () => {
     if (!usage || !usage.byModel) return;
     const headers = ["Model", "Requests", "Tokens", "Avg Tokens", "Cost (INR)", "Cost (USD)"];
@@ -43,7 +43,7 @@ export default function UsagePage() {
       m.tokens,
       Math.round(m.tokens / Math.max(1, m.n)),
       `₹${(m.cost / 100).toFixed(2)}`,
-      `${(m.cost / 100 / 80).toFixed(4)}`,
+      `${(m.cost / 100 / 85).toFixed(4)}`,
     ]);
     const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
     const encodedUri = encodeURI(csvContent);

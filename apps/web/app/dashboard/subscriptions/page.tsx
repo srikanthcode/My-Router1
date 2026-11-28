@@ -59,7 +59,7 @@ const INR_PLANS: PlanItem[] = [
     concurrency: 2,
     queuePriority: 10,
     features: [
-      "Access to all 500+ AI models",
+      "Access to all curated frontier AI models",
       "1,000,000 free daily tokens on DeepSeek V4.1 & Qwen 27B",
       "Standard queue priority (10)",
       "Streaming SSE responses",
@@ -130,7 +130,7 @@ const USD_PLANS: PlanItem[] = [
     concurrency: 2,
     queuePriority: 10,
     features: [
-      "Access to all 500+ AI models",
+      "Access to all curated frontier AI models",
       "1,000,000 free daily tokens on DeepSeek V4.1 & Qwen 27B",
       "Standard queue priority (10)",
       "Streaming SSE responses",

@@ -1456,17 +1456,13 @@ export class StreamChunkProcessor {
       const isGreeting = CodingIntentDetector.isGreetingInput(this.requestedMessages as any[]);
       const isVacuous = CodingIntentDetector.isVacuousResponse(totalText);
 
-      // Resilient normalization ONLY for non-agent chat turns
+      // Resilient normalization ONLY for conversational greeting turns (never fabricate synthetic coding templates)
       if (isGreeting && !this.hasSeenAnyToolCalls) {
         if (CodingIntentDetector.isVacuousAck(totalText) || isVacuous || !totalText || totalText.includes("Interactive App") || totalText.includes("Click Me")) {
           const greeting = "Hello! How can I assist you with your project today?";
           content = (content ? content + "\n\n" : "") + greeting;
           this.accumulatedContent = greeting;
         }
-      } else if (this.isCodingTask && !this.hasSeenAnyToolCalls && (isVacuous || !totalText)) {
-        const fallback = CodingIntentDetector.generateFallbackCode(this.requestedMessages as any[]);
-        content = (content ? content + "\n\n" : "") + fallback;
-        this.accumulatedContent = fallback;
       }
     }
 
@@ -1524,11 +1520,9 @@ export function cleanNonStreamingMessage(
         content = "Hello! How can I assist you with your project today?";
       }
     } else if (isCodingTask) {
-      // Strip leading conversational greetings or acknowledgments if code follows immediately after
-      content = content.replace(/^(?:(?:Hello|Hi|Hey|Sure|Certainly|Of course|Got it|Understood|Alright|Noted)[\s\.,!?:-]*(?:How can I help you today\??|How may I assist you\??|What can I do for you\??|Here is (?:the|your) (?:code|component|file|solution)[^:\n]*:?)?[\s\n]*)/i, "").trim();
-      if (isVacuous || !content) {
-        content = CodingIntentDetector.generateFallbackCode(requestedMessages as any[]);
-      }
+      // Strip leading conversational greetings or acknowledgments only if real content follows
+      const stripped = content.replace(/^(?:(?:Hello|Hi|Hey|Sure|Certainly|Of course|Got it|Understood|Alright|Noted)[\s\.,!?:-]*(?:How can I help you today\??|How may I assist you\??|What can I do for you\??|Here is (?:the|your) (?:code|component|file|solution)[^:\n]*:?)?[\s\n]*)/i, "").trim();
+      content = stripped;
     }
   }
 
@@ -2715,7 +2709,7 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
             {
               error: {
                 code: "free_playground_limit_reached",
-                message: "Free playground limit reached (" + FREE_PLAYGROUND_LIMIT + "/" + FREE_PLAYGROUND_LIMIT + " requests used). Please sign in and activate Pay-As-You-Go at https://www.prorouter.in/dashboard/billing to continue testing 500+ models with unlimited access.",
+                message: "Free playground limit reached (" + FREE_PLAYGROUND_LIMIT + "/" + FREE_PLAYGROUND_LIMIT + " requests used). Please sign in and activate Pay-As-You-Go at https://www.prorouter.in/dashboard/billing to continue testing AI models with unlimited access.",
                 limit: FREE_PLAYGROUND_LIMIT,
                 used: usage.count,
               },

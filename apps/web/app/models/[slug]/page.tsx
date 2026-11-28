@@ -54,7 +54,10 @@ export default async function ModelDetailPage({ params }: { params: Promise<{ sl
   if (!detail) notFound();
 
   const { model: m, limits, routes } = detail;
-  const apiBase = process.env.PUBLIC_API_BASE_URL || "https://prorouter.in";
+  const apiBase = process.env.PUBLIC_API_BASE_URL || "https://www.prorouter.in";
+  const inputUsd = m.customerPricingUsd?.inputPerMillion ?? (m.pricing.inputPerMillion / 8500);
+  const outputUsd = m.customerPricingUsd?.outputPerMillion ?? (m.pricing.outputPerMillion / 8500);
+  const cachedUsd = m.customerPricingUsd?.cachedInputPerMillion ?? (m.pricing.cachedInputPerMillion ? m.pricing.cachedInputPerMillion / 8500 : undefined);
   const curl = `curl ${apiBase}/v1/chat/completions \\
   -H "Authorization: Bearer $PROROUTER_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -62,6 +65,17 @@ export default async function ModelDetailPage({ params }: { params: Promise<{ sl
     "model": "${m.slug}",
     "messages": [{ "role": "user", "content": "Hello!" }]
   }'`;
+  const sdkSnippet = `import OpenAI from "openai";
+
+const client = new OpenAI({
+  apiKey: process.env.PROROUTER_API_KEY,
+  baseURL: "${apiBase}/v1",
+});
+
+const response = await client.chat.completions.create({
+  model: "${m.slug}",
+  messages: [{ role: "user", content: "Hello!" }],
+});`;
 
   const capabilityRows: Array<[string, boolean | string]> = [
     ["Streaming", m.capabilities.streaming],
@@ -142,21 +156,35 @@ export default async function ModelDetailPage({ params }: { params: Promise<{ sl
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-line bg-panel p-4">
             <div className="text-[12px] text-mut">Input / 1M tokens</div>
-            <div className="mt-1 font-mono text-lg font-semibold">{formatPerMillion(m.pricing.inputPerMillion)}</div>
+            <div className="mt-1 font-mono text-lg font-semibold">
+              {m.isFree ? "FREE (Promo)" : formatPerMillion(m.pricing.inputPerMillion)}
+            </div>
+            <div className="mt-0.5 font-mono text-[11px] text-mut2">
+              {m.isFree ? `Spillover: $${inputUsd.toFixed(2)} USD` : `$${inputUsd.toFixed(2)} USD`}
+            </div>
           </div>
           <div className="rounded-xl border border-line bg-panel p-4">
             <div className="text-[12px] text-mut">Output / 1M tokens</div>
-            <div className="mt-1 font-mono text-lg font-semibold">{formatPerMillion(m.pricing.outputPerMillion)}</div>
+            <div className="mt-1 font-mono text-lg font-semibold">
+              {m.isFree ? "FREE (Promo)" : formatPerMillion(m.pricing.outputPerMillion)}
+            </div>
+            <div className="mt-0.5 font-mono text-[11px] text-mut2">
+              {m.isFree ? `Spillover: $${outputUsd.toFixed(2)} USD` : `$${outputUsd.toFixed(2)} USD`}
+            </div>
           </div>
           <div className="rounded-xl border border-line bg-panel p-4">
             <div className="text-[12px] text-mut">Cached input / 1M</div>
             <div className="mt-1 font-mono text-lg font-semibold">
               {m.pricing.cachedInputPerMillion ? formatPerMillion(m.pricing.cachedInputPerMillion) : "—"}
             </div>
+            <div className="mt-0.5 font-mono text-[11px] text-mut2">
+              {cachedUsd !== undefined ? `$${cachedUsd.toFixed(2)} USD` : "Standard rate"}
+            </div>
           </div>
           <div className="rounded-xl border border-line bg-panel p-4">
-            <div className="text-[12px] text-mut">Community tier</div>
-            <div className="mt-1 font-mono text-lg font-semibold text-good">{m.isFree ? "Free tier" : "Paid"}</div>
+            <div className="text-[12px] text-mut">Access &amp; Billing</div>
+            <div className="mt-1 font-mono text-lg font-semibold text-good">{m.isFree ? "1M Free / Day" : "Pay-As-You-Go"}</div>
+            <div className="mt-0.5 font-mono text-[11px] text-mut2">₹85.00 INR = $1.00 USD</div>
           </div>
         </div>
 
@@ -250,12 +278,21 @@ export default async function ModelDetailPage({ params }: { params: Promise<{ sl
         </div>
 
         {/* Usage */}
-        <div className="mt-6 rounded-xl border border-line bg-panel">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5">
-            <h2 className="text-sm font-semibold">Call it with the OpenAI SDK</h2>
-            <CopyButton value={curl} label="Copy example" />
+        <div className="mt-6 grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-line bg-panel">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+              <h2 className="text-sm font-semibold">Call with cURL</h2>
+              <CopyButton value={curl} label="Copy cURL" />
+            </div>
+            <pre className="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-relaxed text-fg/90">{curl}</pre>
           </div>
-          <pre className="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-relaxed text-fg/90">{curl}</pre>
+          <div className="rounded-xl border border-line bg-panel">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+              <h2 className="text-sm font-semibold">Call with OpenAI SDK / Coding Agents</h2>
+              <CopyButton value={sdkSnippet} label="Copy TypeScript" />
+            </div>
+            <pre className="overflow-x-auto px-5 py-4 font-mono text-[12.5px] leading-relaxed text-fg/90">{sdkSnippet}</pre>
+          </div>
         </div>
       </div>
     </PublicShell>

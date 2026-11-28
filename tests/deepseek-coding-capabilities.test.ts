@@ -1,11 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { CodingIntentDetector } from "../apps/web/lib/coding-intent";
+import { CodingIntentDetector as RoutingCodingIntentDetector } from "../packages/routing/src/behavior-engine.js";
 import { StreamChunkProcessor, cleanNonStreamingMessage } from "../apps/web/app/v1/[...path]/route";
 import { isDailyFreeEligible, resolveDailyFreeEligibleId } from "@pro/shared";
 
 describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", () => {
-  // ── Scenario 1: Single-File React Generation ──
-  it("Scenario 1: Detects coding intent and generates complete single-file React component without greeting", () => {
+  // ── Scenario 1: Coding Intent Detection & No Fake Code Fabrication ──
+  it("Scenario 1: Detects coding intent and never fabricates synthetic boilerplate on vacuous output", () => {
     const messages = [
       { role: "user", content: "Create a single React JS file named App.jsx." },
     ];
@@ -21,7 +22,7 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     expect(directive).toContain("Never output generic greetings");
     expect(directive).toContain("complete, runnable, production-grade source code");
 
-    // Test cleanNonStreamingMessage with vacuous greeting
+    // Vacuous greeting must be stripped and NEVER replaced with synthetic template code
     const rawMsg = {
       role: "assistant",
       content: "Hi! How can I help you today?",
@@ -29,13 +30,13 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
 
     const cleaned = cleanNonStreamingMessage(rawMsg, "DeepSeek V4.1 Flash", "DeepSeek", false, true, messages);
     expect(CodingIntentDetector.isGenericGreeting(cleaned.content)).toBe(false);
-    expect(cleaned.content).toContain("import React");
-    expect(cleaned.content).toContain("App");
-    expect(cleaned.content).toContain("export default");
+    expect(cleaned.content).not.toContain("ProRouter Developer Solution");
+    expect(cleaned.content).not.toContain("ProRouter React Application");
+    expect(cleaned.content).toBe("");
   });
 
-  // ── Scenario 2: Single-File Todo Application with CRUD & localStorage ──
-  it("Scenario 2: Correctly identifies and fulfills full Todo application with CRUD and localStorage", () => {
+  // ── Scenario 2: Todo Coding Intent Detection & Fallback Disabled ──
+  it("Scenario 2: Classifies Todo application requests and disables synthetic template generation", () => {
     const messages = [
       { role: "user", content: "Write a complete Todo application in a single file with CRUD and localStorage persistence." },
     ];
@@ -43,12 +44,8 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     const intent = CodingIntentDetector.detectIntent(messages);
     expect(["code_generation", "file_operation"]).toContain(intent);
 
-    const fallbackCode = CodingIntentDetector.generateFallbackCode(messages);
-    expect(fallbackCode).toContain("useState");
-    expect(fallbackCode).toContain("localStorage");
-    expect(fallbackCode).toContain("addTodo");
-    expect(fallbackCode).toContain("toggleTodo");
-    expect(fallbackCode).toContain("deleteTodo");
+    expect(CodingIntentDetector.generateFallbackCode(messages)).toBe("");
+    expect(RoutingCodingIntentDetector.generateFallbackCode(messages)).toBe("");
   });
 
   // ── Scenario 3: JavaScript Bug Fixing & Root Cause Explanation ──
@@ -126,28 +123,27 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
   });
 
   // ── Scenario 7: Streaming SSE Delivery & Reasoning Separation ──
-  it("Scenario 7: StreamChunkProcessor separates reasoning and prevents vacuous greeting termination", () => {
+  it("Scenario 7: StreamChunkProcessor separates reasoning without fabricating synthetic code", () => {
     const processor = new StreamChunkProcessor();
     processor.isCodingTask = true;
     processor.requestedMessages = [{ role: "user", content: "Create a React JS file App.jsx" }];
 
-    // Simulate upstream chunk with think tag and reasoning
+    // Simulate upstream chunk with think tag and real React output
     const delta1 = {
-      content: "<think>Let me generate the React component.</think>Hi! How can I help you today?",
+      content: "<think>Let me generate the React component.</think>export default function App() { return <main>Ready</main>; }",
     };
 
     const out1 = processor.processDelta(delta1, "DeepSeek V4.1 Flash", "DeepSeek", false);
     expect(out1.reasoning_content).toContain("Let me generate the React component");
+    expect(out1.content).toContain("export default function App()");
 
-    // Flush delta should detect that only a generic greeting was emitted and synthesize valid code
     const tail = processor.flushDelta(false);
-    expect(tail.content).toBeDefined();
-    expect(tail.content).toContain("import React");
-    expect(tail.content).toContain("App");
+    expect(tail.content ?? "").not.toContain("ProRouter Developer Solution");
+    expect(tail.content ?? "").not.toContain("ProRouter React Application");
   });
 
-  // ── Scenario 8: Non-Streaming Greeting Stripping & Fallback ──
-  it("Scenario 8: cleanNonStreamingMessage strips greetings when code follows or replaces vacuous greeting", () => {
+  // ── Scenario 8: Non-Streaming Greeting Stripping & Lossless Coding Output ──
+  it("Scenario 8: cleanNonStreamingMessage strips greetings when code follows and never emits fake boilerplate", () => {
     const messages = [{ role: "user", content: "creat single reacet js file one" }];
 
     // Case A: Greeting followed by code
@@ -159,14 +155,14 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     expect(cleanedA.content).not.toMatch(/^Hello! How can I help you today\?/i);
     expect(cleanedA.content).toContain("```jsx");
 
-    // Case B: Pure vacuous greeting
+    // Case B: Pure vacuous greeting produces empty rather than synthetic template code
     const msgVacuous = {
       role: "assistant",
       content: "Hi! How can I help you today?",
     };
     const cleanedB = cleanNonStreamingMessage(msgVacuous, "DeepSeek V4.1 Flash", "DeepSeek", false, true, messages);
     expect(CodingIntentDetector.isGenericGreeting(cleanedB.content)).toBe(false);
-    expect(cleanedB.content).toContain("import React");
+    expect(cleanedB.content).toBe("");
   });
 
   // ── Scenario 9: Prompt Fidelity for External Coding Agents ──
@@ -220,8 +216,8 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     }
   });
 
-  // ── Scenario 12: Resilient Fix Handling and Code Synthesis for Coding Tasks ──
-  it("Scenario 12: Generates actionable project fix when user commands 'fix' after project context", () => {
+  // ── Scenario 12: Coding Tasks Never Emit Synthetic Template Code ──
+  it("Scenario 12: Never returns ProRouter Developer Solution or canned fix text on coding prompts", () => {
     const fixMessages = [
       {
         role: "user",
@@ -236,15 +232,13 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     expect(CodingIntentDetector.isCodingIntent(fixMessages)).toBe(true);
     expect(CodingIntentDetector.detectIntent(fixMessages)).toBe("code_debugging");
 
-    // Vacuous "Got it." or "Not answerable." is replaced with project fix
     const cleaned = cleanNonStreamingMessage({ role: "assistant", content: "Got it." }, "DeepSeek V4.1 Flash", "DeepSeek", false, true, fixMessages);
-    expect(cleaned.content).toContain("free-pi-cli");
-    expect(cleaned.content).toContain("bun run gateway");
-    expect(cleaned.content).not.toBe("Got it.");
+    expect(cleaned.content).not.toContain("ProRouter Developer Solution");
+    expect(cleaned.content).toBe("");
   });
 
-  // ── Scenario 13: Streaming Buffer Eliminates Vacuous Leakage ──
-  it("Scenario 13: StreamChunkProcessor detects vacuous acknowledgments and flushes valid greeting or code", () => {
+  // ── Scenario 13: Streaming Buffer Greeting Handling Without Code Fabrication ──
+  it("Scenario 13: StreamChunkProcessor normalizes vacuous greeting turns and never fabricates placeholder code on coding turns", () => {
     // Subtest A: Greeting input with "Got it." stream
     const procGreeting = new StreamChunkProcessor();
     procGreeting.isCodingTask = false;
@@ -255,7 +249,7 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     const flushedGreeting = procGreeting.flushDelta();
     expect(flushedGreeting.content).toContain("Hello! How can I assist you with your project today?");
 
-    // Subtest B: Coding task with "Not answerable." stream
+    // Subtest B: Coding task never injects synthetic React or Solution boilerplate
     const procCoding = new StreamChunkProcessor();
     procCoding.isCodingTask = true;
     procCoding.requestedMessages = [{ role: "user", content: "Create App.jsx in React" }];
@@ -263,7 +257,8 @@ describe("DeepSeek Coding Capabilities & Model Integration Regression Suite", ()
     procCoding.processDelta({ content: "Not " }, "DeepSeek V4.1 Flash", "DeepSeek");
     procCoding.processDelta({ content: "answerable." }, "DeepSeek V4.1 Flash", "DeepSeek");
     const flushedCoding = procCoding.flushDelta();
-    expect(flushedCoding.content).toContain("import React");
+    expect(flushedCoding.content ?? "").not.toContain("ProRouter Developer Solution");
+    expect(flushedCoding.content ?? "").not.toContain("ProRouter React Application");
   });
 
   // ── Scenario 14: Greeting Turn Precedence in Multi-Turn Coding Sessions ──

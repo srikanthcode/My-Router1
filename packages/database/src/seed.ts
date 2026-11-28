@@ -1,4 +1,4 @@
-import { and, eq, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
   closeDb,
   getDb,
@@ -95,7 +95,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     {
       slug: "free", name: "Free", tagline: "Explore frontier AI models with zero upfront commitment.",
       pricePaise: 0, freeRpm: 10, freeRph: 100, freeRpd: 1000, concurrency: 2, queuePriority: 10, sortOrder: 10,
-      features: ["Access to all 500+ AI models", "1,000,000 free tokens/day (DeepSeek V4.1 & Qwen 27B)", "Standard queue priority", "Streaming SSE responses", "OpenAI SDK compatible endpoint"],
+      features: ["Access to all curated frontier AI models", "1,000,000 free tokens/day (DeepSeek V4.1 & Qwen 27B)", "Standard queue priority", "Streaming SSE responses", "OpenAI SDK compatible endpoint"],
     },
     {
       slug: "builder", name: "Builder", tagline: "For developers and early-stage products building with AI.",
@@ -813,9 +813,9 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     await db.insert(pricingVersions).values({
       modelId: existing.id,
       version: 1,
-      inputUsdCentsPerMillion: Math.round(m.input / 80),
-      outputUsdCentsPerMillion: Math.round(m.output / 80),
-      cachedInputUsdCentsPerMillion: Math.round(m.input / 160),
+      inputUsdCentsPerMillion: Math.round(m.input / 85),
+      outputUsdCentsPerMillion: Math.round(m.output / 85),
+      cachedInputUsdCentsPerMillion: Math.round(m.input / 170),
       inputPaisePerMillion: m.input,
       outputPaisePerMillion: m.output,
       targetGrossMarginBp: 3000,
@@ -875,69 +875,22 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     }
   }
 
-  // ── Pro alias series (§75) — 300 public aliases on the shared gateway ───
-  const aliasProvider = providerBySlug.get(PRO_ALIAS_PROVIDER_SLUG);
-  if (!aliasProvider) {
-    console.warn(`[prorouter] Provider '${PRO_ALIAS_PROVIDER_SLUG}' missing — skipping Pro aliases.`);
-  } else {
-    for (const alias of PRO_ALIASES) {
-      const [inserted] = await db
-        .insert(models)
-        .values({
-          slug: alias.slug,
-          canonicalModelId: "deepseek-v4.1-flash",
-          name: alias.name,
-          description: alias.description,
-          providerId: aliasProvider.id,
-          type: "chat",
-          status: "active",
-          pricingStatus: "approved",
-          isFree: false, // Strict policy: Pro aliases are paid
-          pricingTier: alias.pricingTier,
-          contextWindow: PRO_ALIAS_CONTEXT_WINDOW,
-          maxOutputTokens: PRO_ALIAS_MAX_OUTPUT_TOKENS,
-          rank: alias.rank,
-          popularity: alias.popularity,
-          rating: 85,
-        })
-        .onConflictDoNothing({ target: models.slug })
-        .returning();
-
-      const existing = inserted ?? (await db.select().from(models).where(eq(models.slug, alias.slug)))[0];
-      if (!existing) continue;
-
-      // Seed alias mapping in model_aliases table
-      await db.insert(modelAliases).values({
-        alias: alias.slug,
-        canonicalModelId: "deepseek-v4.1-flash",
-        providerSlug: PRO_ALIAS_PROVIDER_SLUG,
-        description: alias.description,
-        active: true,
-      }).onConflictDoNothing();
-
-      await db.insert(modelCapabilities).values({
-        modelId: existing.id,
-        modalities: ["text", "image"],
-        streaming: true,
-        toolCalls: true,
-        structuredOutputs: true,
-        reasoning: true,
-        vision: true,
-        imageGeneration: false,
-        audio: false,
-        jsonMode: true,
-      }).onConflictDoNothing({ target: modelCapabilities.modelId });
-
-      await db.insert(modelProviders).values({
-        modelId: existing.id,
-        providerId: aliasProvider.id,
-        providerModelId: alias.upstreamModelId || PRO_ALIAS_UPSTREAM_MODEL_ID,
-        priority: 10,
-        status: "active",
-      }).onConflictDoNothing({ target: [modelProviders.modelId, modelProviders.providerId] });
-    }
-    console.log(`[prorouter] Pro alias series ready: ${PRO_ALIASES.length} models.`);
+  // ── Pro alias routing entries (§75) — keep alias lookup active without bloating public models ───
+  const proAliasSlugs = PRO_ALIASES.map((a) => a.slug);
+  if (proAliasSlugs.length > 0) {
+    await db.update(models).set({ status: "archived" }).where(inArray(models.slug, proAliasSlugs));
   }
+
+  for (const alias of PRO_ALIASES) {
+    await db.insert(modelAliases).values({
+      alias: alias.slug,
+      canonicalModelId: "deepseek-v4.1-flash",
+      providerSlug: PRO_ALIAS_PROVIDER_SLUG,
+      description: alias.description,
+      active: true,
+    }).onConflictDoNothing();
+  }
+  console.log(`[prorouter] Pro alias lookup table ready: ${PRO_ALIASES.length} aliases (archived from public catalog).`);
 
   // ── Astra campaign (§25) — configured from env/admin ───────────────────
   await db.insert(astraCampaigns).values({

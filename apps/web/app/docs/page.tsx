@@ -8,7 +8,7 @@ import { cx } from "@/lib/api";
 export const metadata: Metadata = {
   title: "ProRouter API Documentation — OpenAI-Compatible API Quickstart & Reference",
   description:
-    "Developer documentation for ProRouter API. One drop-in OpenAI-compatible endpoint for 480+ AI models. Chat completions, streaming SSE, tool calling, JSON mode, and unified API keys.",
+    "Developer documentation for ProRouter API. One drop-in OpenAI and Anthropic compatible endpoint for frontier AI models. Chat completions, streaming SSE, tool calling, JSON mode, and unified API keys.",
   keywords: [
     "ProRouter docs",
     "OpenAI compatible API docs",
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "ProRouter API Documentation — OpenAI-Compatible API Quickstart",
-    description: "One OpenAI-compatible endpoint. Point your existing SDK at ProRouter and access 480+ AI models.",
+    description: "One OpenAI & Anthropic compatible endpoint. Point your SDK or coding agent at ProRouter and access frontier AI models.",
     url: "https://www.prorouter.in/docs",
     siteName: "ProRouter",
     type: "website",
@@ -32,6 +32,7 @@ export const metadata: Metadata = {
 
 const nav = [
   { id: "quickstart", label: "Quickstart" },
+  { id: "agents", label: "Coding Agents" },
   { id: "authentication", label: "Authentication" },
   { id: "chat", label: "Chat completions" },
   { id: "streaming", label: "Streaming" },
@@ -62,11 +63,11 @@ function Section({ id, title, children }: { id: string; title: string; children:
   );
 }
 
-const quickstart = `curl https://prorouter.in/v1/chat/completions \\
+const quickstart = `curl https://www.prorouter.in/v1/chat/completions \\
   -H "Authorization: Bearer $PROROUTER_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "beam",
+    "model": "deepseek-v4.1-flash",
     "messages": [{ "role": "user", "content": "Hello!" }]
   }'`;
 
@@ -74,7 +75,7 @@ const sdk = `import OpenAI from "openai";
 
 const client = new OpenAI({
   apiKey: process.env.PROROUTER_API_KEY,
-  baseURL: "https://prorouter.in/v1",
+  baseURL: "https://www.prorouter.in/v1",
 });
 
 const res = await client.chat.completions.create({
@@ -83,6 +84,10 @@ const res = await client.chat.completions.create({
 });
 
 console.log(res.choices[0].message.content);`;
+
+const claudeCodeSnippet = `export ANTHROPIC_BASE_URL="https://www.prorouter.in"
+export ANTHROPIC_AUTH_TOKEN="$PROROUTER_API_KEY"
+claude --model deepseek-v4.1-flash`;
 
 const streamSnippet = `const stream = await client.chat.completions.create({
   model: "beam",
@@ -130,6 +135,16 @@ export default function DocsPage() {
               <Block filename="terminal" code={quickstart} />
               <p>Or use the official OpenAI SDK — only the base URL and key change.</p>
               <Block filename="quickstart.ts" code={sdk} />
+            </Section>
+
+            <Section id="agents" title="Coding Agents (Cline, Kilo Code, Claude Code, Cursor, Aider)">
+              <p>
+                Use <code className={chip}>https://www.prorouter.in/v1</code> (note the <code className={chip}>www.</code> prefix) as your OpenAI-compatible Base URL in Cline, Kilo Code, Cursor, or Aider. Native <code className={chip}>tools</code>, <code className={chip}>tool_choice</code>, <code className={chip}>delta.tool_calls</code>, and XML tool tags pass through losslessly.
+              </p>
+              <p>
+                For Claude Code or Anthropic SDK clients targeting <code className={chip}>POST /v1/messages</code> with <code className={chip}>x-api-key</code> or Bearer auth, point the base URL to the site root:
+              </p>
+              <Block filename="claude-code.sh" code={claudeCodeSnippet} />
             </Section>
 
             <Section id="authentication" title="Authentication">

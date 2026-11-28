@@ -207,7 +207,7 @@ export default function AdminPage() {
           </div>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-fg">ProRouter Admin Console</h1>
           <p className="mt-1 text-xs text-mut">
-            Live business telemetry, 500+ model pricing allocations, 48-hour promotional launch campaigns, and user credit accounting.
+            Live business telemetry, {MODEL_PROFILES_500.length}-model pricing allocations, 48-hour promotional launch campaigns, and user credit accounting.
           </p>
         </div>
 
@@ -229,7 +229,7 @@ export default function AdminPage() {
               activeTab === "models" ? "bg-accent text-accent-ink font-semibold shadow-xs" : "text-mut hover:text-fg"
             )}
           >
-            500+ Models ({MODEL_PROFILES_500.length})
+            Catalog Models ({MODEL_PROFILES_500.length})
           </button>
           <button
             onClick={() => setActiveTab("users")}
@@ -292,7 +292,7 @@ export default function AdminPage() {
                 <IndianRupee className="size-4 text-accent" />
               </div>
               <div className="mt-2 font-mono text-2xl font-bold text-fg">₹1,42,850</div>
-              <div className="mt-1 text-[11px] text-accent font-mono">$1,785.62 USD</div>
+              <div className="mt-1 text-[11px] text-accent font-mono">$1,680.59 USD</div>
             </Card>
 
             <Card className="p-4">
@@ -366,7 +366,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* ── TAB 2: 500+ MODEL REGISTRY & BUSINESS METRICS ── */}
+      {/* ── TAB 2: CURATED MODEL REGISTRY & BUSINESS METRICS ── */}
       {activeTab === "models" && (
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
@@ -374,7 +374,7 @@ export default function AdminPage() {
               <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-mut" />
               <input
                 type="search"
-                placeholder="Search across 500+ models by name, slug, provider..."
+                placeholder="Search across curated models by name, slug, provider..."
                 value={modelSearch}
                 onChange={(e) => setModelSearch(e.target.value)}
                 className="w-full rounded-lg border border-line bg-panel pl-9 pr-3 py-2 text-xs text-fg placeholder:text-mut2 focus:border-accent focus:outline-none"
@@ -383,7 +383,7 @@ export default function AdminPage() {
             <div className="flex items-center gap-2">
               <Button onClick={exportPricingCsv} className="gap-1.5 text-xs">
                 <Download className="size-3.5" />
-                Export 500 Pricing CSV
+                Export Catalog Pricing CSV
               </Button>
             </div>
           </div>
@@ -670,7 +670,7 @@ export default function AdminPage() {
                   onChange={(e) => setUsdToInrRate(Number(e.target.value))}
                   className="w-full rounded-lg border border-line bg-panel px-3 py-1.5 text-xs font-mono text-fg focus:border-accent focus:outline-none"
                 />
-                <p className="text-[11px] text-mut">₹80.00 display rate gives Indian developers a localized ~10% discount.</p>
+                <p className="text-[11px] text-mut">₹85.00 display policy rate avoids international 3.5% FX card markups for Indian developers.</p>
               </div>
             </div>
 

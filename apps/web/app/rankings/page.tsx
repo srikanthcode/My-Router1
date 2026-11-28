@@ -24,7 +24,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     title: "AI Model Leaderboard & Rankings | ProRouter",
-    description: "Live LLM rankings by rating, popularity, context window, and price across 480+ AI models.",
+    description: "Live LLM rankings by rating, popularity, context window, and price across curated frontier AI models.",
     url: "https://www.prorouter.in/rankings",
     siteName: "ProRouter",
     type: "website",

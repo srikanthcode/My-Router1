@@ -137,10 +137,10 @@ export function formatDualPricing(inputPaise: number, outputPaise: number, isFre
 
   const inrIn = inputPaise / 100;
   const inrOut = outputPaise / 100;
-  // Localized Indian Developer Rate: ₹80 INR = $1.00 USD (standard global FX is ~₹88 INR)
-  // Indian builders get a direct ~10% discount on raw token charges and avoid 3.5% international card fees
-  const usdIn = inrIn / 80;
-  const usdOut = inrOut / 80;
+  // Localized Indian Developer Rate: ₹85.00 INR = $1.00 USD
+  // Indian builders get transparent INR billing without 3.5% international FX card fees
+  const usdIn = inrIn / 85;
+  const usdOut = inrOut / 85;
 
   return {
     inrInput: `₹${inrIn.toFixed(2)}`,
@@ -309,7 +309,7 @@ export const DEFAULT_PLANS_USD: PlanSummary[] = [
     concurrency: 2,
     queuePriority: 10,
     features: [
-      "Access to all 500+ AI models",
+      "Access to all curated frontier AI models",
       "1,000,000 free tokens/day (DeepSeek V4.1 & Qwen 27B)",
       "Standard queue priority",
       "Streaming SSE responses",
@@ -381,7 +381,7 @@ export const DEFAULT_PLANS: PlanSummary[] = [
     concurrency: 2,
     queuePriority: 10,
     features: [
-      "Access to all 500+ AI models",
+      "Access to all curated frontier AI models",
       "1,000,000 free tokens/day (DeepSeek V4.1 & Qwen 27B)",
       "Standard queue priority",
       "Streaming SSE responses",

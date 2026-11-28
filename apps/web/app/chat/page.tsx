@@ -101,13 +101,13 @@ const mappedProfiles: ModelMeta[] = MODEL_PROFILES_500.map((m) => ({
   description: m.description || "",
   context: m.contextWindow ? String(Math.round(m.contextWindow / 1000)) + "k context" : "128k context",
   badge: m.isFree ? "Free" : (m.rank && m.rank <= 10 ? "Top Pick" : undefined),
-  inputPer1M: Number(((m.pricing?.inputPerMillion || 0) / 80).toFixed(4)),
-  outputPer1M: Number(((m.pricing?.outputPerMillion || 0) / 80).toFixed(4)),
+  inputPer1M: Number(((m.pricing?.inputPerMillion || 0) / 85).toFixed(4)),
+  outputPer1M: Number(((m.pricing?.outputPerMillion || 0) / 85).toFixed(4)),
 }));
 
 const seenSlugs = new Set<string>();
 export const CATALOG_MODELS: ModelMeta[] = [];
-for (const m of [...PRO_ROUTER_TIERED_MODELS, ...mappedProfiles]) {
+for (const m of mappedProfiles) {
   if (!seenSlugs.has(m.slug)) {
     seenSlugs.add(m.slug);
     CATALOG_MODELS.push(m);
@@ -273,18 +273,19 @@ const PROMPT_SUGGESTIONS = [
 
 export default function ChatPage() {
   const toast = useToast();
+  const [catalogModels, setCatalogModels] = useState<ModelMeta[]>(CATALOG_MODELS);
   const [modelSearch, setModelSearch] = useState("");
   const filteredModels = useMemo(() => {
-    if (!modelSearch.trim()) return CATALOG_MODELS;
+    if (!modelSearch.trim()) return catalogModels;
     const q = modelSearch.toLowerCase().trim();
-    return CATALOG_MODELS.filter(
+    return catalogModels.filter(
       (m) =>
         m.name.toLowerCase().includes(q) ||
         m.slug.toLowerCase().includes(q) ||
         m.provider.toLowerCase().includes(q) ||
         m.category.toLowerCase().includes(q)
     );
-  }, [modelSearch]);
+  }, [catalogModels, modelSearch]);
   const modelCategories = useMemo(() => {
     const cats: string[] = [];
     for (const m of filteredModels) {
@@ -292,7 +293,7 @@ export default function ChatPage() {
     }
     return cats;
   }, [filteredModels]);
-  const [model, setModel] = useState("kimi-k2.7-code");
+  const [model, setModel] = useState("deepseek-v4.1-flash");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -314,6 +315,43 @@ export default function ChatPage() {
   const [showUpgradeModal, setShowUpgradeModal] = useState<boolean>(false);
 
   useEffect(() => {
+    // Sync initial model from ?model=<slug> URL parameter if present
+    try {
+      const requested = new URLSearchParams(window.location.search).get("model")?.trim();
+      if (requested) setModel(requested);
+    } catch { }
+
+    // Fetch live model catalog from /v1/models
+    fetch("/v1/models")
+      .then(async (res) => {
+        if (!res.ok) return null;
+        const json = await res.json();
+        return Array.isArray(json?.data) ? json.data : null;
+      })
+      .then((liveList: Array<{ id?: string; name?: string; owned_by?: string; context_length?: number }> | null) => {
+        if (!liveList || liveList.length === 0) return;
+        const known = new Map(CATALOG_MODELS.map((m) => [m.slug, m]));
+        const next: ModelMeta[] = [...CATALOG_MODELS];
+        for (const item of liveList) {
+          const slug = String(item?.id || "").trim();
+          if (!slug || known.has(slug) || /^pr-.*-pro$/.test(slug)) continue;
+          const entry: ModelMeta = {
+            slug,
+            name: String(item.name || slug),
+            provider: String(item.owned_by || "PRO ROUTER").toUpperCase(),
+            category: "General Purpose",
+            description: `${String(item.name || slug)} served through the ProRouter unified gateway.`,
+            context: item.context_length ? `${Math.round(item.context_length / 1000)}k` : "128k",
+            inputPer1M: 0,
+            outputPer1M: 0,
+          };
+          known.set(slug, entry);
+          next.push(entry);
+        }
+        setCatalogModels(next);
+      })
+      .catch(() => { });
+
     // Check local storage for free requests used
     try {
       const stored = window.localStorage.getItem("prorouter_free_requests_used");
@@ -350,8 +388,8 @@ export default function ChatPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const selectedModelMeta = useMemo(() => {
-    return CATALOG_MODELS.find((m) => m.slug === model) || CATALOG_MODELS[0];
-  }, [model]);
+    return catalogModels.find((m) => m.slug === model) || catalogModels[0];
+  }, [catalogModels, model]);
 
   useEffect(() => {
     let saved = "";
@@ -404,7 +442,7 @@ export default function ChatPage() {
 
   const copyMessage = useCallback(async (id: string, text: string) => {
     try {
-      await navigator.clipboard.writeText(cleanAsterisks(text));
+      await navigator.clipboard.writeText(text);
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 1600);
     } catch { }
@@ -516,15 +554,13 @@ export default function ChatPage() {
               const delta = chunk.choices?.[0]?.delta?.content;
               if (delta) {
                 acc += delta;
-                let cleanAcc = cleanAsterisks(acc);
-                cleanAcc = sanitizeModelPersona(cleanAcc, selectedModelMeta.name, selectedModelMeta.provider);
                 setMessages((cur) => {
                   const copy = [...cur];
                   const lastIdx = copy.length - 1;
                   if (lastIdx >= 0) {
                     copy[lastIdx] = {
                       ...copy[lastIdx],
-                      content: cleanAcc,
+                      content: acc,
                     };
                   }
                   return copy;
@@ -604,12 +640,12 @@ export default function ChatPage() {
               </div>
 
               {/* Instant Search Filter */}
-              <span className="hidden xl:inline-flex items-center rounded-full bg-accent/10 border border-accent/30 px-2 py-0.5 font-mono text-[10px] text-accent font-medium">500+ Models</span>
+              <span className="hidden xl:inline-flex items-center rounded-full bg-accent/10 border border-accent/30 px-2 py-0.5 font-mono text-[10px] text-accent font-medium">{catalogModels.length} Models</span>
               <div className="relative hidden sm:block">
                 <Search className="pointer-events-none absolute left-2 top-2 size-3 text-mut" />
                 <input
                   type="text"
-                  placeholder="Filter 500+ models..."
+                  placeholder="Filter models..."
                   value={modelSearch}
                   onChange={(e) => setModelSearch(e.target.value)}
                   className="h-7.5 w-36 lg:w-44 rounded-md border border-line2 bg-ink2 pl-6 pr-2 font-mono text-[11px] text-fg placeholder:text-mut2 focus:border-accent focus:outline-none transition-all duration-200"
@@ -692,14 +728,14 @@ export default function ChatPage() {
                     {/* Quick popular model switcher pills */}
                     <div className="mt-3.5 pt-3 border-t border-line/60">
                       <div className="text-[10px] font-medium text-mut2 mb-1.5 font-mono uppercase tracking-wider">
-                        Popular Models (500+ Available in Header Selector):
+                        Quick Select Models:
                       </div>
                       <div className="flex flex-wrap justify-center gap-1.5">
                         {[
-                          { name: "Pro Router Zenith", slug: "pr-zenith" },
+                          { name: "DeepSeek V4.1 Flash", slug: "deepseek-v4.1-flash" },
+                          { name: "Qwen3.8-27B", slug: "qwen3.8-27b" },
                           { name: "Claude Sonnet", slug: "claude-sonnet" },
                           { name: "GPT-4o", slug: "gpt-4o" },
-                          { name: "DeepSeek Flash", slug: "deepseek-v4.1-flash-1017" },
                           { name: "Kimi K2.7 Code", slug: "kimi-k2.7-code" },
                           { name: "Qwen 2.5 Coder", slug: "qwen-2.5-coder-32b-instruct" },
                           { name: "Llama 3.3 70B", slug: "meta-llama/llama-3.3-70b-instruct" },
@@ -928,7 +964,7 @@ export default function ChatPage() {
                     </div>
                     <div className="mt-2 text-center">
                       <Link href="/models" className="inline-flex items-center gap-1 text-[10px] font-mono text-accent hover:underline">
-                        Browse all 500+ models in Directory →
+                        Browse all {catalogModels.length} models in Directory →
                       </Link>
                     </div>
                   </div>

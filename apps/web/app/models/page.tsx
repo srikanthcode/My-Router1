@@ -19,9 +19,9 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 export const metadata: Metadata = {
-  title: "AI Model Directory — 500+ AI Models & LLMs | ProRouter",
+  title: "AI Model Directory — Frontier AI Models & LLMs | ProRouter",
   description:
-    "Explore 500+ AI models including DeepSeek V4.1 Flash, Qwen3.8-27B, Claude 3.7 Sonnet, Gemini Pro, and OpenAI. Compare real-time token pricing in INR and USD with India localized developer rates.",
+    "Explore curated frontier AI models including DeepSeek V4.1 Flash, Qwen3.8-27B, Claude 3.7 Sonnet, Gemini Pro, and OpenAI. Compare real-time token pricing in INR and USD with India localized developer rates.",
   keywords: [
     "AI models",
     "LLM directory",
@@ -38,9 +38,9 @@ export const metadata: Metadata = {
     canonical: "https://www.prorouter.in/models",
   },
   openGraph: {
-    title: "AI Model Directory — 500+ AI Models & APIs | ProRouter",
+    title: "AI Model Directory — Frontier AI Models & APIs | ProRouter",
     description:
-      "Explore 500+ AI models with unified API keys and transparent token pricing in INR & USD.",
+      "Explore curated frontier AI models with unified API keys and transparent token pricing in INR & USD.",
     url: "https://www.prorouter.in/models",
     siteName: "ProRouter",
     type: "website",
@@ -90,8 +90,8 @@ export default async function ModelsPage({ searchParams }: { searchParams: Searc
     <PublicShell>
       <PageHeader
         eyebrow="Universal Model Marketplace"
-        title="500+ AI Models. One Unified Marketplace."
-        subtitle="Transparent per-million token pricing in INR and USD. Zero latency overhead and intelligent failover."
+        title="Curated Frontier AI Models. One Unified Gateway."
+        subtitle="Transparent per-million token pricing in INR and USD. Zero latency overhead, native coding-agent tool calling, and intelligent failover."
       />
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
@@ -130,7 +130,7 @@ export default async function ModelsPage({ searchParams }: { searchParams: Searc
                 48 Hours Free: DeepSeek V4.1 Flash & Qwen3.8-27B
               </h2>
               <p className="text-xs text-mut leading-relaxed">
-                Exclusively DeepSeek V4.1 Flash and Qwen3.8-27B receive 48 hours of free promotional access upon user activation up to daily promotional quota. All other 498+ models feature transparent, low-margin developer pricing with no hidden markups.
+                Exclusively DeepSeek V4.1 Flash and Qwen3.8-27B receive 48 hours of free promotional access upon user activation up to daily promotional quota. All other {Math.max(models.length - 2, 0)} paid models feature transparent, low-margin developer pricing with no hidden markups.
               </p>
             </div>
 
@@ -148,6 +148,33 @@ export default async function ModelsPage({ searchParams }: { searchParams: Searc
                 <span>Test Qwen 3.8</span>
               </Link>
             </div>
+          </div>
+        </div>
+
+        {/* ── Coding Agents & Unified API Quickstart Banner ── */}
+        <div className="mb-6 rounded-xl border border-line bg-panel2/60 p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-fg">
+              <span>Ready for Cline, Kilo Code, Claude Code, Cursor &amp; Aider</span>
+              <span className="rounded bg-good/15 border border-good/30 px-2 py-0.5 font-mono text-[10px] text-good">Native Tool Calls &amp; Anthropic Bridge</span>
+            </div>
+            <p className="text-[12px] text-mut">
+              OpenAI Base URL: <code className="rounded bg-ink2 px-1.5 py-0.5 font-mono text-[11px] text-accent">https://www.prorouter.in/v1</code> · Anthropic Base URL: <code className="rounded bg-ink2 px-1.5 py-0.5 font-mono text-[11px] text-accent">https://www.prorouter.in</code>
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <Link
+              href="/docs#agents"
+              className="inline-flex h-8 items-center rounded-lg border border-line2 bg-white/[0.04] px-3 text-xs font-medium text-fg hover:bg-white/[0.08] transition-colors"
+            >
+              Coding Agent Setup
+            </Link>
+            <Link
+              href="/dashboard/keys"
+              className="inline-flex h-8 items-center rounded-lg bg-accent px-3 text-xs font-semibold text-accent-ink hover:bg-accent2 transition-colors"
+            >
+              Create API Key
+            </Link>
           </div>
         </div>
 

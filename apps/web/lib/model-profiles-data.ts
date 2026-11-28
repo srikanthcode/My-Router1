@@ -1,5 +1,5 @@
 /**
- * Pre-compiled 500+ Frontend Model Profiles dataset.
+ * Pre-compiled curated Frontend Model Profiles dataset.
  * Synchronized with the central dynamic pricing engine and ModelProfileRegistry.
  * STRICT POLICY: Only deepseek-v4.1-flash and qwen3.8-27b receive 48h free promotion.
  */
@@ -2090,7 +2090,7 @@ export const ALL_MODELS_500: WebModelEntry[] = MODEL_PROFILES_500.map((m) => ({
   category: m.category,
   description: m.description,
   pricing: {
-    input_usd_per_million: m.customerPricingUsd?.inputPerMillion ?? (m.pricing.inputPerMillion / 8000),
-    output_usd_per_million: m.customerPricingUsd?.outputPerMillion ?? (m.pricing.outputPerMillion / 8000),
+    input_usd_per_million: m.customerPricingUsd?.inputPerMillion ?? (m.pricing.inputPerMillion / 8500),
+    output_usd_per_million: m.customerPricingUsd?.outputPerMillion ?? (m.pricing.outputPerMillion / 8500),
   },
 }));
