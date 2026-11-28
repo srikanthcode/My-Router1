@@ -66,6 +66,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 2000, output: 8000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/openai/gpt-4.1": {
     id: "openrouter/openai/gpt-4.1",
@@ -96,6 +99,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 2000, output: 8000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openai/gpt-4o": {
     id: "openai/gpt-4o",
@@ -126,6 +132,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 2000, output: 8000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/openai/gpt-4o": {
     id: "openrouter/openai/gpt-4o",
@@ -156,6 +165,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 2000, output: 8000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   // ── OpenRouter Frontier Flagship Coding Models ──
   "openrouter/anthropic/claude-3.5-sonnet": {
@@ -187,6 +199,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 2400, output: 12000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/anthropic/claude-3-opus": {
     id: "openrouter/anthropic/claude-3-opus",
@@ -212,6 +227,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 12000, output: 60000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/google/gemini-2.0-flash-001": {
     id: "openrouter/google/gemini-2.0-flash-001",
@@ -235,6 +253,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 120, output: 480 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsVision: true,
+    supportsReasoning: true,
   },
   "openrouter/x-ai/grok-2-1212": {
     id: "openrouter/x-ai/grok-2-1212",
@@ -257,6 +279,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 1600, output: 8000 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsVision: true,
+    supportsReasoning: true,
   },
   "openrouter/mistralai/mistral-large-2411": {
     id: "openrouter/mistralai/mistral-large-2411",
@@ -279,6 +305,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 1600, output: 4800 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsVision: true,
+    supportsReasoning: true,
   },
   // ── 1. GPT OSS Models ──
   "nabh/gpt-oss-20b": {
@@ -299,6 +329,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 64, output: 192 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "groq/gpt-oss-20b": {
     id: "groq/gpt-oss-20b",
@@ -318,6 +351,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 64, output: 192 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "groq/gpt-oss-120b": {
     id: "groq/gpt-oss-120b",
@@ -339,6 +375,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 240, output: 960 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
 
   // ── 2. NVIDIA Nemotron Models ──
@@ -364,6 +403,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 560, output: 1680 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/nemotron-3-ultra-550b-a55b": {
     id: "openrouter/nemotron-3-ultra-550b-a55b",
@@ -387,6 +429,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 560, output: 1680 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "requesty/nemotron-3-nano-omni-30b-a3b-reasoning": {
     id: "requesty/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -408,6 +453,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 120, output: 360 },
+    supportsNativeTools: false,
+    supportsStreamingTools: true,
+    supportsVision: true,
+    supportsReasoning: true,
   },
   "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning": {
     id: "openrouter/nemotron-3-nano-omni-30b-a3b-reasoning",
@@ -429,6 +478,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 120, output: 360 },
+    supportsNativeTools: false,
+    supportsStreamingTools: true,
+    supportsVision: true,
+    supportsReasoning: true,
   },
   "requesty/nemotron-3.5-lightning-30b-a3b": {
     id: "requesty/nemotron-3.5-lightning-30b-a3b",
@@ -447,6 +500,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 80, output: 240 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/nemotron-3.5-lightning": {
     id: "openrouter/nemotron-3.5-lightning",
@@ -465,6 +521,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 80, output: 240 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "openrouter/nemotron-3.5-super-vl": {
     id: "openrouter/nemotron-3.5-super-vl",
@@ -483,6 +542,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 160, output: 480 },
+    supportsNativeTools: false,
+    supportsStreamingTools: true,
+    supportsVision: true,
+    supportsReasoning: true,
   },
 
   // ── 3. High-Performance Open Weights ──
@@ -505,6 +568,10 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: true, // Promotional canonical model
     costPaisePerMillion: { input: 160, output: 640 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsVision: false,
+    supportsReasoning: true,
   },
   "requesty/gemma-4-31b-it": {
     id: "requesty/gemma-4-31b-it",
@@ -524,6 +591,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 112, output: 336 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "requesty/leanstral-1-5": {
     id: "requesty/leanstral-1-5",
@@ -542,6 +612,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 96, output: 288 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
   "requesty/ling-3.1-flash": {
     id: "requesty/ling-3.1-flash",
@@ -559,6 +632,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 64, output: 192 },
+    supportsNativeTools: false,
+    supportsStreamingTools: true,
+    supportsReasoning: false,
   },
   "groq/allam-2-7b": {
     id: "groq/allam-2-7b",
@@ -577,6 +653,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 40, output: 120 },
+    supportsNativeTools: false,
+    supportsStreamingTools: true,
+    supportsReasoning: false,
   },
 
   // ── 4. Primary Gateway Fallback Engine ──
@@ -610,6 +689,9 @@ export const VERIFIED_BACKEND_MODELS: Record<string, BackendModel> = {
     healthStatus: "active",
     isFree: true, // Promotional canonical model
     costPaisePerMillion: { input: 112, output: 224 },
+    supportsNativeTools: true,
+    supportsStreamingTools: true,
+    supportsReasoning: true,
   },
 };
 

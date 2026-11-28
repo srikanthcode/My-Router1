@@ -145,7 +145,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       return {
         content,
         toolCalls,
-        finishReason: choice?.finish_reason ?? "stop",
+        finishReason: toolCalls.length > 0 ? "tool_calls" : (choice?.finish_reason ?? "stop"),
         usage,
         usageSource,
         upstreamRequestId: json.id,
@@ -184,6 +184,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
       yield { type: "start", upstreamRequestId: res.headers.get("x-request-id") ?? undefined };
       let usage: Usage | null = null;
       let finishReason = "stop";
+      let sawToolCalls = false;
       for await (const data of parseSse(res.body)) {
         if (data === "[DONE]") break;
         let chunk: {
@@ -214,6 +215,7 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           if (cleanedContent) yield { type: "delta", text: cleanedContent };
         }
         for (const tc of delta?.tool_calls ?? []) {
+          sawToolCalls = true;
           const rawName = tc.function?.name;
           if (rawName && isChannelTokenToolCall(rawName)) {
             continue;
@@ -221,11 +223,12 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
           const cleanedName = rawName !== undefined ? cleanSpecialTokens(rawName) : undefined;
           const rawArgs = tc.function?.arguments;
           const cleanedArgs = rawArgs !== undefined ? cleanSpecialTokens(rawArgs) : undefined;
+          // Forward function arguments cleaning only residual special tokens without altering JSON
           yield { type: "tool_call_delta", index: tc.index, id: tc.id, name: cleanedName, arguments: cleanedArgs };
         }
       }
       if (usage) yield { type: "usage", usage, usageSource: "upstream" };
-      yield { type: "done", finishReason };
+      yield { type: "done", finishReason: sawToolCalls ? "tool_calls" : finishReason };
     } catch (err) {
       if (err instanceof ProviderError) throw err;
       const aborted = err instanceof Error && err.name === "AbortError";

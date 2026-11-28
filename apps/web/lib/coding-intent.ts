@@ -12,6 +12,80 @@ export type CodingIntentType =
   | "tool_execution"
   | "normal_conversation";
 
+/**
+ * Detects whether an incoming request comes from an autonomous coding agent,
+ * contains structured tool calls/schemas, or targets an agent workflow.
+ * When true, destructive middlewares (greeting overrides, synthetic personas,
+ * vacuous response normalization, XML stripping) MUST be completely bypassed.
+ */
+export function isAgentOrStructuredRequest(
+  reqOrHeaders?: any,
+  body?: Record<string, unknown> | null
+): boolean {
+  if (!body && !reqOrHeaders) return false;
+
+  // 1. Tool, function, or response_format definitions in body
+  if (body) {
+    if (Array.isArray(body.tools) && body.tools.length > 0) return true;
+    if (Array.isArray(body.functions) && body.functions.length > 0) return true;
+    if (body.tool_choice !== undefined) return true;
+    if (body.response_format !== undefined) return true;
+
+    // 2. Check messages for tool calls, tool results, role === "tool", or long system prompt
+    if (Array.isArray(body.messages)) {
+      for (const m of body.messages) {
+        if (!m || typeof m !== "object") continue;
+        const msg = m as Record<string, unknown>;
+        if (msg.role === "tool") return true;
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return true;
+        if (msg.tool_call_id !== undefined) return true;
+        if (msg.role === "system" && typeof msg.content === "string" && msg.content.length > 200) {
+          return true;
+        }
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block && typeof block === "object") {
+              const b = block as Record<string, unknown>;
+              if (b.type === "tool_use" || b.type === "tool_result") return true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Check headers for coding agents or Anthropic protocol
+  if (reqOrHeaders) {
+    let userAgent = "";
+    let xTitle = "";
+    let referer = "";
+    let anthropicVersion = "";
+
+    const headersObj = (reqOrHeaders as any).headers || reqOrHeaders;
+    if (headersObj && typeof headersObj.get === "function") {
+      userAgent = headersObj.get("user-agent") || "";
+      xTitle = headersObj.get("x-title") || "";
+      referer = headersObj.get("http-referer") || headersObj.get("referer") || "";
+      anthropicVersion = headersObj.get("anthropic-version") || "";
+    } else if (headersObj && typeof headersObj === "object") {
+      userAgent = String(headersObj["user-agent"] || "");
+      xTitle = String(headersObj["x-title"] || "");
+      referer = String(headersObj["http-referer"] || headersObj["referer"] || "");
+      anthropicVersion = String(headersObj["anthropic-version"] || "");
+    }
+
+    if (anthropicVersion) return true;
+
+    const lowerHeaderStr = `${userAgent} ${xTitle} ${referer}`.toLowerCase();
+    const codingAgentPattern = /\b(?:cline|kilo|roo(?:-code)?|claude-code|cursor|aider|continue|opencode|anthropic|openai-sdk)\b/i;
+    if (codingAgentPattern.test(lowerHeaderStr)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export class CodingIntentDetector {
   /**
    * Determine if the conversation has active coding intent.
@@ -27,16 +101,19 @@ export class CodingIntentDetector {
   public static detectIntent(messages: Array<{ role: string; content?: unknown }>): CodingIntentType {
     if (!messages || messages.length === 0) return "normal_conversation";
 
-    // A pure greeting turn always takes precedence over prior conversation history
-    if (this.isGreetingInput(messages)) {
-      return "normal_conversation";
-    }
-
-    // If messages contain tool calls or tool results, it's tool execution
+    // 1. Tool execution or structured agent signals take absolute precedence
     for (const m of messages) {
       if ((m as any).tool_calls || (m as any).function_call || m.role === "tool") {
         return "tool_execution";
       }
+    }
+    if (isAgentOrStructuredRequest(null, { messages })) {
+      return "tool_execution";
+    }
+
+    // 2. A pure greeting turn takes precedence ONLY for standard conversational chat
+    if (this.isGreetingInput(messages)) {
+      return "normal_conversation";
     }
 
     const userMessages = messages.filter((m) => m.role === "user");

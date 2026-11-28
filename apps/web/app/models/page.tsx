@@ -104,10 +104,10 @@ export default async function ModelsPage({ searchParams }: { searchParams: Searc
                   <span className="size-2 rounded-full bg-emerald-400 animate-pulse" />
                   🇮🇳 India Developer Advantage (~10% Localized Discount)
                 </span>
-                <span className="text-[12px] font-mono text-accent">₹80.00 INR = $1.00 USD Policy Rate</span>
+                <span className="text-[12px] font-mono text-accent">₹85.00 INR = $1.00 USD Policy Rate</span>
               </div>
               <p className="text-[13.5px] leading-relaxed text-fg/90">
-                Models charging <strong>$1.00 USD / 1M tokens</strong> globally are billed at only <strong>₹80.00 INR / 1M tokens</strong> in India. You save ~10% on raw token pricing, completely avoid 3.5% foreign exchange credit card markups, and pay instantly via <strong>UPI (Google Pay, PhonePe, Paytm, BHIM)</strong> or RuPay cards.
+                Models charging <strong>$1.00 USD / 1M tokens</strong> globally are billed at only <strong>₹85.00 INR / 1M tokens</strong> in India. You save on raw token pricing, completely avoid 3.5% foreign exchange credit card markups, and pay instantly via <strong>UPI (Google Pay, PhonePe, Paytm, BHIM)</strong> or RuPay cards.
               </p>
             </div>
           </div>

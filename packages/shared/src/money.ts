@@ -9,6 +9,58 @@ export type Currency = "INR" | "USD";
 /** Multiplier from major units to minor units per currency. */
 const MINOR_UNITS: Record<Currency, number> = { INR: 100, USD: 100 };
 
+/** Default platform USD to INR exchange rate */
+export const DEFAULT_USD_TO_INR_RATE = 85.0;
+
+/** Get the configured USD to INR exchange rate */
+export function getUsdToInrRate(): number {
+  const envVal = typeof process !== "undefined" && process.env ? process.env.USD_TO_INR_RATE : undefined;
+  if (envVal) {
+    const parsed = parseFloat(envVal);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_USD_TO_INR_RATE;
+}
+
+/** Convert USD micro-dollars (1 USD = 1,000,000 micro-dollars) to INR paise (integer) */
+export function microUsdToPaise(microUsd: number, usdToInrRate = getUsdToInrRate()): number {
+  if (microUsd <= 0) return 0;
+  return Math.ceil((microUsd * usdToInrRate) / 10_000);
+}
+
+/** Convert INR paise (integer) to USD micro-dollars (integer) */
+export function paiseToMicroUsd(paise: number, usdToInrRate = getUsdToInrRate()): number {
+  if (paise <= 0) return 0;
+  return Math.round((paise * 10_000) / usdToInrRate);
+}
+
+/** Convert USD dollars (decimal) to INR paise (integer) */
+export function usdToPaise(usd: number, usdToInrRate = getUsdToInrRate()): number {
+  if (usd <= 0) return 0;
+  return Math.ceil(usd * usdToInrRate * 100);
+}
+
+/** Convert INR paise to USD dollars (decimal rounded to 4 decimals) */
+export function paiseToUsd(paise: number, usdToInrRate = getUsdToInrRate()): number {
+  if (paise <= 0) return 0;
+  return Number(((paise / 100) / usdToInrRate).toFixed(4));
+}
+
+/** Dual currency pricing representation */
+export interface DualCurrencyPricing {
+  inr: {
+    prompt: number; // paise per 1M
+    completion: number; // paise per 1M
+    cachedPrompt?: number;
+  };
+  usd: {
+    prompt: number; // USD per 1M (decimal)
+    completion: number; // USD per 1M (decimal)
+    cachedPrompt?: number;
+  };
+  freeDailyTokens?: number;
+}
+
 /** Convert a decimal amount in major units to integer minor units. */
 export function toMinor(amount: number, currency: Currency = "INR"): number {
   const mult = MINOR_UNITS[currency];

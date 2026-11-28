@@ -176,7 +176,7 @@ export async function walletRoutes(app: FastifyInstance) {
       return reply.send({ success: true, status: "already_credited" });
     }
 
-    const paymentMeta = (payment.metadata as { bonusPaise?: number; currency?: string } | undefined);
+    const paymentMeta = (payment.metadata as { bonusPaise?: number; currency?: string; packageSlug?: string } | undefined);
     const bonus = Number(paymentMeta?.bonusPaise ?? 0);
     const isUSD = paymentMeta?.currency === "USD";
     // 1 USD cent = 97 INR paise (based on live exchange rate 97 INR/USD)
@@ -294,7 +294,7 @@ export async function walletRoutes(app: FastifyInstance) {
       return reply.send({ status: "already_credited" });
     }
 
-    const paymentMeta = (payment.metadata as { bonusPaise?: number; currency?: string } | undefined);
+    const paymentMeta = (payment.metadata as { bonusPaise?: number; currency?: string; packageSlug?: string } | undefined);
     const bonus = Number(paymentMeta?.bonusPaise ?? 0);
     const isUSD = paymentMeta?.currency === "USD";
     const totalCredit = isUSD

@@ -15,6 +15,7 @@ export * from "./health-monitor.js";
 export * from "./fallback-manager.js";
 export * from "./intelligent-router.js";
 export * from "./catalog-service.js";
+export * from "./model-alias-registry.js";
 
 // ── Backward Compatible Route Request Interface (§11, §66) ──
 

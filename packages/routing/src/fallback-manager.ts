@@ -93,6 +93,16 @@ export class FallbackManager {
       };
     }
 
+    // 6. Guaranteed Universal Fallback: deepseek-v4.1-flash as the ultimate last resort
+    const universal = BackendModelRegistry.get("prorouter/deepseek-v4.1-flash");
+    if (universal && failure.backendId !== universal.id) {
+      return {
+        action: "next_provider",
+        nextBackend: universal,
+        reason: `Guaranteed universal fallback to deepseek-v4.1-flash after upstream failure (${failure.status}: ${failure.message}).`,
+      };
+    }
+
     // No eligible backends remaining in fallback chain
     return {
       action: "abort_error",

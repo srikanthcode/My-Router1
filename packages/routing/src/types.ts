@@ -120,6 +120,11 @@ export interface BackendModel {
     input: number;
     output: number;
   };
+  supportsNativeTools?: boolean;
+  supportsStreamingTools?: boolean;
+  supportsAnthropicNative?: boolean;
+  supportsVision?: boolean;
+  supportsReasoning?: boolean;
 }
 
 export interface UserRequestRequirements {

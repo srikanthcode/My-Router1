@@ -37,16 +37,13 @@ interface ModelsTableProps {
 }
 
 const CATEGORY_TABS = [
-  { key: "", label: "All Models" },
-  { key: "coding", label: "Coding & Agents" },
-  { key: "reasoning", label: "Reasoning" },
+  { key: "", label: "All Curated Models" },
+  { key: "coding", label: "Coding & Agentic" },
+  { key: "text", label: "Text & General Chat" },
+  { key: "reasoning", label: "Deep Reasoning & Math" },
+  { key: "fast", label: "Fast & Low-Latency" },
   { key: "vision", label: "Vision & Multimodal" },
-  { key: "fast", label: "Fast & Low Latency" },
-  { key: "long_context", label: "Long Context" },
-  { key: "general", label: "General Purpose" },
-  { key: "research", label: "Research & Analysis" },
-  { key: "multilingual", label: "Indic & Multilingual" },
-  { key: "math_science", label: "Math & Science" },
+  { key: "long_context", label: "Long-Context & Multilingual" },
 ];
 
 export function ModelsTable({
@@ -448,6 +445,8 @@ export function ModelsTable({
                   const formattedInPrice = currency === "INR" ? `₹${inputInr.toFixed(2)}` : `$${inputUsd.toFixed(2)}`;
                   const formattedOutPrice = currency === "INR" ? `₹${outputInr.toFixed(2)}` : `$${outputUsd.toFixed(2)}`;
                   const formattedCachedPrice = currency === "INR" ? `₹${cachedInr.toFixed(2)}` : `$${cachedUsd.toFixed(2)}`;
+                  const secondaryInPrice = currency === "INR" ? `$${inputUsd.toFixed(2)}` : `₹${inputInr.toFixed(2)}`;
+                  const secondaryOutPrice = currency === "INR" ? `$${outputUsd.toFixed(2)}` : `₹${outputInr.toFixed(2)}`;
 
                   return (
                     <tr
@@ -535,6 +534,8 @@ export function ModelsTable({
                               <span className="text-mut2 text-[10.5px] font-normal">out</span>
                             </div>
                             <div className="text-[10px] text-mut2 flex items-center gap-1 font-mono">
+                              <span className="text-accent/80">({secondaryInPrice} in / {secondaryOutPrice} out)</span>
+                              <span>·</span>
                               <span>cached: {formattedCachedPrice}</span>
                             </div>
                           </div>
@@ -551,14 +552,14 @@ export function ModelsTable({
                       {/* 5. Capabilities */}
                       <td className="py-3 px-3">
                         <div className="flex flex-wrap items-center gap-1">
+                          {m.capabilities?.toolCalls && (
+                            <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-medium">
+                              <Code2 className="size-2.5 text-emerald-400" /> Agent Ready
+                            </span>
+                          )}
                           {m.capabilities?.reasoning && (
                             <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] bg-panel2 text-fg border border-line">
                               <Brain className="size-2.5 text-accent" /> Reasoning
-                            </span>
-                          )}
-                          {m.capabilities?.toolCalls && (
-                            <span className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.2 text-[9.5px] bg-panel2 text-fg border border-line">
-                              <FileCode2 className="size-2.5 text-accent" /> Tools
                             </span>
                           )}
                           {m.capabilities?.vision && (
@@ -658,41 +659,62 @@ export function ModelsTable({
         )}
       </div>
 
-      {/* ── API Usage Code Snippet Modal ── */}
+      {/* ── API Usage & Coding Agent Quickstart Modal ── */}
       <Modal
         open={!!curlModel}
         onClose={() => setCurlModel(null)}
-        title={curlModel ? `API Usage: ${curlModel.name}` : "API Usage"}
+        title={curlModel ? `Quickstart: ${curlModel.name}` : "Agent & API Quickstart"}
       >
         {curlModel && (
           <div className="space-y-4">
             <div>
               <p className="text-xs text-mut">
-                ProRouter provides 100% OpenAI-compatible endpoints. Point your existing SDK or curl to our gateway:
+                ProRouter is 100% compatible with <strong>Cline, Kilo Code, Claude Code, Cursor, and Aider</strong>, plus standard OpenAI and Anthropic SDKs.
               </p>
               <div className="mt-2 flex items-center gap-2">
-                <span className="text-[11px] font-mono text-mut">Canonical Model ID:</span>
+                <span className="text-[11px] font-mono text-mut">Model Slug:</span>
                 <code className="rounded bg-panel2 px-2 py-0.5 font-mono text-xs text-accent border border-line">
                   {curlModel.canonicalModelId || curlModel.slug}
                 </code>
               </div>
             </div>
 
-            <div className="relative rounded-xl border border-line bg-panel2/90 p-3 font-mono text-xs text-fg overflow-x-auto">
-              <pre className="text-[11.5px] leading-relaxed">
-                {getCurlSnippet(curlModel.canonicalModelId || curlModel.slug)}
-              </pre>
-              <button
-                onClick={() => {
-                  copyToClipboard(getCurlSnippet(curlModel.canonicalModelId || curlModel.slug), "modal-curl");
-                  setCurlCopied(true);
-                  setTimeout(() => setCurlCopied(false), 2000);
-                }}
-                className="absolute top-2.5 right-2.5 rounded-lg border border-line bg-panel px-2.5 py-1 text-xs text-mut hover:text-fg transition-colors flex items-center gap-1.5"
-              >
-                {curlCopied ? <Check className="size-3 text-good" /> : <Copy className="size-3" />}
-                <span>{curlCopied ? "Copied" : "Copy curl"}</span>
-              </button>
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-semibold text-fg">Cline / Kilo Code / Roo Code / OpenAI SDK:</div>
+              <div className="rounded-xl border border-line bg-panel2/90 p-2.5 font-mono text-[11px] text-mut space-y-1">
+                <div>Base URL: <span className="text-fg font-bold">https://www.prorouter.in/v1</span></div>
+                <div>API Key:  <span className="text-fg font-bold">pro_sk_...</span> (Your ProRouter Key)</div>
+                <div>Model ID: <span className="text-accent font-bold">{curlModel.canonicalModelId || curlModel.slug}</span></div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-semibold text-fg">Claude Code CLI:</div>
+              <div className="rounded-xl border border-line bg-panel2/90 p-2.5 font-mono text-[11px] text-mut space-y-1">
+                <div>export ANTHROPIC_BASE_URL="<span className="text-fg">https://www.prorouter.in/v1</span>"</div>
+                <div>export ANTHROPIC_API_KEY="<span className="text-fg">pro_sk_...</span>"</div>
+                <div>claude --model <span className="text-accent font-bold">{curlModel.canonicalModelId || curlModel.slug}</span></div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-semibold text-fg">curl:</div>
+              <div className="relative rounded-xl border border-line bg-panel2/90 p-3 font-mono text-xs text-fg overflow-x-auto">
+                <pre className="text-[11.5px] leading-relaxed">
+                  {getCurlSnippet(curlModel.canonicalModelId || curlModel.slug)}
+                </pre>
+                <button
+                  onClick={() => {
+                    copyToClipboard(getCurlSnippet(curlModel.canonicalModelId || curlModel.slug), "modal-curl");
+                    setCurlCopied(true);
+                    setTimeout(() => setCurlCopied(false), 2000);
+                  }}
+                  className="absolute top-2.5 right-2.5 rounded-lg border border-line bg-panel px-2.5 py-1 text-xs text-mut hover:text-fg transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  {curlCopied ? <Check className="size-3 text-good" /> : <Copy className="size-3" />}
+                  <span>{curlCopied ? "Copied" : "Copy curl"}</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex justify-between items-center pt-2">

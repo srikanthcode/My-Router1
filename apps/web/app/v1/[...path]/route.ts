@@ -9,7 +9,7 @@ const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 import { NextRequest, NextResponse } from "next/server";
 import { recordTelemetryRequest } from "@/lib/telemetry-store";
-import { CodingIntentDetector } from "@/lib/coding-intent";
+import { CodingIntentDetector, isAgentOrStructuredRequest } from "@/lib/coding-intent";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -1097,14 +1097,14 @@ export class StreamChunkProcessor {
         if (rawName && isChannelTokenToolCall(rawName)) {
           continue;
         }
-        const cleanedArgs = typeof tc?.function?.arguments === "string" ? cleanSpecialTokens(tc.function.arguments) : tc?.function?.arguments;
+        const rawArgs = tc?.function?.arguments;
         const cleanedName = typeof rawName === "string" ? cleanSpecialTokens(rawName) : rawName;
         sanitizedTools.push({
           ...tc,
           function: {
             ...tc?.function,
             name: cleanedName,
-            arguments: cleanedArgs,
+            arguments: rawArgs, // Preserve function arguments byte-for-byte
           },
         });
       }
@@ -1225,7 +1225,7 @@ export class StreamChunkProcessor {
     const isVacuous = CodingIntentDetector.isVacuousResponse(totalText);
 
     // Resilient fallback: A pure greeting turn always produces a polite assistant greeting
-    if (isGreeting) {
+    if (isGreeting && !this.hasSeenAnyToolCalls) {
       if (CodingIntentDetector.isVacuousAck(totalText) || isVacuous || !totalText || totalText.includes("Interactive App") || totalText.includes("Click Me")) {
         const greeting = "Hello! How can I assist you with your project today?";
         content = (content ? content + "\n\n" : "") + greeting;
@@ -1276,26 +1276,30 @@ export function cleanNonStreamingMessage(
     content = content.slice(metaMatch[0].length).trim();
   }
 
-  const isGreetingInput = CodingIntentDetector.isGreetingInput(requestedMessages as any[]);
-  const isVacuous = CodingIntentDetector.isVacuousResponse(content);
+  const rawToolCalls = Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0 ? msg.tool_calls : undefined;
+  const hasToolCalls = Boolean(rawToolCalls && rawToolCalls.length > 0);
 
-  if (isGreetingInput) {
-    if (isVacuous || CodingIntentDetector.isVacuousAck(content) || !content || content.includes("Interactive App") || content.includes("Click Me")) {
-      content = "Hello! How can I assist you with your project today?";
-    }
-  } else if (isCodingTask) {
-    // Strip leading conversational greetings or acknowledgments if code follows immediately after
-    content = content.replace(/^(?:(?:Hello|Hi|Hey|Sure|Certainly|Of course|Got it|Understood|Alright|Noted)[\s\.,!?:-]*(?:How can I help you today\??|How may I assist you\??|What can I do for you\??|Here is (?:the|your) (?:code|component|file|solution)[^:\n]*:?)?[\s\n]*)/i, "").trim();
-    // If the entire message was merely a generic greeting/acknowledgment or reduced to empty, synthesize resilient code for the coding request
-    if (isVacuous || !content) {
-      content = CodingIntentDetector.generateFallbackCode(requestedMessages as any[]);
+  if (!hasToolCalls) {
+    const isGreetingInput = CodingIntentDetector.isGreetingInput(requestedMessages as any[]);
+    const isVacuous = CodingIntentDetector.isVacuousResponse(content);
+
+    if (isGreetingInput) {
+      if (isVacuous || CodingIntentDetector.isVacuousAck(content) || !content || content.includes("Interactive App") || content.includes("Click Me")) {
+        content = "Hello! How can I assist you with your project today?";
+      }
+    } else if (isCodingTask) {
+      // Strip leading conversational greetings or acknowledgments if code follows immediately after
+      content = content.replace(/^(?:(?:Hello|Hi|Hey|Sure|Certainly|Of course|Got it|Understood|Alright|Noted)[\s\.,!?:-]*(?:How can I help you today\??|How may I assist you\??|What can I do for you\??|Here is (?:the|your) (?:code|component|file|solution)[^:\n]*:?)?[\s\n]*)/i, "").trim();
+      // If the entire message was merely a generic greeting/acknowledgment or reduced to empty, synthesize resilient code for the coding request
+      if (isVacuous || !content) {
+        content = CodingIntentDetector.generateFallbackCode(requestedMessages as any[]);
+      }
     }
   }
 
   content = cleanSpecialTokens(content);
   if (shouldCleanAsterisks) content = cleanAsterisks(content);
 
-  const rawToolCalls = Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0 ? msg.tool_calls : undefined;
   const toolCalls = rawToolCalls
     ? (rawToolCalls as any[])
       .filter((tc) => !isChannelTokenToolCall(tc?.function?.name))
@@ -1304,7 +1308,7 @@ export function cleanNonStreamingMessage(
         function: {
           ...tc?.function,
           name: typeof tc?.function?.name === "string" ? cleanSpecialTokens(tc.function.name) : tc?.function?.name,
-          arguments: typeof tc?.function?.arguments === "string" ? cleanSpecialTokens(tc.function.arguments) : tc?.function?.arguments,
+          arguments: tc?.function?.arguments,
         },
       }))
     : undefined;
@@ -1373,14 +1377,7 @@ async function streamGateway(
   };
   const emitServedModel = (servedModel: string) => {
     try {
-      controller.enqueue(encoder.encode("data: " + JSON.stringify({
-        id: reqId,
-        object: "chat.completion.chunk",
-        created: createdTimestamp,
-        model: requestedRawModel,
-        choices: [],
-        prorouter_served_model: servedModel,
-      }) + "\n\n"));
+      controller.enqueue(encoder.encode(`: prorouter_served_model: ${servedModel}\n\n`));
     } catch { }
   };
 
@@ -2050,11 +2047,11 @@ async function streamGateway(
 
   clearInterval(pingInterval);
   const isGreetingStream = CodingIntentDetector.isGreetingInput(effectiveMessages as any[]);
-  const streamFallbackText = isGreetingStream
-    ? "Hello! How can I assist you with your project today?"
-    : isCodingTask
-      ? CodingIntentDetector.generateFallbackCode(effectiveMessages as any[])
-      : "All inference nodes are currently unavailable. Please retry in a moment.";
+  const streamFallbackText = (hasTools || (!isGreetingStream && !isCodingTask))
+    ? "All inference nodes are currently unavailable. Please retry in a moment."
+    : isGreetingStream
+      ? "Hello! How can I assist you with your project today?"
+      : CodingIntentDetector.generateFallbackCode(effectiveMessages as any[]);
   controller.enqueue(encoder.encode(`data: ${JSON.stringify({
     id: reqId,
     object: "chat.completion.chunk",
@@ -2658,7 +2655,7 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
   const subpath = path.join("/");
 
   const isInferenceRequest =
-    req.method === "POST" && (subpath === "chat/completions" || subpath === "messages" || subpath === "responses");
+    req.method === "POST" && (subpath === "chat/completions" || subpath === "messages" || subpath === "responses" || subpath === "messages/count_tokens" || subpath === "count_tokens");
 
   if (isInferenceRequest) {
     const credential = getCallerCredential(req);
@@ -2666,17 +2663,19 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
     const useBackend = Boolean(credential.apiKey) || credential.hasSession;
 
     if (useBackend && isExternalBackendAvailable()) {
-      return subpath === "messages" ? proxyAnthropicMessages(req) : proxyToBackend(req, subpath);
+      if (subpath === "messages") return proxyAnthropicMessages(req);
+      if (subpath === "messages/count_tokens" || subpath === "count_tokens") return proxyToBackend(req, "messages/count_tokens");
+      return proxyToBackend(req, subpath);
     }
 
     if (!demoEnabled) {
       if (useBackend && !isExternalBackendAvailable()) {
-        return subpath === "messages"
+        return subpath === "messages" || subpath === "messages/count_tokens" || subpath === "count_tokens"
           ? anthropicErrorResponse(503, "Backend API is not configured.", "api_error")
           : openAiGatewayError(503, "Backend API is not configured.", "provider_unavailable");
       }
       if (!credential.apiKey && !credential.hasSession) {
-        return subpath === "messages"
+        return subpath === "messages" || subpath === "messages/count_tokens" || subpath === "count_tokens"
           ? anthropicErrorResponse(401, "Authentication required. Provide a ProRouter API key via x-api-key or Authorization: Bearer.")
           : openAiGatewayError(401, "Authentication required. Provide a ProRouter API key.", "unauthenticated");
       }
@@ -2692,29 +2691,51 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
     if (credential.apiKey && isExternalBackendAvailable()) {
       return proxyToBackend(req, "models");
     }
-    const enrichedModels = ALL_MODELS.map((m) => ({
-      ...m,
-      context_window: (m as any).context_window || 128000,
-      context_length: (m as any).context_window || 128000,
-      max_output_tokens: (m as any).max_output_tokens || 16384,
-      max_completion_tokens: (m as any).max_output_tokens || 16384,
-      supported_parameters: [
-        "tools",
-        "tool_choice",
-        "temperature",
-        "top_p",
-        "max_tokens",
-        "max_completion_tokens",
-        "stream",
-        "response_format",
-      ],
-      capabilities: {
-        tool_calls: true,
-        streaming: true,
-        reasoning: true,
-        vision: true,
-      },
-    }));
+    const enrichedModels = ALL_MODELS.map((m) => {
+      const inputUsd = m.pricing?.input_usd_per_million ?? 0.20;
+      const outputUsd = m.pricing?.output_usd_per_million ?? 0.80;
+      const inrInputPaise = Math.round(inputUsd * 85.0 * 100);
+      const inrOutputPaise = Math.round(outputUsd * 85.0 * 100);
+      return {
+        ...m,
+        context_window: (m as any).context_window || (m as any).contextWindow || 128000,
+        context_length: (m as any).context_window || (m as any).contextWindow || 128000,
+        max_output_tokens: (m as any).max_output_tokens || (m as any).maxOutputTokens || 16384,
+        max_completion_tokens: (m as any).max_output_tokens || (m as any).maxOutputTokens || 16384,
+        supported_parameters: [
+          "tools",
+          "tool_choice",
+          "temperature",
+          "top_p",
+          "max_tokens",
+          "max_completion_tokens",
+          "stream",
+          "response_format",
+        ],
+        capabilities: {
+          tools: true,
+          tool_calls: true,
+          streaming: true,
+          reasoning: true,
+          vision: (m as any).category === "Vision & Multimodal" || (m as any).category === "vision",
+        },
+        pricing: {
+          input_usd_per_million: inputUsd,
+          output_usd_per_million: outputUsd,
+          usd: {
+            input: inputUsd,
+            output: outputUsd,
+          },
+          inr: {
+            input_paise: inrInputPaise,
+            output_paise: inrOutputPaise,
+            input_formatted: `₹${(inrInputPaise / 100).toFixed(2)}`,
+            output_formatted: `₹${(inrOutputPaise / 100).toFixed(2)}`,
+          },
+          free_daily_tokens: (m.id === "deepseek-v4.1-flash" || m.id === "qwen3.8-27b") ? 1_000_000 : 0,
+        },
+      };
+    });
     return NextResponse.json({ object: "list", data: enrichedModels }, { headers: CORS_HEADERS });
   }
 
@@ -2867,13 +2888,14 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
     // Pass the client's messages through unchanged unless injecting a developer instruction profile
     // for coding tasks when NO client system prompt was provided.
     const effectiveMessages: unknown[] = Array.isArray(payload.messages) ? payload.messages : [];
+    const isAgent = isAgentOrStructuredRequest(req, payload);
     const hasClientSystemPrompt = (effectiveMessages as any[]).some(
       (m) => m?.role === "system" && typeof m?.content === "string" && m.content.trim().length > 0
     );
-    const isGreetingTurn = CodingIntentDetector.isGreetingInput(effectiveMessages as any[]);
-    const isCodingTask = !isGreetingTurn && CodingIntentDetector.isCodingIntent(effectiveMessages as any[]);
+    const isGreetingTurn = !isAgent && CodingIntentDetector.isGreetingInput(effectiveMessages as any[]);
+    const isCodingTask = !isAgent && !isGreetingTurn && CodingIntentDetector.isCodingIntent(effectiveMessages as any[]);
     let dispatchMessages: unknown[] = effectiveMessages;
-    if (!hasClientSystemPrompt && isCodingTask) {
+    if (!isAgent && !hasClientSystemPrompt && isCodingTask) {
       const intent = CodingIntentDetector.detectIntent(effectiveMessages as any[]);
       const directive = CodingIntentDetector.buildCodingDirective(intent);
       dispatchMessages = [
@@ -2897,15 +2919,8 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
           const decoder = new TextDecoder();
 
           try {
-            // Immediately send initial chunk so client connect timeout (10s) NEVER triggers
-            const initialChunk = `data: ${JSON.stringify({
-              id: reqId,
-              object: "chat.completion.chunk",
-              created: createdTimestamp,
-              model: requestedRawModel,
-              choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }],
-            })}\n\n`;
-            controller.enqueue(encoder.encode(initialChunk));
+            // Keep connection alive with standard SSE comment frame without emitting fake JSON chunks
+            controller.enqueue(encoder.encode(": keep-alive\n\n"));
 
             // Unified ProRouter Gateway Engine for all models
             await streamGateway(controller, encoder, decoder, reqId, createdTimestamp, requestedRawModel, dispatchMessages, payload, shouldCleanAsterisks, modelDisplayName, ownerName, clientKey, req.signal, isCodingTask, effectiveMessages);
@@ -3248,6 +3263,20 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
     );
   }
 
+  // ── 3A. POST /v1/messages/count_tokens (Claude Code / Anthropic SDK token counting) ──
+  if ((subpath === "messages/count_tokens" || subpath === "count_tokens") && req.method === "POST") {
+    let countPayload: Record<string, unknown> = {};
+    try {
+      countPayload = await req.json();
+    } catch {
+      return NextResponse.json({ input_tokens: 1 }, { status: 200, headers: CORS_HEADERS });
+    }
+    const msgs = Array.isArray(countPayload.messages) ? countPayload.messages : [];
+    const sys = countPayload.system ? JSON.stringify(countPayload.system) : "";
+    const approxTokens = Math.max(1, Math.ceil((JSON.stringify(msgs).length + sys.length) / 4));
+    return NextResponse.json({ input_tokens: approxTokens }, { status: 200, headers: CORS_HEADERS });
+  }
+
   // ── 3B. POST /v1/messages (Anthropic Messages API for Claude Code & Cline Anthropic Provider) ──
   if (subpath === "messages" && req.method === "POST") {
     let anthropicPayload: Record<string, unknown> = {};
@@ -3282,10 +3311,11 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
         .join("\n");
     }
 
+    const isAnthropicAgent = isAgentOrStructuredRequest(req, anthropicPayload);
     const hasAnthropicSystem = Boolean(systemContent && systemContent.trim().length > 0);
     const incomingMsgs = Array.isArray(anthropicPayload.messages) ? anthropicPayload.messages : [];
-    const isAnthropicGreetingTurn = CodingIntentDetector.isGreetingInput(incomingMsgs as any[]);
-    const anthropicCodingTask = !isAnthropicGreetingTurn && CodingIntentDetector.isCodingIntent(incomingMsgs as any[]);
+    const isAnthropicGreetingTurn = !isAnthropicAgent && CodingIntentDetector.isGreetingInput(incomingMsgs as any[]);
+    const anthropicCodingTask = !isAnthropicAgent && !isAnthropicGreetingTurn && CodingIntentDetector.isCodingIntent(incomingMsgs as any[]);
     const convertedMessages: Array<{ role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string }> = [];
     if (hasAnthropicSystem) {
       convertedMessages.push({ role: "system", content: systemContent });
@@ -3530,7 +3560,7 @@ export async function handleV1(req: NextRequest, rawPath: string[]) {
                     controller.enqueue(encoder.encode(`event: content_block_delta\ndata: ${JSON.stringify({
                       type: "content_block_delta",
                       index: toolBlock.blockIndex,
-                      delta: { type: "input_json_delta", partial_json: cleanSpecialTokens(tc.function.arguments) },
+                      delta: { type: "input_json_delta", partial_json: tc.function.arguments },
                     })}\n\n`));
                   }
                 }

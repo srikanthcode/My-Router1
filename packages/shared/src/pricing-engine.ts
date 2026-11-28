@@ -44,9 +44,10 @@ export const DEFAULT_MAX_APPROVED_MARGIN = 0.85; // 85% ceiling
  * Market exchange rate reflects true currency conversion.
  * Display policy rate is the single billing/display default used everywhere.
  */
-export const DEFAULT_USD_TO_INR_MARKET_RATE = 88.0;
-export const DEFAULT_USD_TO_INR_DISPLAY_RATE = 97.0;
-export const DEFAULT_USD_TO_INR_RATE = DEFAULT_USD_TO_INR_DISPLAY_RATE;
+import { DEFAULT_USD_TO_INR_RATE } from "./money.js";
+
+export const DEFAULT_USD_TO_INR_MARKET_RATE = 85.0;
+export const DEFAULT_USD_TO_INR_DISPLAY_RATE = 85.0;
 
 export interface TokenPriceCalculation {
   upstreamCostUsdPer1M: number;
