@@ -97,9 +97,17 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     } catch {
       /* ignore */
     }
-    // 401/403 mean *this provider's* credential was rejected — the next
-    // provider in the chain may still serve the request, so do not stop there.
-    const retryable = res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403;
+    // 400/401/402/403/404/408 mean *this provider/key/model* cannot serve the
+    // request — rotating credentials or falling back to another provider can still succeed.
+    const retryable =
+      res.status === 429 ||
+      res.status >= 500 ||
+      res.status === 400 ||
+      res.status === 401 ||
+      res.status === 402 ||
+      res.status === 403 ||
+      res.status === 404 ||
+      res.status === 408;
     throw new ProviderError(
       this.providerSlug,
       res.status === 429 ? "rate_limited" : res.status >= 500 ? "server_error" : "request_rejected",

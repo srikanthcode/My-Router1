@@ -1327,6 +1327,30 @@ export class ModelAliasRegistry {
       }
     }
 
+    // Include verified live multi-provider fallbacks so agent tool-calls never dead-end
+    const liveFallbackIds = entry.supportsNativeTools
+      ? [
+          "requesty/nemotron-3.5-lightning-30b-a3b",
+          "requesty/nemotron-3-ultra-550b-a55b",
+          "nabh/gpt-oss-20b",
+          "requesty/gemma-4-31b-it",
+        ]
+      : [
+          "requesty/nemotron-3.5-lightning-30b-a3b",
+          "requesty/gemma-4-31b-it",
+          "nabh/gpt-oss-20b",
+        ];
+    for (const liveId of liveFallbackIds) {
+      const liveModel = VERIFIED_BACKEND_MODELS[liveId];
+      if (
+        liveModel &&
+        liveModel.id !== backend.id &&
+        !fallbackChain.some((b) => b.id === liveModel.id)
+      ) {
+        fallbackChain.push(liveModel);
+      }
+    }
+
     // Ensure the guaranteed universal fallback deepseek-v4.1-flash is always terminal
     const universalFallback = VERIFIED_BACKEND_MODELS["prorouter/deepseek-v4.1-flash"];
     if (universalFallback && !fallbackChain.some((b) => b.id === universalFallback.id)) {

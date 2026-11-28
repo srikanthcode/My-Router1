@@ -519,6 +519,33 @@ const REQUIRES_API_KEY = new Set([
 ]);
 
 const credentialCursor = new Map<string, number>();
+const pipelineKeyCooldownMap = new Map<string, number>();
+const pipelineHostCooldownMap = new Map<string, number>();
+
+function markPipelineKeyCooldown(providerSlug: string, key: string | undefined, ms: number): void {
+  if (!key) return;
+  pipelineKeyCooldownMap.set(`${providerSlug}:${key}`, Date.now() + ms);
+}
+
+function isPipelineKeyCoolingDown(providerSlug: string, key: string): boolean {
+  return (pipelineKeyCooldownMap.get(`${providerSlug}:${key}`) ?? 0) > Date.now();
+}
+
+function markPipelineHostDown(providerSlug: string, ms = 120_000): void {
+  pipelineHostCooldownMap.set(providerSlug, Date.now() + ms);
+}
+
+function isPipelineHostDown(providerSlug: string): boolean {
+  return (pipelineHostCooldownMap.get(providerSlug) ?? 0) > Date.now();
+}
+
+function isHostUnreachableError(pErr: ProviderError): boolean {
+  const m = (pErr.message || "").toLowerCase();
+  return (
+    pErr.httpStatus === 0 &&
+    (m.includes("enotfound") || m.includes("econnrefused") || m.includes("eai_again") || m.includes("fetch failed"))
+  );
+}
 
 /** Get ordered candidate key pool for in-request rotation and retries. */
 export async function getCandidateKeyPool(candidate: RouteCandidate): Promise<string[]> {
@@ -594,7 +621,8 @@ export async function getCandidateKeyPool(candidate: RouteCandidate): Promise<st
     }
   }
 
-  return keys;
+  const active = keys.filter((k) => !isPipelineKeyCoolingDown(candidate.providerSlug, k));
+  return active.length > 0 ? active : keys;
 }
 
 /** Build an adapter with decrypted credentials (secrets never leave the server). */
@@ -689,8 +717,12 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
     if (signal?.aborted) {
       throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
     }
+    if (isPipelineHostDown(candidate.providerSlug) && i < chain.length - 1) {
+      continue;
+    }
     const keyPool = await getCandidateKeyPool(candidate);
-    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 3) : [undefined];
+    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 25) : [undefined];
+    let effectiveUpstreamModel = candidate.upstreamModelId;
 
     let candidateFailed = false;
     for (let kIdx = 0; kIdx < keysToTry.length; kIdx++) {
@@ -698,10 +730,10 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
       const startedAt = Date.now();
       try {
         const adapter = await getAdapter(candidate, currentApiKey);
-        const result = await adapter.chat({ ...params, model: candidate.upstreamModelId }, signal);
+        const result = await adapter.chat({ ...params, model: effectiveUpstreamModel }, signal);
         ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-        return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
+        return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: effectiveUpstreamModel, attempts };
       } catch (err) {
         if (signal?.aborted) {
           throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
@@ -710,7 +742,46 @@ export async function executeChat(decision: RouteDecision, params: AdapterChatPa
         lastError = pErr;
         ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
-        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 401 || pErr.httpStatus === 403 || pErr.httpStatus === 429 || (pErr.httpStatus !== null && pErr.httpStatus >= 500));
+
+        if (isHostUnreachableError(pErr)) {
+          markPipelineHostDown(candidate.providerSlug, 120_000);
+          candidateFailed = true;
+          break;
+        }
+
+        const lowerMsg = (pErr.message || "").toLowerCase();
+        if (
+          candidate.providerSlug === "nabh" &&
+          effectiveUpstreamModel !== "gpt-oss-20b" &&
+          (pErr.httpStatus === 404 || lowerMsg.includes("not available on the free plan"))
+        ) {
+          effectiveUpstreamModel = "gpt-oss-20b";
+          kIdx -= 1;
+          continue;
+        }
+        if (
+          candidate.providerSlug === "requesty" &&
+          effectiveUpstreamModel !== "nvidia/nemotron-3.5-lightning-30b-a3b" &&
+          (pErr.httpStatus === 404 || pErr.httpStatus === 402 || pErr.httpStatus === 400)
+        ) {
+          effectiveUpstreamModel = "nvidia/nemotron-3.5-lightning-30b-a3b";
+          kIdx -= 1;
+          continue;
+        }
+
+        if (pErr.httpStatus === 401 || pErr.httpStatus === 403) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 86_400_000);
+        else if (pErr.httpStatus === 429) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 60_000);
+
+        const canTryNextKey =
+          kIdx < keysToTry.length - 1 &&
+          (pErr.httpStatus === 400 ||
+            pErr.httpStatus === 401 ||
+            pErr.httpStatus === 402 ||
+            pErr.httpStatus === 403 ||
+            pErr.httpStatus === 404 ||
+            pErr.httpStatus === 408 ||
+            pErr.httpStatus === 429 ||
+            (pErr.httpStatus !== null && pErr.httpStatus >= 500));
         if (!canTryNextKey) {
           candidateFailed = true;
           break;
@@ -758,8 +829,12 @@ export async function* streamChat(
     if (signal?.aborted) {
       throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
     }
+    if (isPipelineHostDown(candidate.providerSlug) && i < chain.length - 1) {
+      continue;
+    }
     const keyPool = await getCandidateKeyPool(candidate);
-    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 3) : [undefined];
+    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 25) : [undefined];
+    let effectiveUpstreamModel = candidate.upstreamModelId;
 
     let candidateFailed = false;
     for (let kIdx = 0; kIdx < keysToTry.length; kIdx++) {
@@ -767,7 +842,7 @@ export async function* streamChat(
       const startedAt = Date.now();
       try {
         const adapter = await getAdapter(candidate, currentApiKey);
-        const iterator = adapter.chatStream({ ...params, model: candidate.upstreamModelId }, signal)[Symbol.asyncIterator]();
+        const iterator = adapter.chatStream({ ...params, model: effectiveUpstreamModel }, signal)[Symbol.asyncIterator]();
         while (true) {
           const { value, done } = await iterator.next();
           if (done) break;
@@ -782,20 +857,60 @@ export async function* streamChat(
           onMeta?.(value);
           yield value;
         }
+        ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-        return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
+        return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: effectiveUpstreamModel, usage, usageSource, finishReason, attempts };
       } catch (err) {
         if (signal?.aborted) {
           throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
         }
         const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", (err as Error).message, 500);
         lastError = pErr;
+        ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
         if (started) {
           yield { type: "done", finishReason: "error" };
           throw pErr;
         }
-        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 401 || pErr.httpStatus === 403 || pErr.httpStatus === 429 || (pErr.httpStatus !== null && pErr.httpStatus >= 500));
+        if (isHostUnreachableError(pErr)) {
+          markPipelineHostDown(candidate.providerSlug, 120_000);
+          candidateFailed = true;
+          break;
+        }
+
+        const lowerMsg = (pErr.message || "").toLowerCase();
+        if (
+          candidate.providerSlug === "nabh" &&
+          effectiveUpstreamModel !== "gpt-oss-20b" &&
+          (pErr.httpStatus === 404 || lowerMsg.includes("not available on the free plan"))
+        ) {
+          effectiveUpstreamModel = "gpt-oss-20b";
+          kIdx -= 1;
+          continue;
+        }
+        if (
+          candidate.providerSlug === "requesty" &&
+          effectiveUpstreamModel !== "nvidia/nemotron-3.5-lightning-30b-a3b" &&
+          (pErr.httpStatus === 404 || pErr.httpStatus === 402 || pErr.httpStatus === 400)
+        ) {
+          effectiveUpstreamModel = "nvidia/nemotron-3.5-lightning-30b-a3b";
+          kIdx -= 1;
+          continue;
+        }
+
+        if (pErr.httpStatus === 401 || pErr.httpStatus === 403) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 86_400_000);
+        else if (pErr.httpStatus === 429) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 60_000);
+
+        const canTryNextKey =
+          kIdx < keysToTry.length - 1 &&
+          (pErr.httpStatus === 400 ||
+            pErr.httpStatus === 401 ||
+            pErr.httpStatus === 402 ||
+            pErr.httpStatus === 403 ||
+            pErr.httpStatus === 404 ||
+            pErr.httpStatus === 408 ||
+            pErr.httpStatus === 429 ||
+            (pErr.httpStatus !== null && pErr.httpStatus >= 500));
         if (!canTryNextKey) {
           candidateFailed = true;
           break;

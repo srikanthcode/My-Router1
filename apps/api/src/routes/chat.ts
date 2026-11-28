@@ -4,7 +4,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { apiKeys, getDb, modelProviders, models, plans, promotionalActivations, providers, requestAttempts, requests, subscriptions } from "@pro/database";
 import { ApiError, requestCost, env, type ChatMessage, type Usage, type UsageSource, applyPersonaToMessages, sanitizeModelOutput, resolvePromotionalCanonicalId, isDailyFreeEligible, resolveDailyFreeEligibleId } from "@pro/shared";
 import { estimateTokens, isChannelTokenToolCall, cleanSpecialTokens } from "@pro/providers";
-import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine, CodingIntentDetector } from "@pro/routing";
+import { routeRequest, ModelProfileRegistry, ModelBehaviorEngine, CodingIntentDetector, isAgentOrStructuredRequest } from "@pro/routing";
 import { getActiveAstra } from "../lib/auth.js";
 import { authenticateRequest, enforceRateLimits } from "../lib/request-auth.js";
 import { consumeFreeQuota } from "../lib/freequota.js";
@@ -365,13 +365,16 @@ export async function chatRoutes(app: FastifyInstance) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
     }
 
+    const isAgentRequest =
+      requiresTools ||
+      isAgentOrStructuredRequest(request, request.body as Record<string, unknown>);
     const hasClientSystemPrompt = (messages as unknown as ChatMessage[]).some(
       (m) => m?.role === "system" && typeof m?.content === "string" && m.content.trim().length > 0
     );
-    const isGreetingTurn = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
-    const isCodingTask = !isGreetingTurn && CodingIntentDetector.isCodingIntent(messages as unknown as ChatMessage[]);
+    const isGreetingTurn = !isAgentRequest && CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
+    const isCodingTask = !isAgentRequest && !isGreetingTurn && CodingIntentDetector.isCodingIntent(messages as unknown as ChatMessage[]);
     let effectiveMessages = messages as unknown as ChatMessage[];
-    if (!hasClientSystemPrompt && isCodingTask) {
+    if (!isAgentRequest && !hasClientSystemPrompt && isCodingTask) {
       const intent = CodingIntentDetector.detectIntent(messages as unknown as ChatMessage[]);
       const directive = CodingIntentDetector.buildCodingDirective(intent);
       effectiveMessages = [
@@ -551,16 +554,10 @@ export async function chatRoutes(app: FastifyInstance) {
           : result.finishReason;
         const sanitizedContent = (() => {
           const profile = ModelProfileRegistry.get(slug);
-          let base = sanitizeModelOutput(result.content, ctx.model.name);
+          let base = isAgentRequest
+            ? result.content
+            : sanitizeModelOutput(result.content, ctx.model.name);
           if (profile) base = ModelBehaviorEngine.sanitizeOutput(base, profile);
-          const isGreeting = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
-          if (isGreeting) {
-            if (CodingIntentDetector.isVacuousResponse(base) || CodingIntentDetector.isVacuousAck(base) || !base.trim() || base.includes("Interactive App") || base.includes("Click Me")) {
-              base = "Hello! How can I assist you with your project today?";
-            }
-          } else if (isCodingTask && (CodingIntentDetector.isVacuousResponse(base) || !base.trim())) {
-            base = CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[]);
-          }
           return base;
         })();
         app.log.info({
@@ -585,7 +582,7 @@ export async function chatRoutes(app: FastifyInstance) {
               role: "assistant",
               // When tool calls are present and content is empty, set content to null
               // (not "") to match OpenAI spec — agents check for null to detect pure tool responses
-              content: hasToolCalls && !sanitizedContent ? null : (sanitizedContent || (hasToolCalls ? null : "I have received and processed your request.")),
+              content: hasToolCalls && !sanitizedContent ? null : (sanitizedContent || null),
               tool_calls: hasToolCalls ? result.toolCalls : undefined,
             }, finish_reason: normalizedFinishReason
           }],
@@ -645,9 +642,15 @@ export async function chatRoutes(app: FastifyInstance) {
         }
       }
 
-      // ⚠️ Do NOT emit content:"" here — it locks coding-agent parsers (Cline, Claude Code, Kilo Code)
-      // into text-only mode before any tool_calls arrive. Only emit role announcement.
-      write(oaiChunk({ role: "assistant" }));
+      // Do not emit any synthetic assistant chunk before the upstream produces
+      // a real content/reasoning/tool delta; keep socket alive via SSE comments.
+      let sentRoleAnnouncement = false;
+      const ensureRoleAnnouncement = () => {
+        if (!sentRoleAnnouncement) {
+          sentRoleAnnouncement = true;
+          write(oaiChunk({ role: "assistant" }));
+        }
+      };
       let usage: Usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
       let usageSource: UsageSource = "none";
       let ttftMs: number | null = null;
@@ -673,19 +676,24 @@ export async function chatRoutes(app: FastifyInstance) {
               // Standard initial connection event
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
+              ensureRoleAnnouncement();
               const profile = ModelProfileRegistry.get(slug);
-              let sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              let sanitizedText = isAgentRequest ? ev.text : sanitizeModelOutput(ev.text, ctx.model.name);
               if (profile) sanitizedText = ModelBehaviorEngine.sanitizeOutput(sanitizedText, profile);
               contentSoFar += sanitizedText;
               write(oaiChunk({ content: sanitizedText }));
             } else if (ev.type === "reasoning_delta") {
-              const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
+              ensureRoleAnnouncement();
+              const profile = ModelProfileRegistry.get(slug);
+              let sanitizedReasoning = isAgentRequest ? ev.text : sanitizeModelOutput(ev.text, ctx.model.name);
+              if (profile) sanitizedReasoning = ModelBehaviorEngine.sanitizeOutput(sanitizedReasoning, profile);
               write(oaiChunk({ reasoning_content: sanitizedReasoning }));
             } else if (ev.type === "tool_call_delta") {
               if (ev.name !== undefined && isChannelTokenToolCall(ev.name)) {
                 continue;
               }
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
+              ensureRoleAnnouncement();
               // Build tool_call delta preserving exact OpenAI SSE schema.
               // Only include fields that are actually present so agents can
               // distinguish name-initialization chunks from argument chunks.
@@ -739,16 +747,7 @@ export async function chatRoutes(app: FastifyInstance) {
         return;
       }
 
-      if (!contentSoFar && !hasSeenToolCalls) {
-        const isGreeting = CodingIntentDetector.isGreetingInput(messages as unknown as ChatMessage[]);
-        const fallbackText = isGreeting
-          ? "Hello! How can I assist you with your project today?"
-          : isCodingTask
-            ? CodingIntentDetector.generateFallbackCode(messages as unknown as ChatMessage[])
-            : "I have received and processed your request.";
-        contentSoFar = fallbackText;
-        write(oaiChunk({ content: fallbackText }));
-      }
+      ensureRoleAnnouncement();
       write(oaiChunk({}, finishReason));
       if (usage.total_tokens === 0) {
         usage = {
@@ -801,20 +800,124 @@ export async function chatRoutes(app: FastifyInstance) {
     }
   });
 
+  const forwardableHeaders = (raw: unknown): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (!raw || typeof raw !== "object") return out;
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const lk = k.toLowerCase();
+      if (lk === "content-length" || lk === "transfer-encoding" || lk === "host") continue;
+      if (typeof v === "string") out[lk] = v;
+    }
+    return out;
+  };
+
   // ── Bare /chat/completions (without /v1 prefix) for Claude Code and Cursor compatibility ──
   app.post("/chat/completions", async (request, reply) => {
     return app.inject({
       method: "POST",
       url: "/v1/chat/completions",
-      headers: request.headers as Record<string, string>,
+      headers: forwardableHeaders(request.headers),
       payload: request.body as Record<string, unknown>,
     }).then((res) => {
       reply.code(res.statusCode);
       for (const [k, v] of Object.entries(res.headers)) {
-        if (v !== undefined) reply.header(k, v as string);
+        const lk = k.toLowerCase();
+        if (v !== undefined && lk !== "content-length" && lk !== "transfer-encoding") {
+          reply.header(k, v as string);
+        }
       }
       return reply.send(res.rawPayload);
     });
   });
+
+  // ── OpenAI Responses API (/v1/responses & /responses) for Codex & SDKs ──
+  const handleResponses = async (request: { headers: unknown; body: unknown }, reply: any) => {
+    const rawBody = (request.body && typeof request.body === "object" ? { ...(request.body as Record<string, unknown>) } : {}) as Record<string, unknown>;
+    if (!Array.isArray(rawBody.messages)) {
+      const converted: Array<{ role: string; content: unknown }> = [];
+      if (typeof rawBody.instructions === "string" && rawBody.instructions.trim()) {
+        converted.push({ role: "system", content: rawBody.instructions.trim() });
+      }
+      if (typeof rawBody.input === "string") {
+        converted.push({ role: "user", content: rawBody.input });
+      } else if (Array.isArray(rawBody.input)) {
+        for (const item of rawBody.input as any[]) {
+          if (item && typeof item === "object") {
+            if (item.role && item.content !== undefined) converted.push({ role: String(item.role), content: item.content });
+            else if (item.type === "message") converted.push({ role: String(item.role || "user"), content: item.content ?? "" });
+            else if (typeof item.text === "string") converted.push({ role: "user", content: item.text });
+            else converted.push({ role: "user", content: JSON.stringify(item) });
+          } else {
+            converted.push({ role: "user", content: String(item) });
+          }
+        }
+      }
+      rawBody.messages = converted;
+    }
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: forwardableHeaders(request.headers),
+      payload: rawBody,
+    });
+    reply.code(res.statusCode);
+    for (const [k, v] of Object.entries(res.headers)) {
+      const lk = k.toLowerCase();
+      if (v !== undefined && lk !== "content-length" && lk !== "transfer-encoding") {
+        reply.header(k, v as string);
+      }
+    }
+    if (rawBody.stream === true || res.statusCode >= 400) {
+      return reply.send(res.rawPayload);
+    }
+    try {
+      const chatJson = JSON.parse(res.rawPayload.toString("utf8")) as Record<string, any>;
+      const msg = chatJson?.choices?.[0]?.message || {};
+      const outputText = typeof msg.content === "string" ? msg.content : "";
+      const outputItems: any[] = [];
+      if (outputText) {
+        outputItems.push({
+          id: "msg_" + String(chatJson.id || newRequestId()).replace(/^req_/, ""),
+          type: "message",
+          status: "completed",
+          role: msg.role || "assistant",
+          content: [{ type: "output_text", text: outputText }],
+        });
+      }
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          outputItems.push({
+            id: tc.id || `call_${randomBytes(4).toString("hex")}`,
+            call_id: tc.id || `call_${randomBytes(4).toString("hex")}`,
+            type: "function_call",
+            name: tc.function?.name || "tool",
+            arguments: tc.function?.arguments || "{}",
+            status: "completed",
+          });
+        }
+      }
+      const usage = chatJson.usage || {};
+      return reply.send({
+        ...chatJson,
+        id: "resp_" + String(chatJson.id || newRequestId()).replace(/^req_/, ""),
+        object: "response",
+        status: "completed",
+        output: outputItems,
+        output_text: outputText,
+        usage: {
+          total_tokens: usage.total_tokens || ((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)),
+          input_tokens: usage.prompt_tokens || 0,
+          output_tokens: usage.completion_tokens || 0,
+          prompt_tokens: usage.prompt_tokens || 0,
+          completion_tokens: usage.completion_tokens || 0,
+        },
+      });
+    } catch {
+      return reply.send(res.rawPayload);
+    }
+  };
+  app.post("/v1/responses", handleResponses);
+  app.post("/responses", handleResponses);
 }
 

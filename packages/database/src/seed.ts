@@ -150,9 +150,9 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       name: "Nabh Cloud",
       endpointUrl: process.env.PROVIDER_NABH_BASE_URL || "https://api.nabh.cloud/v1",
       adapterType: "openai",
-      priority: 12,
+      priority: 9,
       region: "global",
-      capabilities: ["chat", "reasoning"],
+      capabilities: ["chat", "reasoning", "tool_calls"],
       description: "Nabh Cloud high-throughput AI gateway.",
     },
     {
@@ -171,7 +171,7 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     { slug: "mistral", name: "Mistral AI", endpointUrl: "https://api.mistral.ai/v1", adapterType: "openai", priority: 40, region: "eu", capabilities: ["chat", "tool_calls", "vision"], description: "Mistral models, OpenAI-compatible API." },
     { slug: "anthropic", name: "Anthropic", endpointUrl: "https://api.anthropic.com/v1", adapterType: "anthropic", priority: 25, region: "us", capabilities: ["chat", "tool_calls", "vision"], description: "Claude models." },
     { slug: "ollama", name: "Ollama (local)", endpointUrl: "http://localhost:11434/v1", adapterType: "openai", priority: 90, region: "local", capabilities: ["chat"], description: "Local Ollama server (OpenAI-compatible)." },
-    { slug: "freemodels", name: "FreeModels", endpointUrl: "https://freemodels-chat.freemodels.workers.dev/v1", adapterType: "freemodels", priority: 15, region: "global", capabilities: ["chat", "reasoning", "vision", "tool_calls"], description: "FreeModels gateway — free access to frontier chat models." },
+    { slug: "freemodels", name: "FreeModels", endpointUrl: "https://freemodels-chat.freemodels.workers.dev/v1", adapterType: "freemodels", priority: 15, region: "global", capabilities: ["chat", "reasoning", "vision"], description: "FreeModels gateway — free access to frontier chat models." },
     {
       slug: "requesty",
       name: "Requesty AI",
@@ -200,6 +200,24 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
     }).where(eq(providers.id, tokenJuiceProvider.id));
   }
 
+  // Ensure Nabh is marked tool-capable and FreeModels does NOT advertise native tool_calls
+  const nabhProviderRows = await db.select().from(providers).where(eq(providers.slug, "nabh"));
+  const nabhProvider = nabhProviderRows[0];
+  if (nabhProvider && !nabhProvider.capabilities.includes("tool_calls")) {
+    await db.update(providers).set({
+      capabilities: [...nabhProvider.capabilities, "tool_calls"],
+      updatedAt: new Date(),
+    }).where(eq(providers.id, nabhProvider.id));
+  }
+  const freemodelsRows = await db.select().from(providers).where(eq(providers.slug, "freemodels"));
+  const freemodelsRow = freemodelsRows[0];
+  if (freemodelsRow && freemodelsRow.capabilities.includes("tool_calls")) {
+    await db.update(providers).set({
+      capabilities: freemodelsRow.capabilities.filter((c) => c !== "tool_calls"),
+      updatedAt: new Date(),
+    }).where(eq(providers.id, freemodelsRow.id));
+  }
+
   for (const slug of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh", "openai"]) {
     await db
       .update(providers)
@@ -207,32 +225,38 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       .where(and(eq(providers.slug, slug), eq(providers.status, "unknown")));
   }
 
-  const envKeyFor: Record<string, string | undefined> = {
-    "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
-    requesty: process.env.PROVIDER_REQUESTY_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_REQUESTY_API_KEY,
-    openrouter: process.env.PROVIDER_OPENROUTER_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_OPENROUTER_API_KEY,
-    nabh: process.env.PROVIDER_NABH_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_NABH_API_KEY,
-    openai: (process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey)?.split(/[\s,;\n]+/)[0],
-    groq: (process.env.GROQ_API_KEY || env.groqApiKey)?.split(/[\s,;\n]+/)[0],
-    mistral: env.mistralApiKey,
-    anthropic: env.anthropicApiKey,
-    ollama: undefined,
+  const splitKeys = (raw?: string): string[] =>
+    raw ? raw.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean) : [];
+
+  const envPoolsFor: Record<string, string[]> = {
+    "prorouter-gateway": splitKeys(process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY),
+    requesty: splitKeys(process.env.PROVIDER_REQUESTY_API_KEY),
+    openrouter: splitKeys(process.env.PROVIDER_OPENROUTER_API_KEY),
+    nabh: splitKeys(process.env.PROVIDER_NABH_API_KEY),
+    openai: splitKeys(process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey),
+    groq: splitKeys(process.env.GROQ_API_KEY || env.groqApiKey),
+    mistral: splitKeys(env.mistralApiKey),
+    anthropic: splitKeys(env.anthropicApiKey),
   };
 
   const providerRows = await db.select().from(providers);
   const providerBySlug = new Map(providerRows.map((p) => [p.slug, p]));
-  for (const [slug, secret] of Object.entries(envKeyFor)) {
-    if (!secret) continue;
+  for (const [slug, secrets] of Object.entries(envPoolsFor)) {
+    if (secrets.length === 0) continue;
     const row = providerBySlug.get(slug);
     if (!row) continue;
-    const enc = encryptSecret(secret);
-    await db
-      .insert(providerCredentials)
-      .values({ providerId: row.id, keyName: "default", ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag })
-      .onConflictDoUpdate({
-        target: [providerCredentials.providerId, providerCredentials.keyName],
-        set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true },
-      });
+    for (let idx = 0; idx < secrets.length; idx++) {
+      const secret = secrets[idx];
+      const keyName = idx === 0 ? "default" : `pool_${idx}`;
+      const enc = encryptSecret(secret);
+      await db
+        .insert(providerCredentials)
+        .values({ providerId: row.id, keyName, ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag })
+        .onConflictDoUpdate({
+          target: [providerCredentials.providerId, providerCredentials.keyName],
+          set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true },
+        });
+    }
   }
 
   // ── Seed Upstream Provider Costs (§4) ────────────────────────────────
@@ -349,6 +373,8 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       links: [
         { provider: "openai", providerModelId: "gpt-4o", priority: 10 },
         { provider: "openrouter", providerModelId: "openai/gpt-4o", priority: 20 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 30 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 40 },
       ],
     },
     {
@@ -369,7 +395,11 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 },
+      ],
       freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 },
     },
     {
@@ -390,7 +420,11 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 },
+      ],
       freeLimits: { perMinute: 10, perHour: 100, perDay: 1000 },
     },
     {
@@ -411,7 +445,12 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      links: [
+        { provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 },
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 },
+      ],
       freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 },
     },
     {
@@ -432,7 +471,12 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      links: [
+        { provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 },
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 },
+      ],
       freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 },
     },
     // ALL OTHER MODELS ARE STRICTLY PAID
@@ -457,6 +501,8 @@ export async function seedDatabase(closeAtEnd = false): Promise<void> {
       links: [
         { provider: "openrouter", providerModelId: "anthropic/claude-3.5-sonnet", priority: 10 },
         { provider: "anthropic", providerModelId: "claude-3-5-sonnet-20241022", priority: 20 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 30 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 40 },
       ],
     },
     {

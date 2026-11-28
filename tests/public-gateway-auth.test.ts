@@ -647,8 +647,21 @@ describe("responses api endpoint", () => {
   it("normalizes and serves openai responses api requests in standalone mode", async () => {
     const previousApiBase = process.env.API_BASE_URL;
     const previousDemo = process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
+    const previousRequesty = process.env.PROVIDER_REQUESTY_API_KEY;
     process.env.API_BASE_URL = "";
     process.env.PROROUTER_ENABLE_DEMO_GATEWAY = "true";
+    process.env.PROVIDER_REQUESTY_API_KEY = "req_test_responses";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      id: "chatcmpl-resp-1",
+      object: "chat.completion",
+      model: "nvidia/nemotron-3.5-lightning-30b-a3b",
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: "import React from 'react';\nexport default function App() { return null; }" },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 15, total_tokens: 25 },
+    }), { status: 200, headers: { "content-type": "application/json" } })));
     vi.resetModules();
     try {
       const fresh = await import("../apps/web/app/v1/[...path]/route");
@@ -669,12 +682,15 @@ describe("responses api endpoint", () => {
       expect(body.status).toBe("completed");
       expect(Array.isArray(body.output)).toBe(true);
       expect(typeof body.output_text).toBe("string");
-      expect(body.output_text.length).toBeGreaterThan(0);
+      expect(body.output_text).toContain("import React");
     } finally {
       process.env.API_BASE_URL = previousApiBase;
       if (previousDemo === undefined) delete process.env.PROROUTER_ENABLE_DEMO_GATEWAY;
       else process.env.PROROUTER_ENABLE_DEMO_GATEWAY = previousDemo;
+      if (previousRequesty === undefined) delete process.env.PROVIDER_REQUESTY_API_KEY;
+      else process.env.PROVIDER_REQUESTY_API_KEY = previousRequesty;
+      vi.unstubAllGlobals();
       vi.resetModules();
     }
-  }, 60000);
+  });
 });

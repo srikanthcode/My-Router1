@@ -52,6 +52,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       cb(null, false);
     },
     credentials: true,
+    allowedHeaders: ["Authorization", "Content-Type", "x-api-key", "anthropic-version", "x-request-id", "x-title", "http-referer"],
     exposedHeaders: ["x-request-id", "retry-after", "x-prorouter-usage-source"],
   });
 
@@ -78,7 +79,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // CSRF hardening for cookie-authenticated mutations: enforce Origin (§45)
   app.addHook("onRequest", async (request) => {
     if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return;
-    if (request.headers.authorization) return; // API-key requests are not cookie CSRF targets
+    if (request.headers.authorization || request.headers["x-api-key"]) return; // API-key requests are not cookie CSRF targets
     const origin = request.headers.origin;
     if (!origin) return; // non-browser clients
     if (!isAllowedOrigin(origin)) {

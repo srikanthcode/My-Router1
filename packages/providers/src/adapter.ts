@@ -19,10 +19,19 @@ export class ProviderError extends Error {
     this.providerSlug = providerSlug;
     this.code = code;
     this.httpStatus = httpStatus;
-    // Any non-4xx-specific failure should let the router try the next provider.
-    // 401/403 fall here too: the credential belongs to one provider, not the
-    // request, so a healthy fallback can still serve it.
-    this.retryable = retryable ?? (httpStatus === 429 || httpStatus >= 500 || httpStatus === 0 || httpStatus === 401 || httpStatus === 403);
+    // Any credential/upstream/model rejection on a specific provider should let
+    // the router rotate keys and fail over to healthy alternative providers.
+    this.retryable =
+      retryable ??
+      (httpStatus === 429 ||
+        httpStatus >= 500 ||
+        httpStatus === 0 ||
+        httpStatus === 400 ||
+        httpStatus === 401 ||
+        httpStatus === 402 ||
+        httpStatus === 403 ||
+        httpStatus === 404 ||
+        httpStatus === 408);
   }
 }
 

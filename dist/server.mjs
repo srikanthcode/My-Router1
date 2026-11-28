@@ -1622,9 +1622,9 @@ async function seedDatabase(closeAtEnd = false) {
       name: "Nabh Cloud",
       endpointUrl: process.env.PROVIDER_NABH_BASE_URL || "https://api.nabh.cloud/v1",
       adapterType: "openai",
-      priority: 12,
+      priority: 9,
       region: "global",
-      capabilities: ["chat", "reasoning"],
+      capabilities: ["chat", "reasoning", "tool_calls"],
       description: "Nabh Cloud high-throughput AI gateway."
     },
     {
@@ -1643,7 +1643,7 @@ async function seedDatabase(closeAtEnd = false) {
     { slug: "mistral", name: "Mistral AI", endpointUrl: "https://api.mistral.ai/v1", adapterType: "openai", priority: 40, region: "eu", capabilities: ["chat", "tool_calls", "vision"], description: "Mistral models, OpenAI-compatible API." },
     { slug: "anthropic", name: "Anthropic", endpointUrl: "https://api.anthropic.com/v1", adapterType: "anthropic", priority: 25, region: "us", capabilities: ["chat", "tool_calls", "vision"], description: "Claude models." },
     { slug: "ollama", name: "Ollama (local)", endpointUrl: "http://localhost:11434/v1", adapterType: "openai", priority: 90, region: "local", capabilities: ["chat"], description: "Local Ollama server (OpenAI-compatible)." },
-    { slug: "freemodels", name: "FreeModels", endpointUrl: "https://freemodels-chat.freemodels.workers.dev/v1", adapterType: "freemodels", priority: 15, region: "global", capabilities: ["chat", "reasoning", "vision", "tool_calls"], description: "FreeModels gateway \u2014 free access to frontier chat models." },
+    { slug: "freemodels", name: "FreeModels", endpointUrl: "https://freemodels-chat.freemodels.workers.dev/v1", adapterType: "freemodels", priority: 15, region: "global", capabilities: ["chat", "reasoning", "vision"], description: "FreeModels gateway \u2014 free access to frontier chat models." },
     {
       slug: "requesty",
       name: "Requesty AI",
@@ -1666,31 +1666,51 @@ async function seedDatabase(closeAtEnd = false) {
       updatedAt: /* @__PURE__ */ new Date()
     }).where(eq(providers.id, tokenJuiceProvider.id));
   }
+  const nabhProviderRows = await db2.select().from(providers).where(eq(providers.slug, "nabh"));
+  const nabhProvider = nabhProviderRows[0];
+  if (nabhProvider && !nabhProvider.capabilities.includes("tool_calls")) {
+    await db2.update(providers).set({
+      capabilities: [...nabhProvider.capabilities, "tool_calls"],
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq(providers.id, nabhProvider.id));
+  }
+  const freemodelsRows = await db2.select().from(providers).where(eq(providers.slug, "freemodels"));
+  const freemodelsRow = freemodelsRows[0];
+  if (freemodelsRow && freemodelsRow.capabilities.includes("tool_calls")) {
+    await db2.update(providers).set({
+      capabilities: freemodelsRow.capabilities.filter((c) => c !== "tool_calls"),
+      updatedAt: /* @__PURE__ */ new Date()
+    }).where(eq(providers.id, freemodelsRow.id));
+  }
   for (const slug2 of ["prorouter-gateway", "freemodels", "requesty", "groq", "openrouter", "nabh", "openai"]) {
     await db2.update(providers).set({ status: "active" }).where(and(eq(providers.slug, slug2), eq(providers.status, "unknown")));
   }
-  const envKeyFor = {
-    "prorouter-gateway": process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY,
-    requesty: process.env.PROVIDER_REQUESTY_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_REQUESTY_API_KEY,
-    openrouter: process.env.PROVIDER_OPENROUTER_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_OPENROUTER_API_KEY,
-    nabh: process.env.PROVIDER_NABH_API_KEY?.split(/[\s,;\n]+/)[0] || process.env.PROVIDER_NABH_API_KEY,
-    openai: (process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey)?.split(/[\s,;\n]+/)[0],
-    groq: (process.env.GROQ_API_KEY || env.groqApiKey)?.split(/[\s,;\n]+/)[0],
-    mistral: env.mistralApiKey,
-    anthropic: env.anthropicApiKey,
-    ollama: void 0
+  const splitKeys = (raw) => raw ? raw.split(/[\s,;\n]+/).map((k) => k.trim()).filter(Boolean) : [];
+  const envPoolsFor = {
+    "prorouter-gateway": splitKeys(process.env.PROVIDER_PROROUTER_GATEWAY_API_KEY),
+    requesty: splitKeys(process.env.PROVIDER_REQUESTY_API_KEY),
+    openrouter: splitKeys(process.env.PROVIDER_OPENROUTER_API_KEY),
+    nabh: splitKeys(process.env.PROVIDER_NABH_API_KEY),
+    openai: splitKeys(process.env.PROVIDER_OPENAI_API_KEY || process.env.OPENAI_API_KEY || env.openaiApiKey),
+    groq: splitKeys(process.env.GROQ_API_KEY || env.groqApiKey),
+    mistral: splitKeys(env.mistralApiKey),
+    anthropic: splitKeys(env.anthropicApiKey)
   };
   const providerRows = await db2.select().from(providers);
   const providerBySlug = new Map(providerRows.map((p) => [p.slug, p]));
-  for (const [slug2, secret] of Object.entries(envKeyFor)) {
-    if (!secret) continue;
+  for (const [slug2, secrets] of Object.entries(envPoolsFor)) {
+    if (secrets.length === 0) continue;
     const row = providerBySlug.get(slug2);
     if (!row) continue;
-    const enc = encryptSecret(secret);
-    await db2.insert(providerCredentials).values({ providerId: row.id, keyName: "default", ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag }).onConflictDoUpdate({
-      target: [providerCredentials.providerId, providerCredentials.keyName],
-      set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true }
-    });
+    for (let idx = 0; idx < secrets.length; idx++) {
+      const secret = secrets[idx];
+      const keyName = idx === 0 ? "default" : `pool_${idx}`;
+      const enc = encryptSecret(secret);
+      await db2.insert(providerCredentials).values({ providerId: row.id, keyName, ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag }).onConflictDoUpdate({
+        target: [providerCredentials.providerId, providerCredentials.keyName],
+        set: { ciphertext: enc.ciphertext, iv: enc.iv, authTag: enc.authTag, active: true }
+      });
+    }
   }
   const verifiedUpstreamCosts = [
     { provider: "openai", modelId: "gpt-4.1", inCents: 250, outCents: 1e3, source: "OpenAI official pricing" },
@@ -1774,7 +1794,9 @@ async function seedDatabase(closeAtEnd = false) {
       pricingStatus: "approved",
       links: [
         { provider: "openai", providerModelId: "gpt-4o", priority: 10 },
-        { provider: "openrouter", providerModelId: "openai/gpt-4o", priority: 20 }
+        { provider: "openrouter", providerModelId: "openai/gpt-4o", priority: 20 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 30 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 40 }
       ]
     },
     {
@@ -1796,7 +1818,11 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 }
+      ],
       freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 }
     },
     {
@@ -1818,7 +1844,11 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 }],
+      links: [
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 }
+      ],
       freeLimits: { perMinute: 10, perHour: 100, perDay: 1e3 }
     },
     {
@@ -1840,7 +1870,12 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      links: [
+        { provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 },
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }
+      ],
       freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 }
     },
     {
@@ -1862,7 +1897,12 @@ async function seedDatabase(closeAtEnd = false) {
       toolCalls: true,
       structured: true,
       pricingStatus: "approved",
-      links: [{ provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 }, { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }],
+      links: [
+        { provider: "groq", providerModelId: "qwen/qwen3.8-27b", priority: 10 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 25 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 30 },
+        { provider: "prorouter-gateway", providerModelId: "deepseek-ai/DeepSeek-V4.1-Flash-1017", priority: 50 }
+      ],
       freeLimits: { perMinute: 15, perHour: 150, perDay: 1500 }
     },
     // ALL OTHER MODELS ARE STRICTLY PAID
@@ -1886,7 +1926,9 @@ async function seedDatabase(closeAtEnd = false) {
       pricingStatus: "approved",
       links: [
         { provider: "openrouter", providerModelId: "anthropic/claude-3.5-sonnet", priority: 10 },
-        { provider: "anthropic", providerModelId: "claude-3-5-sonnet-20241022", priority: 20 }
+        { provider: "anthropic", providerModelId: "claude-3-5-sonnet-20241022", priority: 20 },
+        { provider: "requesty", providerModelId: "nvidia/nemotron-3.5-lightning-30b-a3b", priority: 30 },
+        { provider: "nabh", providerModelId: "gpt-oss-20b", priority: 40 }
       ]
     },
     {
@@ -3608,7 +3650,7 @@ var VERIFIED_BACKEND_MODELS = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 120, output: 360 },
-    supportsNativeTools: false,
+    supportsNativeTools: true,
     supportsStreamingTools: true,
     supportsVision: true,
     supportsReasoning: true
@@ -3633,7 +3675,7 @@ var VERIFIED_BACKEND_MODELS = {
     healthStatus: "active",
     isFree: false,
     costPaisePerMillion: { input: 120, output: 360 },
-    supportsNativeTools: false,
+    supportsNativeTools: true,
     supportsStreamingTools: true,
     supportsVision: true,
     supportsReasoning: true
@@ -5354,20 +5396,29 @@ function isAgentOrStructuredRequest(reqOrHeaders, body) {
     if (body.tool_choice !== void 0) return true;
     if (body.response_format !== void 0) return true;
     if (Array.isArray(body.messages)) {
+      const xmlOrAgentPromptPattern = /<(?:write_to_file|replace_in_file|apply_diff|read_file|execute_command|list_files|search_files|attempt_completion|ask_followup_question|browser_action|list_code_definition_names|new_task|task|environment_details|use_mcp_tool|access_mcp_resource)>|\bYou are (?:Cline|Kilo Code|Roo Code|Claude Code|Cursor|Aider|Continue)\b/i;
       for (const m of body.messages) {
         if (!m || typeof m !== "object") continue;
         const msg = m;
-        if (msg.role === "tool") return true;
+        if (msg.role === "tool" || msg.role === "developer") return true;
         if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return true;
         if (msg.tool_call_id !== void 0) return true;
         if (msg.role === "system" && typeof msg.content === "string" && msg.content.length > 200) {
+          return true;
+        }
+        if (typeof msg.content === "string" && xmlOrAgentPromptPattern.test(msg.content)) {
           return true;
         }
         if (Array.isArray(msg.content)) {
           for (const block of msg.content) {
             if (block && typeof block === "object") {
               const b = block;
-              if (b.type === "tool_use" || b.type === "tool_result") return true;
+              if (b.type === "tool_use" || b.type === "tool_result" || b.type === "function_call" || b.type === "function_call_output") {
+                return true;
+              }
+              if (typeof b.text === "string" && xmlOrAgentPromptPattern.test(b.text)) {
+                return true;
+              }
             }
           }
         }
@@ -5379,21 +5430,24 @@ function isAgentOrStructuredRequest(reqOrHeaders, body) {
     let xTitle = "";
     let referer = "";
     let anthropicVersion = "";
+    let stainlessLang = "";
     const headersObj = reqOrHeaders.headers || reqOrHeaders;
     if (headersObj && typeof headersObj.get === "function") {
       userAgent = headersObj.get("user-agent") || "";
       xTitle = headersObj.get("x-title") || "";
       referer = headersObj.get("http-referer") || headersObj.get("referer") || "";
       anthropicVersion = headersObj.get("anthropic-version") || "";
+      stainlessLang = headersObj.get("x-stainless-lang") || headersObj.get("x-stainless-package-version") || "";
     } else if (headersObj && typeof headersObj === "object") {
       userAgent = String(headersObj["user-agent"] || "");
       xTitle = String(headersObj["x-title"] || "");
       referer = String(headersObj["http-referer"] || headersObj["referer"] || "");
       anthropicVersion = String(headersObj["anthropic-version"] || "");
+      stainlessLang = String(headersObj["x-stainless-lang"] || headersObj["x-stainless-package-version"] || "");
     }
-    if (anthropicVersion) return true;
+    if (anthropicVersion || stainlessLang) return true;
     const lowerHeaderStr = `${userAgent} ${xTitle} ${referer}`.toLowerCase();
-    const codingAgentPattern = /\b(?:cline|kilo|roo(?:-code)?|claude-code|cursor|aider|continue|opencode|anthropic|openai-sdk)\b/i;
+    const codingAgentPattern = /(?:cline|kilo(?:-?code)?|roo(?:-?code|-?cline)?|claude(?:-?code)?|cursor|aider|continue|opencode|goose|windsurf|zed|copilot|anthropic|openai\/(?:js|python)|openai-sdk|ai-sdk|langchain|mastra)/i;
     if (codingAgentPattern.test(lowerHeaderStr)) {
       return true;
     }
@@ -6817,7 +6871,7 @@ var ProviderError = class extends Error {
     this.providerSlug = providerSlug;
     this.code = code;
     this.httpStatus = httpStatus;
-    this.retryable = retryable ?? (httpStatus === 429 || httpStatus >= 500 || httpStatus === 0 || httpStatus === 401 || httpStatus === 403);
+    this.retryable = retryable ?? (httpStatus === 429 || httpStatus >= 500 || httpStatus === 0 || httpStatus === 400 || httpStatus === 401 || httpStatus === 402 || httpStatus === 403 || httpStatus === 404 || httpStatus === 408);
   }
 };
 function estimateTokens(text7) {
@@ -6923,7 +6977,7 @@ var OpenAICompatibleAdapter = class {
       }
     } catch {
     }
-    const retryable = res.status === 429 || res.status >= 500 || res.status === 401 || res.status === 403;
+    const retryable = res.status === 429 || res.status >= 500 || res.status === 400 || res.status === 401 || res.status === 402 || res.status === 403 || res.status === 404 || res.status === 408;
     throw new ProviderError(
       this.providerSlug,
       res.status === 429 ? "rate_limited" : res.status >= 500 ? "server_error" : "request_rejected",
@@ -7091,6 +7145,15 @@ var FreemodelsAdapter = class extends OpenAICompatibleAdapter {
     };
   }
   async chat(params, signal) {
+    if (params.tools && params.tools.length > 0) {
+      throw new ProviderError(
+        this.providerSlug,
+        "unsupported_for_tools",
+        "FreeModels upstream does not support native tool calling",
+        422,
+        true
+      );
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onAbort = () => controller.abort();
@@ -7131,6 +7194,18 @@ var FreemodelsAdapter = class extends OpenAICompatibleAdapter {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+  async *chatStream(params, signal) {
+    if (params.tools && params.tools.length > 0) {
+      throw new ProviderError(
+        this.providerSlug,
+        "unsupported_for_tools",
+        "FreeModels upstream does not support native tool calling",
+        422,
+        true
+      );
+    }
+    yield* super.chatStream(params, signal);
   }
 };
 
@@ -8114,6 +8189,25 @@ var REQUIRES_API_KEY = /* @__PURE__ */ new Set([
   "mistral"
 ]);
 var credentialCursor = /* @__PURE__ */ new Map();
+var pipelineKeyCooldownMap = /* @__PURE__ */ new Map();
+var pipelineHostCooldownMap = /* @__PURE__ */ new Map();
+function markPipelineKeyCooldown(providerSlug, key, ms) {
+  if (!key) return;
+  pipelineKeyCooldownMap.set(`${providerSlug}:${key}`, Date.now() + ms);
+}
+function isPipelineKeyCoolingDown(providerSlug, key) {
+  return (pipelineKeyCooldownMap.get(`${providerSlug}:${key}`) ?? 0) > Date.now();
+}
+function markPipelineHostDown(providerSlug, ms = 12e4) {
+  pipelineHostCooldownMap.set(providerSlug, Date.now() + ms);
+}
+function isPipelineHostDown(providerSlug) {
+  return (pipelineHostCooldownMap.get(providerSlug) ?? 0) > Date.now();
+}
+function isHostUnreachableError(pErr) {
+  const m = (pErr.message || "").toLowerCase();
+  return pErr.httpStatus === 0 && (m.includes("enotfound") || m.includes("econnrefused") || m.includes("eai_again") || m.includes("fetch failed"));
+}
 async function getCandidateKeyPool(candidate) {
   const keys = [];
   try {
@@ -8178,7 +8272,8 @@ async function getCandidateKeyPool(candidate) {
       if (k && !keys.includes(k)) keys.push(k);
     }
   }
-  return keys;
+  const active = keys.filter((k) => !isPipelineKeyCoolingDown(candidate.providerSlug, k));
+  return active.length > 0 ? active : keys;
 }
 async function getAdapter(candidate, apiKeyOverride) {
   const db2 = await getDb();
@@ -8251,18 +8346,22 @@ async function executeChat(decision, params, signal) {
     if (signal?.aborted) {
       throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
     }
+    if (isPipelineHostDown(candidate.providerSlug) && i < chain.length - 1) {
+      continue;
+    }
     const keyPool = await getCandidateKeyPool(candidate);
-    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 3) : [void 0];
+    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 25) : [void 0];
+    let effectiveUpstreamModel = candidate.upstreamModelId;
     let candidateFailed = false;
     for (let kIdx = 0; kIdx < keysToTry.length; kIdx++) {
       const currentApiKey = keysToTry[kIdx];
       const startedAt = Date.now();
       try {
         const adapter = await getAdapter(candidate, currentApiKey);
-        const result = await adapter.chat({ ...params, model: candidate.upstreamModelId }, signal);
+        const result = await adapter.chat({ ...params, model: effectiveUpstreamModel }, signal);
         ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-        return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, attempts };
+        return { ...result, providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: effectiveUpstreamModel, attempts };
       } catch (err) {
         if (signal?.aborted) {
           throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
@@ -8271,7 +8370,25 @@ async function executeChat(decision, params, signal) {
         lastError = pErr;
         ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
-        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 401 || pErr.httpStatus === 403 || pErr.httpStatus === 429 || pErr.httpStatus !== null && pErr.httpStatus >= 500);
+        if (isHostUnreachableError(pErr)) {
+          markPipelineHostDown(candidate.providerSlug, 12e4);
+          candidateFailed = true;
+          break;
+        }
+        const lowerMsg = (pErr.message || "").toLowerCase();
+        if (candidate.providerSlug === "nabh" && effectiveUpstreamModel !== "gpt-oss-20b" && (pErr.httpStatus === 404 || lowerMsg.includes("not available on the free plan"))) {
+          effectiveUpstreamModel = "gpt-oss-20b";
+          kIdx -= 1;
+          continue;
+        }
+        if (candidate.providerSlug === "requesty" && effectiveUpstreamModel !== "nvidia/nemotron-3.5-lightning-30b-a3b" && (pErr.httpStatus === 404 || pErr.httpStatus === 402 || pErr.httpStatus === 400)) {
+          effectiveUpstreamModel = "nvidia/nemotron-3.5-lightning-30b-a3b";
+          kIdx -= 1;
+          continue;
+        }
+        if (pErr.httpStatus === 401 || pErr.httpStatus === 403) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 864e5);
+        else if (pErr.httpStatus === 429) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 6e4);
+        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 400 || pErr.httpStatus === 401 || pErr.httpStatus === 402 || pErr.httpStatus === 403 || pErr.httpStatus === 404 || pErr.httpStatus === 408 || pErr.httpStatus === 429 || pErr.httpStatus !== null && pErr.httpStatus >= 500);
         if (!canTryNextKey) {
           candidateFailed = true;
           break;
@@ -8297,15 +8414,19 @@ async function* streamChat(decision, params, onMeta, signal) {
     if (signal?.aborted) {
       throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
     }
+    if (isPipelineHostDown(candidate.providerSlug) && i < chain.length - 1) {
+      continue;
+    }
     const keyPool = await getCandidateKeyPool(candidate);
-    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 3) : [void 0];
+    const keysToTry = keyPool.length > 0 ? keyPool.slice(0, 25) : [void 0];
+    let effectiveUpstreamModel = candidate.upstreamModelId;
     let candidateFailed = false;
     for (let kIdx = 0; kIdx < keysToTry.length; kIdx++) {
       const currentApiKey = keysToTry[kIdx];
       const startedAt = Date.now();
       try {
         const adapter = await getAdapter(candidate, currentApiKey);
-        const iterator = adapter.chatStream({ ...params, model: candidate.upstreamModelId }, signal)[Symbol.asyncIterator]();
+        const iterator = adapter.chatStream({ ...params, model: effectiveUpstreamModel }, signal)[Symbol.asyncIterator]();
         while (true) {
           const { value, done } = await iterator.next();
           if (done) break;
@@ -8320,20 +8441,40 @@ async function* streamChat(decision, params, onMeta, signal) {
           onMeta?.(value);
           yield value;
         }
+        ProviderHealthMonitor.recordSuccess(candidate.providerSlug, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "success", httpStatus: 200, latencyMs: Date.now() - startedAt, error: null });
-        return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: candidate.upstreamModelId, usage, usageSource, finishReason, attempts };
+        return { providerSlug: candidate.providerSlug, providerId: candidate.providerId, providerModelId: effectiveUpstreamModel, usage, usageSource, finishReason, attempts };
       } catch (err) {
         if (signal?.aborted) {
           throw new ProviderError(candidate.providerSlug, "client_aborted", "Client disconnected", 499, false);
         }
         const pErr = err instanceof ProviderError ? err : new ProviderError(candidate.providerSlug, "unknown", err.message, 500);
         lastError = pErr;
+        ProviderHealthMonitor.recordFailure(candidate.providerSlug, pErr.code, Date.now() - startedAt);
         attempts.push({ providerId: candidate.providerId, providerSlug: candidate.providerSlug, status: "failed", httpStatus: pErr.httpStatus || null, latencyMs: Date.now() - startedAt, error: pErr.message });
         if (started) {
           yield { type: "done", finishReason: "error" };
           throw pErr;
         }
-        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 401 || pErr.httpStatus === 403 || pErr.httpStatus === 429 || pErr.httpStatus !== null && pErr.httpStatus >= 500);
+        if (isHostUnreachableError(pErr)) {
+          markPipelineHostDown(candidate.providerSlug, 12e4);
+          candidateFailed = true;
+          break;
+        }
+        const lowerMsg = (pErr.message || "").toLowerCase();
+        if (candidate.providerSlug === "nabh" && effectiveUpstreamModel !== "gpt-oss-20b" && (pErr.httpStatus === 404 || lowerMsg.includes("not available on the free plan"))) {
+          effectiveUpstreamModel = "gpt-oss-20b";
+          kIdx -= 1;
+          continue;
+        }
+        if (candidate.providerSlug === "requesty" && effectiveUpstreamModel !== "nvidia/nemotron-3.5-lightning-30b-a3b" && (pErr.httpStatus === 404 || pErr.httpStatus === 402 || pErr.httpStatus === 400)) {
+          effectiveUpstreamModel = "nvidia/nemotron-3.5-lightning-30b-a3b";
+          kIdx -= 1;
+          continue;
+        }
+        if (pErr.httpStatus === 401 || pErr.httpStatus === 403) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 864e5);
+        else if (pErr.httpStatus === 429) markPipelineKeyCooldown(candidate.providerSlug, currentApiKey, 6e4);
+        const canTryNextKey = kIdx < keysToTry.length - 1 && (pErr.httpStatus === 400 || pErr.httpStatus === 401 || pErr.httpStatus === 402 || pErr.httpStatus === 403 || pErr.httpStatus === 404 || pErr.httpStatus === 408 || pErr.httpStatus === 429 || pErr.httpStatus !== null && pErr.httpStatus >= 500);
         if (!canTryNextKey) {
           candidateFailed = true;
           break;
@@ -8678,13 +8819,14 @@ async function chatRoutes(app) {
     if (!decision) {
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy. Please retry shortly.`);
     }
+    const isAgentRequest = requiresTools || isAgentOrStructuredRequest(request, request.body);
     const hasClientSystemPrompt = messages2.some(
       (m) => m?.role === "system" && typeof m?.content === "string" && m.content.trim().length > 0
     );
-    const isGreetingTurn = CodingIntentDetector.isGreetingInput(messages2);
-    const isCodingTask = !isGreetingTurn && CodingIntentDetector.isCodingIntent(messages2);
+    const isGreetingTurn = !isAgentRequest && CodingIntentDetector.isGreetingInput(messages2);
+    const isCodingTask = !isAgentRequest && !isGreetingTurn && CodingIntentDetector.isCodingIntent(messages2);
     let effectiveMessages = messages2;
-    if (!hasClientSystemPrompt && isCodingTask) {
+    if (!isAgentRequest && !hasClientSystemPrompt && isCodingTask) {
       const intent = CodingIntentDetector.detectIntent(messages2);
       const directive = CodingIntentDetector.buildCodingDirective(intent);
       effectiveMessages = [
@@ -8849,16 +8991,8 @@ async function chatRoutes(app) {
         const normalizedFinishReason = result.finishReason === "stop" && hasToolCalls ? "tool_calls" : result.finishReason;
         const sanitizedContent = (() => {
           const profile = ModelProfileRegistry.get(slug2);
-          let base = sanitizeModelOutput(result.content, ctx.model.name);
+          let base = isAgentRequest ? result.content : sanitizeModelOutput(result.content, ctx.model.name);
           if (profile) base = ModelBehaviorEngine.sanitizeOutput(base, profile);
-          const isGreeting = CodingIntentDetector.isGreetingInput(messages2);
-          if (isGreeting) {
-            if (CodingIntentDetector.isVacuousResponse(base) || CodingIntentDetector.isVacuousAck(base) || !base.trim() || base.includes("Interactive App") || base.includes("Click Me")) {
-              base = "Hello! How can I assist you with your project today?";
-            }
-          } else if (isCodingTask && (CodingIntentDetector.isVacuousResponse(base) || !base.trim())) {
-            base = CodingIntentDetector.generateFallbackCode(messages2);
-          }
           return base;
         })();
         app.log.info({
@@ -8884,7 +9018,7 @@ async function chatRoutes(app) {
               role: "assistant",
               // When tool calls are present and content is empty, set content to null
               // (not "") to match OpenAI spec — agents check for null to detect pure tool responses
-              content: hasToolCalls && !sanitizedContent ? null : sanitizedContent || (hasToolCalls ? null : "I have received and processed your request."),
+              content: hasToolCalls && !sanitizedContent ? null : sanitizedContent || null,
               tool_calls: hasToolCalls ? result.toolCalls : void 0
             },
             finish_reason: normalizedFinishReason
@@ -8943,7 +9077,13 @@ async function chatRoutes(app) {
           write({ uno_queue: { model: slug2, position: 0, ready: true, estimatedWaitMs: 0, waitedMs: queueWaitMs, message: "Ready \u2014 starting response" } });
         }
       }
-      write(oaiChunk({ role: "assistant" }));
+      let sentRoleAnnouncement = false;
+      const ensureRoleAnnouncement = () => {
+        if (!sentRoleAnnouncement) {
+          sentRoleAnnouncement = true;
+          write(oaiChunk({ role: "assistant" }));
+        }
+      };
       let usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
       let usageSource = "none";
       let ttftMs = null;
@@ -8965,19 +9105,24 @@ async function chatRoutes(app) {
             if (ev.type === "start") {
             } else if (ev.type === "delta") {
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
+              ensureRoleAnnouncement();
               const profile = ModelProfileRegistry.get(slug2);
-              let sanitizedText = sanitizeModelOutput(ev.text, ctx.model.name);
+              let sanitizedText = isAgentRequest ? ev.text : sanitizeModelOutput(ev.text, ctx.model.name);
               if (profile) sanitizedText = ModelBehaviorEngine.sanitizeOutput(sanitizedText, profile);
               contentSoFar += sanitizedText;
               write(oaiChunk({ content: sanitizedText }));
             } else if (ev.type === "reasoning_delta") {
-              const sanitizedReasoning = sanitizeModelOutput(ev.text, ctx.model.name);
+              ensureRoleAnnouncement();
+              const profile = ModelProfileRegistry.get(slug2);
+              let sanitizedReasoning = isAgentRequest ? ev.text : sanitizeModelOutput(ev.text, ctx.model.name);
+              if (profile) sanitizedReasoning = ModelBehaviorEngine.sanitizeOutput(sanitizedReasoning, profile);
               write(oaiChunk({ reasoning_content: sanitizedReasoning }));
             } else if (ev.type === "tool_call_delta") {
               if (ev.name !== void 0 && isChannelTokenToolCall(ev.name)) {
                 continue;
               }
               if (ttftMs === null) ttftMs = Date.now() - startedAt;
+              ensureRoleAnnouncement();
               const tcFunc = {};
               if (ev.name !== void 0) tcFunc.name = cleanSpecialTokens(ev.name);
               if (ev.arguments !== void 0) tcFunc.arguments = cleanSpecialTokens(ev.arguments);
@@ -9016,12 +9161,7 @@ async function chatRoutes(app) {
         res.end();
         return;
       }
-      if (!contentSoFar && !hasSeenToolCalls) {
-        const isGreeting = CodingIntentDetector.isGreetingInput(messages2);
-        const fallbackText = isGreeting ? "Hello! How can I assist you with your project today?" : isCodingTask ? CodingIntentDetector.generateFallbackCode(messages2) : "I have received and processed your request.";
-        contentSoFar = fallbackText;
-        write(oaiChunk({ content: fallbackText }));
-      }
+      ensureRoleAnnouncement();
       write(oaiChunk({}, finishReason));
       if (usage.total_tokens === 0) {
         usage = {
@@ -9073,20 +9213,120 @@ async function chatRoutes(app) {
       if (acquired) releaseSlot(acquiredKey, slotServiceStart ? Date.now() - slotServiceStart : 0);
     }
   });
+  const forwardableHeaders = (raw) => {
+    const out = {};
+    if (!raw || typeof raw !== "object") return out;
+    for (const [k, v] of Object.entries(raw)) {
+      const lk = k.toLowerCase();
+      if (lk === "content-length" || lk === "transfer-encoding" || lk === "host") continue;
+      if (typeof v === "string") out[lk] = v;
+    }
+    return out;
+  };
   app.post("/chat/completions", async (request, reply) => {
     return app.inject({
       method: "POST",
       url: "/v1/chat/completions",
-      headers: request.headers,
+      headers: forwardableHeaders(request.headers),
       payload: request.body
     }).then((res) => {
       reply.code(res.statusCode);
       for (const [k, v] of Object.entries(res.headers)) {
-        if (v !== void 0) reply.header(k, v);
+        const lk = k.toLowerCase();
+        if (v !== void 0 && lk !== "content-length" && lk !== "transfer-encoding") {
+          reply.header(k, v);
+        }
       }
       return reply.send(res.rawPayload);
     });
   });
+  const handleResponses = async (request, reply) => {
+    const rawBody = request.body && typeof request.body === "object" ? { ...request.body } : {};
+    if (!Array.isArray(rawBody.messages)) {
+      const converted = [];
+      if (typeof rawBody.instructions === "string" && rawBody.instructions.trim()) {
+        converted.push({ role: "system", content: rawBody.instructions.trim() });
+      }
+      if (typeof rawBody.input === "string") {
+        converted.push({ role: "user", content: rawBody.input });
+      } else if (Array.isArray(rawBody.input)) {
+        for (const item of rawBody.input) {
+          if (item && typeof item === "object") {
+            if (item.role && item.content !== void 0) converted.push({ role: String(item.role), content: item.content });
+            else if (item.type === "message") converted.push({ role: String(item.role || "user"), content: item.content ?? "" });
+            else if (typeof item.text === "string") converted.push({ role: "user", content: item.text });
+            else converted.push({ role: "user", content: JSON.stringify(item) });
+          } else {
+            converted.push({ role: "user", content: String(item) });
+          }
+        }
+      }
+      rawBody.messages = converted;
+    }
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: forwardableHeaders(request.headers),
+      payload: rawBody
+    });
+    reply.code(res.statusCode);
+    for (const [k, v] of Object.entries(res.headers)) {
+      const lk = k.toLowerCase();
+      if (v !== void 0 && lk !== "content-length" && lk !== "transfer-encoding") {
+        reply.header(k, v);
+      }
+    }
+    if (rawBody.stream === true || res.statusCode >= 400) {
+      return reply.send(res.rawPayload);
+    }
+    try {
+      const chatJson = JSON.parse(res.rawPayload.toString("utf8"));
+      const msg = chatJson?.choices?.[0]?.message || {};
+      const outputText = typeof msg.content === "string" ? msg.content : "";
+      const outputItems = [];
+      if (outputText) {
+        outputItems.push({
+          id: "msg_" + String(chatJson.id || newRequestId()).replace(/^req_/, ""),
+          type: "message",
+          status: "completed",
+          role: msg.role || "assistant",
+          content: [{ type: "output_text", text: outputText }]
+        });
+      }
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          outputItems.push({
+            id: tc.id || `call_${randomBytes3(4).toString("hex")}`,
+            call_id: tc.id || `call_${randomBytes3(4).toString("hex")}`,
+            type: "function_call",
+            name: tc.function?.name || "tool",
+            arguments: tc.function?.arguments || "{}",
+            status: "completed"
+          });
+        }
+      }
+      const usage = chatJson.usage || {};
+      return reply.send({
+        ...chatJson,
+        id: "resp_" + String(chatJson.id || newRequestId()).replace(/^req_/, ""),
+        object: "response",
+        status: "completed",
+        output: outputItems,
+        output_text: outputText,
+        usage: {
+          total_tokens: usage.total_tokens || (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+          input_tokens: usage.prompt_tokens || 0,
+          output_tokens: usage.completion_tokens || 0,
+          prompt_tokens: usage.prompt_tokens || 0,
+          completion_tokens: usage.completion_tokens || 0
+        }
+      });
+    } catch {
+      return reply.send(res.rawPayload);
+    }
+  };
+  app.post("/v1/responses", handleResponses);
+  app.post("/responses", handleResponses);
 }
 
 // apps/api/src/routes/messages.ts
@@ -9166,11 +9406,18 @@ function convertAnthropicMessagesToCanonical(messages2, system) {
     }
     if (Array.isArray(rawContent)) {
       let accumulatedText = "";
+      const contentParts = [];
+      let hasMediaBlock = false;
       const toolCalls = [];
       for (const block of rawContent) {
         if (!block || typeof block !== "object") continue;
         if (block.type === "text" && typeof block.text === "string") {
           accumulatedText += (accumulatedText ? "\n" : "") + block.text;
+          contentParts.push({ type: "text", text: block.text });
+        } else if (block.type === "image" && block.source) {
+          hasMediaBlock = true;
+          const url = block.source.type === "url" ? block.source.url : block.source.data ? `data:${block.source.media_type || "image/png"};base64,${block.source.data}` : "";
+          if (url) contentParts.push({ type: "image_url", image_url: { url } });
         } else if (block.type === "tool_use") {
           toolCalls.push({
             id: block.id || `toolu_${randomBytes4(8).toString("hex")}`,
@@ -9197,8 +9444,8 @@ function convertAnthropicMessagesToCanonical(messages2, system) {
             tool_calls: toolCalls.length > 0 ? toolCalls : void 0
           });
         }
-      } else if (accumulatedText) {
-        result.push({ role: "user", content: accumulatedText });
+      } else if (hasMediaBlock || accumulatedText) {
+        result.push({ role: "user", content: hasMediaBlock ? contentParts : accumulatedText });
       }
     }
   }
@@ -9260,12 +9507,44 @@ var messagesRoutes = async (app) => {
     const sub = rows.find((r) => r.plan && r.plan.active);
     const plan = sub ? { slug: sub.plan.slug, freeRpm: sub.plan.freeRpm, concurrency: sub.plan.concurrency, queuePriority: sub.plan.queuePriority } : { slug: "free", freeRpm: 1, concurrency: 1, queuePriority: 5 };
     const fallbackEnabled = await getFlag("provider_fallback", true);
-    const isFree = Boolean(ctx.model.isFree);
+    const isAgentRequest = requiresTools || isAgentOrStructuredRequest(request, request.body);
+    const isDailyFree = isDailyFreeEligible(slug2);
+    let freeTokensReserved = 0;
+    let isFree = Boolean(ctx.model.isFree);
     const stream = body.stream === true;
     let hasReservation = false;
-    if (!isFree) {
-      const inputTokens = countMessageTokens2(canonicalMessages);
-      const maxOut = Math.min(body.max_tokens ?? 4096, ctx.model.maxOutputTokens);
+    const inputTokens = countMessageTokens2(canonicalMessages);
+    const maxOut = Math.min(body.max_tokens ?? 4096, ctx.model.maxOutputTokens);
+    const estimatedTotalTokens = inputTokens + maxOut;
+    if (isDailyFree) {
+      const freeRes = await reserveDailyFreeTokens({
+        userId: auth.user.id,
+        estimatedTokens: estimatedTotalTokens
+      });
+      freeTokensReserved = freeRes.reservedTokens;
+      if (freeRes.spilloverTokens > 0) {
+        const spilloverRatio = freeRes.spilloverTokens / Math.max(1, estimatedTotalTokens);
+        const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
+        const totalEstimated = requestCost({
+          inputTokens,
+          outputTokens: maxOut,
+          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
+          platformFeePercent: feePercent
+        });
+        const spilloverCost = Math.ceil(totalEstimated * spilloverRatio);
+        try {
+          await reserveBalance({ userId: auth.user.id, requestId, amountPaise: spilloverCost });
+          hasReservation = true;
+        } catch (resErr) {
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved });
+          throw resErr;
+        }
+        isFree = false;
+      } else {
+        isFree = true;
+      }
+    } else if (!isFree) {
       const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
       const estimated = requestCost({
         inputTokens,
@@ -9284,6 +9563,10 @@ var messagesRoutes = async (app) => {
       requiresTools
     });
     if (!decision) {
+      if (freeTokensReserved > 0) await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved }).catch(() => {
+      });
+      if (hasReservation) await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+      });
       throw new ApiError("provider_unavailable", `All providers for '${ctx.model.name}' are currently unhealthy.`);
     }
     const adapterParams = {
@@ -9314,34 +9597,59 @@ var messagesRoutes = async (app) => {
     const finalize = async (params) => {
       const usage2 = params.usage;
       const usageSource2 = params.usageSource ?? "none";
+      const totalActualTokens = usage2.total_tokens || usage2.prompt_tokens + usage2.completion_tokens;
       let cost = 0;
-      if (!isFree && !params.errorCode && (usage2.prompt_tokens > 0 || usage2.completion_tokens > 0)) {
-        const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
-        cost = requestCost({
-          inputTokens: usage2.prompt_tokens,
-          outputTokens: usage2.completion_tokens,
-          inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
-          outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
-          platformFeePercent: feePercent
-        });
-        if (hasReservation) {
-          const settlement = await settleReservation({
-            userId: auth.user.id,
-            requestId,
-            actualAmountPaise: cost,
-            reference: requestId,
-            metadata: { model: slug2, provider: params.providerSlug }
+      if (params.errorCode) {
+        if (freeTokensReserved > 0) {
+          await releaseDailyFreeTokens({ userId: auth.user.id, reservedTokens: freeTokensReserved }).catch(() => {
           });
-          cost = settlement.deductedPaise;
-          hasReservation = false;
-        } else {
-          const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug2, provider: params.providerSlug } });
-          cost = debit.deductedPaise;
+          freeTokensReserved = 0;
         }
-      } else if (hasReservation) {
-        await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
-        });
-        hasReservation = false;
+        if (hasReservation) {
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+          });
+          hasReservation = false;
+        }
+      } else {
+        let spilloverPaidTokens = totalActualTokens;
+        if (freeTokensReserved > 0) {
+          const settlement = await settleDailyFreeTokens({
+            userId: auth.user.id,
+            reservedTokens: freeTokensReserved,
+            actualTokens: totalActualTokens
+          });
+          spilloverPaidTokens = settlement.spilloverPaidTokens;
+          if (spilloverPaidTokens === 0) isFree = true;
+        }
+        if (spilloverPaidTokens > 0 && !isFree && (usage2.prompt_tokens > 0 || usage2.completion_tokens > 0)) {
+          const feePercent = await getNumber("PLATFORM_FEE_PERCENT", 0);
+          const paidRatio = spilloverPaidTokens / Math.max(1, totalActualTokens);
+          cost = requestCost({
+            inputTokens: Math.round(usage2.prompt_tokens * paidRatio),
+            outputTokens: Math.round(usage2.completion_tokens * paidRatio),
+            inputPricePerMillion: effectivePricing.pricing.inputPerMillion,
+            outputPricePerMillion: effectivePricing.pricing.outputPerMillion,
+            platformFeePercent: feePercent
+          });
+          if (hasReservation) {
+            const settlement = await settleReservation({
+              userId: auth.user.id,
+              requestId,
+              actualAmountPaise: cost,
+              reference: requestId,
+              metadata: { model: slug2, provider: params.providerSlug }
+            });
+            cost = settlement.deductedPaise;
+            hasReservation = false;
+          } else {
+            const debit = await debitWallet({ userId: auth.user.id, amountPaise: cost, reference: requestId, idempotencyKey: `usage:${requestId}`, metadata: { model: slug2, provider: params.providerSlug } });
+            cost = debit.deductedPaise;
+          }
+        } else if (hasReservation) {
+          await releaseReservation({ userId: auth.user.id, requestId }).catch(() => {
+          });
+          hasReservation = false;
+        }
       }
       await db2.update(requests).set({
         status: params.errorCode ? "error" : "success",
@@ -9361,10 +9669,26 @@ var messagesRoutes = async (app) => {
     };
     const msgId = `msg_${requestId.replace(/^req_/, "").slice(0, 20)}`;
     if (!stream) {
-      const result = await executeChat(decision, adapterParams, request.signal);
+      let result;
+      try {
+        result = await executeChat(decision, adapterParams, request.signal);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Upstream provider error.";
+        await finalize({
+          usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          usageSource: "none",
+          providerId: decision.primary.providerId,
+          providerSlug: decision.primary.providerSlug,
+          ttftMs: null,
+          errorCode: err instanceof ApiError ? err.code : "provider_error",
+          errorMessage: message
+        }).catch(() => {
+        });
+        throw err instanceof ApiError ? err : new ApiError("provider_unavailable", message);
+      }
       await finalize({ usage: result.usage, usageSource: result.usageSource, providerId: result.providerId, providerSlug: result.providerSlug, ttftMs: null });
       const contentBlocks = [];
-      const sanitizedContent = sanitizeModelOutput(result.content, ctx.model.name);
+      const sanitizedContent = isAgentRequest ? result.content : sanitizeModelOutput(result.content, ctx.model.name);
       if (sanitizedContent) {
         contentBlocks.push({ type: "text", text: sanitizedContent });
       }
@@ -9381,9 +9705,6 @@ var messagesRoutes = async (app) => {
           name: tc.function?.name || "tool",
           input: parsedInput
         });
-      }
-      if (contentBlocks.length === 0) {
-        contentBlocks.push({ type: "text", text: "I have received and processed your request." });
       }
       let stopReason2 = "end_turn";
       if (contentBlocks.some((b) => b.type === "tool_use") || result.finishReason === "tool_calls") {
@@ -9425,10 +9746,12 @@ data: ${JSON.stringify(data)}
     let ttftMs = null;
     let providerSlug = decision.primary.providerSlug;
     let outcomeProviderId = null;
-    let textBlockStarted = false;
-    let activeToolIndex = -1;
-    let currentToolId = "";
-    let currentToolName = "";
+    let nextBlockIndex = 0;
+    let thinkingBlockIndex = null;
+    let thinkingBlockStopped = false;
+    let textBlockIndex = null;
+    let textBlockStopped = false;
+    const toolBlocks = /* @__PURE__ */ new Map();
     let hasSeenTools = false;
     let stopReason = "end_turn";
     sendEvent("message_start", {
@@ -9444,6 +9767,16 @@ data: ${JSON.stringify(data)}
         usage: { input_tokens: usage.prompt_tokens, output_tokens: 1 }
       }
     });
+    const closeOpenTextAndThinking = () => {
+      if (thinkingBlockIndex !== null && !thinkingBlockStopped) {
+        thinkingBlockStopped = true;
+        sendEvent("content_block_stop", { type: "content_block_stop", index: thinkingBlockIndex });
+      }
+      if (textBlockIndex !== null && !textBlockStopped) {
+        textBlockStopped = true;
+        sendEvent("content_block_stop", { type: "content_block_stop", index: textBlockIndex });
+      }
+    };
     try {
       const iterator = streamChat(decision, adapterParams, void 0, request.signal);
       while (true) {
@@ -9457,55 +9790,79 @@ data: ${JSON.stringify(data)}
           break;
         }
         const ev = step.value;
-        if (ev.type === "delta" && ev.text) {
+        if (ev.type === "reasoning_delta" && ev.text) {
           if (ttftMs === null) ttftMs = Date.now() - startedAt;
-          if (!textBlockStarted) {
+          if (thinkingBlockIndex === null) {
+            thinkingBlockIndex = nextBlockIndex++;
             sendEvent("content_block_start", {
               type: "content_block_start",
-              index: 0,
-              content_block: { type: "text", text: "" }
+              index: thinkingBlockIndex,
+              content_block: { type: "thinking", thinking: "" }
             });
-            textBlockStarted = true;
           }
           sendEvent("content_block_delta", {
             type: "content_block_delta",
-            index: 0,
-            delta: { type: "text_delta", text: ev.text }
+            index: thinkingBlockIndex,
+            delta: { type: "thinking_delta", thinking: ev.text }
           });
+        } else if (ev.type === "delta" && ev.text) {
+          if (ttftMs === null) ttftMs = Date.now() - startedAt;
+          if (thinkingBlockIndex !== null && !thinkingBlockStopped) {
+            thinkingBlockStopped = true;
+            sendEvent("content_block_stop", { type: "content_block_stop", index: thinkingBlockIndex });
+          }
+          if (textBlockIndex === null) {
+            textBlockIndex = nextBlockIndex++;
+            sendEvent("content_block_start", {
+              type: "content_block_start",
+              index: textBlockIndex,
+              content_block: { type: "text", text: "" }
+            });
+          }
+          const deltaText = isAgentRequest ? ev.text : sanitizeModelOutput(ev.text, ctx.model.name);
+          if (deltaText) {
+            sendEvent("content_block_delta", {
+              type: "content_block_delta",
+              index: textBlockIndex,
+              delta: { type: "text_delta", text: deltaText }
+            });
+          }
         } else if (ev.type === "tool_call_delta") {
+          if (ev.name !== void 0 && isChannelTokenToolCall(ev.name)) {
+            continue;
+          }
           if (ttftMs === null) ttftMs = Date.now() - startedAt;
           hasSeenTools = true;
           stopReason = "tool_use";
-          if (textBlockStarted) {
-            sendEvent("content_block_stop", { type: "content_block_stop", index: 0 });
-            textBlockStarted = false;
-          }
-          if (ev.id || ev.name) {
-            if (activeToolIndex >= 0) {
-              sendEvent("content_block_stop", { type: "content_block_stop", index: activeToolIndex });
-            }
-            activeToolIndex = (ev.index ?? 0) + 1;
-            currentToolId = ev.id || `toolu_${randomBytes4(8).toString("hex")}`;
-            currentToolName = ev.name || "tool";
+          closeOpenTextAndThinking();
+          const tcIndex = typeof ev.index === "number" ? ev.index : 0;
+          let toolBlock = toolBlocks.get(tcIndex);
+          if (!toolBlock) {
+            const blockIndex = nextBlockIndex++;
+            toolBlock = {
+              blockIndex,
+              id: ev.id || `toolu_${randomBytes4(8).toString("hex")}`,
+              name: cleanSpecialTokens(ev.name || "tool") || "tool"
+            };
+            toolBlocks.set(tcIndex, toolBlock);
             sendEvent("content_block_start", {
               type: "content_block_start",
-              index: activeToolIndex,
+              index: toolBlock.blockIndex,
               content_block: {
                 type: "tool_use",
-                id: currentToolId,
-                name: currentToolName,
+                id: toolBlock.id,
+                name: toolBlock.name,
                 input: {}
               }
             });
           }
           if (ev.arguments) {
-            const blockIdx = activeToolIndex >= 0 ? activeToolIndex : (ev.index ?? 0) + 1;
             sendEvent("content_block_delta", {
               type: "content_block_delta",
-              index: blockIdx,
+              index: toolBlock.blockIndex,
               delta: {
                 type: "input_json_delta",
-                partial_json: ev.arguments
+                partial_json: cleanSpecialTokens(ev.arguments)
               }
             });
           }
@@ -9514,23 +9871,9 @@ data: ${JSON.stringify(data)}
           usageSource = ev.usageSource;
         }
       }
-      if (!textBlockStarted && !hasSeenTools) {
-        sendEvent("content_block_start", {
-          type: "content_block_start",
-          index: 0,
-          content_block: { type: "text", text: "" }
-        });
-        sendEvent("content_block_delta", {
-          type: "content_block_delta",
-          index: 0,
-          delta: { type: "text_delta", text: "I have received and processed your request." }
-        });
-        sendEvent("content_block_stop", { type: "content_block_stop", index: 0 });
-      } else if (textBlockStarted) {
-        sendEvent("content_block_stop", { type: "content_block_stop", index: 0 });
-      }
-      if (activeToolIndex >= 0) {
-        sendEvent("content_block_stop", { type: "content_block_stop", index: activeToolIndex });
+      closeOpenTextAndThinking();
+      for (const tb of toolBlocks.values()) {
+        sendEvent("content_block_stop", { type: "content_block_stop", index: tb.blockIndex });
       }
       if (hasSeenTools) {
         stopReason = "tool_use";
@@ -9550,6 +9893,50 @@ data: ${JSON.stringify(data)}
       });
       res.end();
     }
+  });
+  const forwardableHeaders = (raw) => {
+    const out = {};
+    if (!raw || typeof raw !== "object") return out;
+    for (const [k, v] of Object.entries(raw)) {
+      const lk = k.toLowerCase();
+      if (lk === "content-length" || lk === "transfer-encoding" || lk === "host") continue;
+      if (typeof v === "string") out[lk] = v;
+    }
+    return out;
+  };
+  app.post("/messages", async (request, reply) => {
+    return app.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: forwardableHeaders(request.headers),
+      payload: request.body
+    }).then((res) => {
+      reply.code(res.statusCode);
+      for (const [k, v] of Object.entries(res.headers)) {
+        const lk = k.toLowerCase();
+        if (v !== void 0 && lk !== "content-length" && lk !== "transfer-encoding") {
+          reply.header(k, v);
+        }
+      }
+      return reply.send(res.rawPayload);
+    });
+  });
+  app.post("/messages/count_tokens", async (request, reply) => {
+    return app.inject({
+      method: "POST",
+      url: "/v1/messages/count_tokens",
+      headers: forwardableHeaders(request.headers),
+      payload: request.body
+    }).then((res) => {
+      reply.code(res.statusCode);
+      for (const [k, v] of Object.entries(res.headers)) {
+        const lk = k.toLowerCase();
+        if (v !== void 0 && lk !== "content-length" && lk !== "transfer-encoding") {
+          reply.header(k, v);
+        }
+      }
+      return reply.send(res.rawPayload);
+    });
   });
 };
 
@@ -11276,6 +11663,7 @@ async function buildApp() {
       cb(null, false);
     },
     credentials: true,
+    allowedHeaders: ["Authorization", "Content-Type", "x-api-key", "anthropic-version", "x-request-id", "x-title", "http-referer"],
     exposedHeaders: ["x-request-id", "retry-after", "x-prorouter-usage-source"]
   });
   await app.register(cookie, { secret: env.authSecret });
@@ -11295,7 +11683,7 @@ async function buildApp() {
   });
   app.addHook("onRequest", async (request) => {
     if (request.method === "GET" || request.method === "HEAD" || request.method === "OPTIONS") return;
-    if (request.headers.authorization) return;
+    if (request.headers.authorization || request.headers["x-api-key"]) return;
     const origin = request.headers.origin;
     if (!origin) return;
     if (!isAllowedOrigin(origin)) {

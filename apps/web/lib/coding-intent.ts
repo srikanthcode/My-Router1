@@ -31,22 +31,37 @@ export function isAgentOrStructuredRequest(
     if (body.tool_choice !== undefined) return true;
     if (body.response_format !== undefined) return true;
 
-    // 2. Check messages for tool calls, tool results, role === "tool", or long system prompt
+    // 2. Check messages for tool calls, tool results, role === "tool"|"developer", XML tool tags, or long system prompt
     if (Array.isArray(body.messages)) {
+      const xmlOrAgentPromptPattern =
+        /<(?:write_to_file|replace_in_file|apply_diff|read_file|execute_command|list_files|search_files|attempt_completion|ask_followup_question|browser_action|list_code_definition_names|new_task|task|environment_details|use_mcp_tool|access_mcp_resource)>|\bYou are (?:Cline|Kilo Code|Roo Code|Claude Code|Cursor|Aider|Continue)\b/i;
       for (const m of body.messages) {
         if (!m || typeof m !== "object") continue;
         const msg = m as Record<string, unknown>;
-        if (msg.role === "tool") return true;
+        if (msg.role === "tool" || msg.role === "developer") return true;
         if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return true;
         if (msg.tool_call_id !== undefined) return true;
         if (msg.role === "system" && typeof msg.content === "string" && msg.content.length > 200) {
+          return true;
+        }
+        if (typeof msg.content === "string" && xmlOrAgentPromptPattern.test(msg.content)) {
           return true;
         }
         if (Array.isArray(msg.content)) {
           for (const block of msg.content) {
             if (block && typeof block === "object") {
               const b = block as Record<string, unknown>;
-              if (b.type === "tool_use" || b.type === "tool_result") return true;
+              if (
+                b.type === "tool_use" ||
+                b.type === "tool_result" ||
+                b.type === "function_call" ||
+                b.type === "function_call_output"
+              ) {
+                return true;
+              }
+              if (typeof b.text === "string" && xmlOrAgentPromptPattern.test(b.text)) {
+                return true;
+              }
             }
           }
         }
@@ -54,12 +69,13 @@ export function isAgentOrStructuredRequest(
     }
   }
 
-  // 3. Check headers for coding agents or Anthropic protocol
+  // 3. Check headers for coding agents, Stainless SDKs, or Anthropic protocol
   if (reqOrHeaders) {
     let userAgent = "";
     let xTitle = "";
     let referer = "";
     let anthropicVersion = "";
+    let stainlessLang = "";
 
     const headersObj = (reqOrHeaders as any).headers || reqOrHeaders;
     if (headersObj && typeof headersObj.get === "function") {
@@ -67,17 +83,19 @@ export function isAgentOrStructuredRequest(
       xTitle = headersObj.get("x-title") || "";
       referer = headersObj.get("http-referer") || headersObj.get("referer") || "";
       anthropicVersion = headersObj.get("anthropic-version") || "";
+      stainlessLang = headersObj.get("x-stainless-lang") || headersObj.get("x-stainless-package-version") || "";
     } else if (headersObj && typeof headersObj === "object") {
       userAgent = String(headersObj["user-agent"] || "");
       xTitle = String(headersObj["x-title"] || "");
       referer = String(headersObj["http-referer"] || headersObj["referer"] || "");
       anthropicVersion = String(headersObj["anthropic-version"] || "");
+      stainlessLang = String(headersObj["x-stainless-lang"] || headersObj["x-stainless-package-version"] || "");
     }
 
-    if (anthropicVersion) return true;
+    if (anthropicVersion || stainlessLang) return true;
 
     const lowerHeaderStr = `${userAgent} ${xTitle} ${referer}`.toLowerCase();
-    const codingAgentPattern = /\b(?:cline|kilo|roo(?:-code)?|claude-code|cursor|aider|continue|opencode|anthropic|openai-sdk)\b/i;
+    const codingAgentPattern = /(?:cline|kilo(?:-?code)?|roo(?:-?code|-?cline)?|claude(?:-?code)?|cursor|aider|continue|opencode|goose|windsurf|zed|copilot|anthropic|openai\/(?:js|python)|openai-sdk|ai-sdk|langchain|mastra)/i;
     if (codingAgentPattern.test(lowerHeaderStr)) {
       return true;
     }

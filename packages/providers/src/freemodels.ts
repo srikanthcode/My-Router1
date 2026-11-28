@@ -4,6 +4,7 @@ import {
   estimateUsage,
   type AdapterChatParams,
   type ChatResult,
+  type StreamEvent,
 } from "./adapter.js";
 import { OpenAICompatibleAdapter } from "./openai.js";
 
@@ -29,6 +30,15 @@ export class FreemodelsAdapter extends OpenAICompatibleAdapter {
   }
 
   override async chat(params: AdapterChatParams, signal?: AbortSignal): Promise<ChatResult> {
+    if (params.tools && params.tools.length > 0) {
+      throw new ProviderError(
+        this.providerSlug,
+        "unsupported_for_tools",
+        "FreeModels upstream does not support native tool calling",
+        422,
+        true,
+      );
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     const onAbort = () => controller.abort();
@@ -77,5 +87,18 @@ export class FreemodelsAdapter extends OpenAICompatibleAdapter {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  override async *chatStream(params: AdapterChatParams, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+    if (params.tools && params.tools.length > 0) {
+      throw new ProviderError(
+        this.providerSlug,
+        "unsupported_for_tools",
+        "FreeModels upstream does not support native tool calling",
+        422,
+        true,
+      );
+    }
+    yield* super.chatStream(params, signal);
   }
 }
